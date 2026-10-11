@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>JSON / JSONL 阅读器 - Hopecat工具集</title>
+<title>JSON / JSONL 阅读器</title>
 <meta name="description" content="用思维导图式结构阅读 JSON / JSONL：逐层展开键名与内容、搜索定位、隐藏无关字段，支持大文件与结构模板。文件仅在浏览器本地解析，不会上传。" />
 <meta name="theme-color" content="#1e88e5" />
 <link rel="icon" type="image/svg+xml"
@@ -66,50 +66,6 @@ button,input{font:inherit}
   line-height:1.75;
 }
 
-/* ---------- 返回 Hopecat 工具集 ---------- */
-.home-link{
-  display:inline-flex;
-  align-items:center;
-  gap:6px;
-  border-radius:9px;
-  color:var(--accent);
-  font-size:12.5px;
-  font-weight:600;
-  text-decoration:none;
-  white-space:nowrap;
-}
-.home-link:hover{text-decoration:underline}
-.home-arrow{transition:transform .16s ease}
-.home-link:hover .home-arrow{transform:translateX(-3px)}
-
-/* 导入页：做成标题上方的面包屑胶囊，避免悬空的蓝色链接 */
-.import-card .home-link{
-  display:flex;
-  width:fit-content;
-  margin:0 0 6px -8px;
-  padding:5px 8px;
-  color:var(--muted);
-  transition:background .16s ease,color .16s ease;
-}
-.import-card .home-link:hover{
-  background:rgba(0,0,0,.045);
-  color:var(--accent);
-  text-decoration:none;
-}
-
-/* 阅读器工具栏：与其它按钮同高同形 */
-.toolbar .home-link{
-  padding:8px 11px;
-  background:#f0f0f4;
-  color:var(--text);
-  font-size:13px;
-  font-weight:500;
-}
-.toolbar .home-link:hover{
-  background:#e5e5ea;
-  color:var(--text);
-  text-decoration:none;
-}
 .drop-zone{
   padding:38px 24px;
   border:1.5px dashed #b7b7bd;
@@ -1349,7 +1305,6 @@ button,input{font:inherit}
 
 <section id="landing">
   <div class="import-card">
-    <a class="home-link" href="/"><span class="home-arrow">←</span>返回 Hopecat工具集</a>
     <h1>JSON / JSONL 阅读器</h1>
     <p class="desc">
       用思维导图式结构阅读 JSON 的层级、键名与内容。同时支持 JSONL / NDJSON（每行一条 JSON 记录）。文件仅在浏览器本地解析，不会上传。
@@ -1371,9 +1326,6 @@ button,input{font:inherit}
 
 <section id="viewer">
   <header class="toolbar">
-    <a class="home-link" href="/" title="返回 Hopecat工具集"><span class="home-arrow">←</span>工具集</a>
-    <span class="sep"></span>
-
     <div class="file-meta">
       <div id="fileName" class="file-name">-</div>
       <div id="fileSub" class="file-sub">-</div>
