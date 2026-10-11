@@ -7,3 +7,28 @@ src-tauri/gen/
 
 .vscode/
 .idea/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+.npmrc
+.cargo/credentials
+.cargo/credentials.toml
+
+# Private samples and local working files
+/local-data/
+/private/
+*.local
+*.local.*
+*.tmp
+*.bak
+Thumbs.db
+Desktop.ini

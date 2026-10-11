@@ -43,7 +43,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'JSON Atlas ${{ github.ref_name }}'
           releaseBody: |
-            下载 `*-setup.exe` 安装即可。未配置代码签名，首次运行可能被 SmartScreen 拦截，选择「更多信息 → 仍要运行」。
+            下载 `*-setup.exe` 安装。当前安装包未配置代码签名，安装前请核对下载来源。
 
             Windows 10/11 需要 WebView2 Runtime（通常已随系统预装）。
           releaseDraft: true

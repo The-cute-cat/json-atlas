@@ -31,6 +31,9 @@ jobs:
       - name: 语法检查
         run: npm run check
 
+      - name: 数据回归测试
+        run: npm test
+
       - name: 构建前端
         run: npm run build
 
@@ -69,6 +72,10 @@ jobs:
       - name: cargo check（release profile）
         working-directory: src-tauri
         run: cargo check --release --locked
+
+      - name: 桌面端回归测试
+        working-directory: src-tauri
+        run: cargo test --locked
 
       - name: cargo fmt
         working-directory: src-tauri

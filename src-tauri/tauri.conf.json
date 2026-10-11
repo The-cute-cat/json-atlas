@@ -14,16 +14,18 @@
       {
         "label": "main",
         "title": "JSON Atlas",
-        "width": 1280,
-        "height": 840,
-        "minWidth": 800,
-        "minHeight": 560,
-        "dragDropEnabled": false
+        "width": 800,
+        "height": 600,
+        "minWidth": 640,
+        "minHeight": 480,
+        "dragDropEnabled": true,
+        "center": true,
+        "create": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost",
-      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:",
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420; worker-src 'self' blob:"
     }
   },
   "bundle": {
@@ -32,7 +34,29 @@
       "nsis"
     ],
     "icon": [
-      "icons/icon.ico"
-    ]
+      "icons/app.ico",
+      "icons/app.png"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "json",
+          "jsonl",
+          "ndjson",
+          "jsonlines"
+        ],
+        "name": "JSONAtlas.Document",
+        "description": "JSON Atlas structured data document",
+        "role": "Viewer"
+      }
+    ],
+    "resources": {
+      "icons/document.ico": "document.ico"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer-hooks.nsh"
+      }
+    }
   }
 }

@@ -1,3 +1,14 @@
+import { pagedChildren } from './paging.js';
+import { MAX_FILE_BYTES, searchData } from './data.js';
+import { desktop, readNativeFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
+
+let expansionGeneration = 0;
+let searchTimer;
+let searchGeneration = 0;
+let searchTruncated = false;
+let activeLoad = null;
+let openQueue = Promise.resolve();
+
 
 const landing = document.getElementById('landing');
 const viewer = document.getElementById('viewer');
@@ -132,7 +143,7 @@ function activeDoc(){
 }
 
 /* 本地存储 / 会话里用「文件名 + 体积」定位文档，不用易变的自增 id */
-function docKey(doc){ return `${doc.name}::${doc.size}`; }
+function docKey(doc){ return doc.identity || doc.path || `${doc.name}::${doc.size}`; }
 
 function makeDoc(name, size, text, kind){
   return {
@@ -155,6 +166,7 @@ function makeDoc(name, size, text, kind){
 /* 文本 → 文档。解析失败不抛错，而是记进 doc.error：
    条纹栏里仍能看到这个文件，也便于关掉严格模式后再试一次 */
 function buildDoc(text, name, size){
+  text = text.replace(/^\uFEFF/, '');
   const kind = detectFileKind(name, text);
   const doc = makeDoc(name, size, text, kind);
 
@@ -260,6 +272,8 @@ function activateDoc(id){
 
   if(activeDocId && activeDocId !== id) snapshotDoc();
   activeDocId = id;
+  expansionGeneration++;
+  updateWindowTitle(doc.name);
 
   const r = resolveDoc(doc);
   doc.error = r.error || null;
@@ -293,6 +307,7 @@ function activateDoc(id){
   renderTree(parsedData, currentRootLabel);
 
   requestAnimationFrame(() => {
+    if(activeDocId !== doc.id) return;
     if(doc.openPaths && doc.openPaths.length){
       expandByPaths(doc.openPaths);
       if(doc.view) applySessionView(doc.view); else resetView();
@@ -335,7 +350,7 @@ function closeDoc(id){
 
 function updateDocHeader(doc){
   fileName.textContent = doc.name;
-  fileName.title = doc.name;
+  fileName.title = doc.path || doc.name;
 
   const kindTag = doc.kind === 'jsonl' ? ' · JSONL' : '';
   const typeName = doc.error ? '无法预览' : getTypeName(doc.data);
@@ -343,6 +358,8 @@ function updateDocHeader(doc){
 }
 
 function resetSearchState(){
+  clearTimeout(searchTimer);
+  searchGeneration++;
   matches = [];
   currentMatchIndex = -1;
   searchInput.value = '';
@@ -438,7 +455,7 @@ function renderRail(){
   const addTab = document.createElement('div');
   addTab.className = 'file-tab';
   addTab.append(plus, addInfo);
-  addTab.addEventListener('click', () => fileInput.click());
+  addTab.addEventListener('click', () => chooseFiles());
 
   const add = document.createElement('div');
   add.className = 'file-slot rail-add';
@@ -508,10 +525,10 @@ function hideDocError(){
 /* ---------- 文件读取（多文件：每打开一个就追加一根条纹） ---------- */
 chooseBtn.addEventListener('click', e => {
   e.stopPropagation();
-  fileInput.click();
+  chooseFiles();
 });
-dropZone.addEventListener('click', () => fileInput.click());
-openAnotherBtn.addEventListener('click', () => fileInput.click());
+document.getElementById('sidebarOpenBtn').addEventListener('click', () => chooseFiles());
+openAnotherBtn.addEventListener('click', () => chooseFiles());
 
 fileInput.addEventListener('change', () => {
   openFiles(fileInput.files);
@@ -531,7 +548,7 @@ fileInput.addEventListener('change', () => {
   });
 });
 dropZone.addEventListener('drop', e => {
-  if(e.dataTransfer.files.length) openFiles(e.dataTransfer.files);
+  if(!desktop && e.dataTransfer.files.length) openFiles(e.dataTransfer.files);
 });
 
 /* 打开阅读器后，整个窗口也支持拖入新 JSON（一次可拖多个） */
@@ -543,43 +560,88 @@ viewer.addEventListener('drop', e => {
 
 /* 一次打开多个文件（多选 / 拖入多个） */
 function openFiles(fileList){
-  [...fileList].filter(Boolean).forEach(loadFile);
+  const files = [...fileList].filter(Boolean);
+  openQueue = openQueue.then(async () => { for(const file of files) await loadFile(file); });
+  return openQueue;
 }
 
-function loadFile(file){
-  const name = file.name.toLowerCase();
-  if(!JSON_EXT.test(name) && !JSONL_EXT.test(name) && !/\.(txt)$/i.test(name)){
-    showToast(`已跳过 ${file.name}：只支持 .json / .jsonl / .ndjson`);
-    return;
-  }
-
-  const reader = new FileReader();
-  reader.onload = () => openText(String(reader.result), file.name, file.size);
-  reader.onerror = () => showToast(`读取失败：${file.name}`);
-  reader.readAsText(file, 'utf-8');
+let pickingFiles = false;
+async function chooseFiles(){
+  if(!desktop){ fileInput.click(); return; }
+  if(pickingFiles) return;
+  pickingFiles = true;
+  try{ await openPaths(await selectNativeFiles()); }
+  catch(error){ showToast('无法选择文件：' + error); }
+  finally{ pickingFiles = false; }
 }
 
-/* 文本 → 文档 →（同名同体积视为同一份，直接切过去）→ 激活 */
-function openText(text, name, size){
-  const doc = buildDoc(text, name, size);
+function openPaths(paths, sessions){
+  openQueue = openQueue.then(async () => {
+    for(const path of paths){
+      await loadFile({ path }, sessions);
+    }
+  });
+  return openQueue;
+}
 
-  const dup = docs.find(d => d.name === name && d.size === size);
-  if(dup){
-    dup.kind = doc.kind;
-    dup.text = doc.text;
-    dup.parsed = doc.parsed;
-    dup.records = doc.records;
-    dup.bad = doc.bad;
-    dup.totalLines = doc.totalLines;
-    dup.error = doc.error;
-    activateDoc(dup.id);
-    showToast(`${name} 已经打开了，已切过去`);
-    return;
+function parseInBackground(payload, signal){
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./parser.worker.js', import.meta.url), { type: 'module' });
+    const finish = (error, value) => {
+      worker.terminate();
+      signal.removeEventListener('abort', abort);
+      error ? reject(error) : resolve(value);
+    };
+    const abort = () => finish(new DOMException('已取消打开', 'AbortError'));
+    if(signal.aborted){ abort(); return; }
+    signal.addEventListener('abort', abort, { once: true });
+    worker.onmessage = ({ data }) => finish(data.error ? new Error(data.error) : null, data);
+    worker.onerror = event => finish(new Error(event.message || '后台解析失败'));
+    worker.postMessage(payload);
+  });
+}
+
+async function loadFile(file, sessions){
+  if(!file.path && file.size > MAX_FILE_BYTES){ showToast('当前版本支持最大 256 MiB 的文件'); return; }
+  if(!file.path && !/\.(json|jsonl|ndjson|jsonlines|txt)$/i.test(file.name)){
+    showToast(`已跳过 ${file.name}：不支持的文件格式`); return;
   }
-
-  docs.push(doc);
-  activateDoc(doc.id);
-  saveReopenCopy();
+  const controller = new AbortController();
+  activeLoad = controller;
+  loadingStatus.hidden = false;
+  loadingLabel.textContent = '正在读取 ' + (file.name || file.path) + '…';
+  try{
+    const source = file.path ? await readNativeFile(file.path) : file;
+    if(controller.signal.aborted) return;
+    loadingLabel.textContent = '正在后台解析 ' + source.name + '…';
+    const { result, text } = await parseInBackground({
+      name: source.name, size: source.size, file: file.path ? null : file,
+      text: file.path ? source.text : null, keepText: !desktop
+    }, controller.signal);
+    if(controller.signal.aborted) return;
+    const doc = Object.assign(makeDoc(source.name, source.size, text, result.kind), result);
+    doc.path = source.path || null;
+    // Windows paths are case insensitive; native canonical paths identify documents.
+    doc.identity = doc.path && navigator.platform.startsWith('Win') ? doc.path.toLowerCase() : doc.path;
+    if(doc.kind === 'jsonl') doc.bad ||= [];
+    const duplicate = docs.find(d => doc.path ? docKey(d) === docKey(doc)
+      : !d.path && d.name === doc.name && d.size === doc.size && d.text === doc.text);
+    if(duplicate){
+      Object.assign(duplicate, { parsed: doc.parsed, records: doc.records, bad: doc.bad,
+        totalLines: doc.totalLines, text: doc.text, size: doc.size, kind: doc.kind, error: doc.error });
+      activateDoc(duplicate.id);
+    }else{
+      const session = sessions && sessionFor(doc, sessions);
+      if(session){ doc.openPaths = session.paths; doc.view = session.view; }
+      docs.push(doc);
+      activateDoc(doc.id);
+    }
+    saveReopenCopy();
+  }catch(error){
+    if(error.name !== 'AbortError') showToast('打开失败：' + (error.message || String(error)));
+  }finally{
+    if(activeLoad === controller){ activeLoad = null; loadingStatus.hidden = true; }
+  }
 }
 
 /* ---------- 「刷新后继续打开」：整组文件 + 各自的阅读会话 ---------- */
@@ -593,6 +655,14 @@ function saveReopenCopy(){
       localStorage.removeItem(LASTFILE_KEY);
       localStorage.removeItem(SESSION_KEY);
     }catch(_){}
+    return;
+  }
+
+  if(desktop){
+    const snapshot = { version: 3, activeKey: docKey(activeDoc() || docs[0]),
+      docs: docs.filter(d => d.path).map(d => ({ path: d.path })), savedAt: Date.now() };
+    try{ localStorage.setItem(LASTFILE_KEY, JSON.stringify(snapshot)); }
+    catch(_){ showToast('未能保存文件列表'); }
     return;
   }
 
@@ -695,6 +765,7 @@ function withdrawView(){
   docs = [];
   parsedData = null;
   currentRootLabel = 'root';
+  updateWindowTitle(null);
   tree.innerHTML = '';
   renderRail();
   hideDocError();
@@ -761,42 +832,17 @@ function attachChildren(node, card, toggle, value, path){
   children.className = 'children';
   node.appendChild(children);
 
-  let rendered = false;
-
-  const ensureChildren = () => {
-    if(rendered) return;
-    rendered = true;
-
-    /* 模板中隐藏的字段不渲染 */
-    const hidden = getHiddenSet();
-
-    const isArr = Array.isArray(value);
-    const entries = isArr
-      ? value.map((v,i)=>[i,v])
-      : Object.entries(value);
-
-    for(const [childKey, childValue] of entries){
-      const childNormPath = normalizePath(encodePath(path.concat(childKey)));
-      if(hidden.has(childNormPath)) continue;
-
-      children.appendChild(
-        createNode(
-          isArr ? arrayIndexLabel(childKey) : String(childKey),
-          childValue,
-          path.concat(childKey),
-          false,
-          isArr
-        )
-      );
-    }
-  };
-
-  node._ensureChildren = ensureChildren;
+  const ensureChildren = pagedChildren(node, children, value, (childKey, childValue, isArr) => {
+    if(getHiddenSet().has(normalizePath(encodePath(path.concat(childKey))))) return null;
+    return createNode(isArr ? arrayIndexLabel(childKey) : String(childKey), childValue,
+      path.concat(childKey), false, isArr);
+  }, () => { updateVirtualization(); scheduleOverflowSweep(); });
 
   const toggleNode = e => {
     e.stopPropagation();
     if(!node.classList.contains('open')) ensureChildren();
     node.classList.toggle('open');
+    if(!node.classList.contains('open')) node._discardChildren?.();
     updateVirtualization();
     scheduleOverflowSweep();
   };
@@ -1026,26 +1072,35 @@ function createNode(key, value, path, isRoot=false, isArrayItem=false){
   return node;
 }
 
-function expandAll(){
-  const root = tree.firstElementChild;
+async function expandVisible(root, scope = tree){
   if(!root) return;
-
-  const queue = [root];
-  while(queue.length){
-    const node = queue.shift();
-    if(node.classList.contains('branch')){
-      node._ensureChildren?.();
-      node.classList.add('open');
-
-      const children = directChildrenContainer(node);
-      if(children) queue.push(...children.children);
+  const generation = ++expansionGeneration;
+  const docId = activeDocId;
+  const stack = [root];
+  let visited = 0;
+  while(stack.length){
+    if(generation !== expansionGeneration || docId !== activeDocId || !root.isConnected) return;
+    if(scope.querySelectorAll('.tree-node').length >= 5000){
+      showToast('已达到 5000 个显示节点，请收起部分节点后继续展开'); break;
     }
+    const node = stack.pop();
+    if(!node.classList.contains('branch')) continue;
+    node._ensureChildren?.();
+    node.classList.add('open');
+    const children = directChildrenContainer(node);
+    if(children) stack.push(...[...children.children].filter(n => n.classList.contains('tree-node')));
+    if(++visited % 20 === 0) await new Promise(resolve => setTimeout(resolve, 0));
   }
   updateVirtualization();
   scheduleOverflowSweep();
+  if(scope.querySelector('.page-navigation')) showToast('已展开当前页；更多条目可在节点下翻页');
 }
 
+function expandAll(){ return expandVisible(tree.firstElementChild); }
+
 function collapseAll(){
+  expansionGeneration++;
+  tree.firstElementChild?._discardChildren?.();
   tree.querySelectorAll('.tree-node.open')
     .forEach(n => n.classList.remove('open'));
   updateVirtualization();
@@ -1068,23 +1123,12 @@ function expandOne(node){
 }
 
 /* 递归展开该节点下所有层级 */
-function expandSubtree(node){
-  const queue = [node];
-  while(queue.length){
-    const n = queue.shift();
-    if(!n.classList.contains('branch')) continue;
-
-    n._ensureChildren?.();
-    n.classList.add('open');
-
-    const children = directChildrenContainer(n);
-    if(children) queue.push(...children.children);
-  }
-  updateVirtualization();
-}
+function expandSubtree(node){ return expandVisible(node); }
 
 /* 收起该节点，并将其下所有已展开的节点一并置为收起 */
 function collapseSubtree(node){
+  expansionGeneration++;
+  node._discardChildren?.();
   node.classList.remove('open');
   /* querySelectorAll 不含自身，只处理后代 */
   node.querySelectorAll('.tree-node.open')
@@ -1331,7 +1375,7 @@ function recordTemplate(){
 function childNodesToVisit(node){
   const c = directChildrenContainer(node);
   if(!c) return [];
-  const kids = [...c.children];
+  const kids = [...c.children].filter(n => n.classList.contains('tree-node'));
   /* 字符串型 JSON 节点：按解析出来的值判断是否为数组 */
   const v = node._jsonValue !== undefined ? node._jsonValue : node._value;
   return Array.isArray(v) ? kids.slice(0, 1) : kids;
@@ -1446,6 +1490,7 @@ function closeSettings(){
 }
 
 settingsBtn.addEventListener('click', openSettings);
+document.getElementById('landingSettingsBtn').addEventListener('click', openSettings);
 settingsClose.addEventListener('click', closeSettings);
 settingsMask.addEventListener('click', e => {
   if(e.target === settingsMask) closeSettings();
@@ -1525,7 +1570,7 @@ optReopenLast.addEventListener('change', () => {
     scheduleSessionSave();   /* 当前的展开状态与视图位置也一并记下 */
     showToast('已保存当前打开的文件，刷新后会自动打开');
   }else{
-    showToast('已开启：打开文件时会保存副本，刷新后自动打开');
+    showToast(desktop ? '已开启：重启后从原路径重新打开文件' : '已开启：刷新后恢复文件副本');
   }
 });
 
@@ -1714,6 +1759,8 @@ settingsImportInput.addEventListener('change', () => {
 applyValueHeightSetting();
 syncReopenControls();
 
+let nativeRestore = null;
+
 /* ---------- 刷新后恢复上次打开的一组文件 ---------- */
 (function restoreOpenFiles(){
   if(!settings.reopenLast) return;
@@ -1729,6 +1776,10 @@ syncReopenControls();
   if(!list.length) return;
 
   const sessions = readSessions();
+  if(desktop){
+    nativeRestore = { paths: list.map(item => item.path).filter(Boolean), sessions, activeKey: rec.activeKey };
+    return;
+  }
 
   list.forEach(item => {
     if(!item || typeof item.text !== 'string' || !item.name) return;
@@ -1769,10 +1820,11 @@ function readSessions(){
   return {};
 }
 
-/* 会话按「文件名::体积」定位；旧版只按文件名，这里一并兜底 */
+/* 桌面会话按完整路径定位；网页旧会话保留文件名兼容。 */
 function sessionFor(doc, sessions){
   const key = docKey(doc);
   if(sessions[key]) return sessions[key];
+  if(doc.path) return null;
   if(sessions[doc.name]) return sessions[doc.name];
 
   const hit = Object.keys(sessions).find(k => k.startsWith(doc.name + '::'));
@@ -1940,31 +1992,9 @@ function createEditorNode(key, value, path, isRoot=false, isArrayItem=false){
     children.className = 'children';
     node.appendChild(children);
 
-    let rendered = false;
-    const ensureChildren = () => {
-      if(rendered) return;
-      rendered = true;
-
-      /* 数组只展示第一项的结构 */
-      const isArr = Array.isArray(value);
-      const entries = isArr
-        ? (value.length ? [[0, value[0]]] : [])
-        : Object.entries(value);
-
-      for(const [childKey, childValue] of entries){
-        children.appendChild(
-          createEditorNode(
-            isArr ? arrayIndexLabel(childKey) : String(childKey),
-            childValue,
-            path.concat(childKey),
-            false,
-            isArr
-          )
-        );
-      }
-    };
-
-    node._ensureChildren = ensureChildren;
+    const ensureChildren = pagedChildren(node, children, value, (childKey, childValue, isArr) =>
+      createEditorNode(isArr ? arrayIndexLabel(childKey) : String(childKey), childValue,
+        path.concat(childKey), false, isArr), () => {}, true);
 
     const toggleNode = e => {
       e.stopPropagation();
@@ -1978,22 +2008,14 @@ function createEditorNode(key, value, path, isRoot=false, isArrayItem=false){
   return node;
 }
 
-function editorExpandAll(){
-  const root = editorTree.firstElementChild;
-  if(!root) return;
-  const queue = [root];
-  while(queue.length){
-    const n = queue.shift();
-    if(!n.classList.contains('branch')) continue;
-    n._ensureChildren?.();
-    n.classList.add('open');
-    const c = directChildrenContainer(n);
-    if(c) queue.push(...c.children);
-  }
+async function editorExpandAll(){
+  await expandVisible(editorTree.firstElementChild, editorTree);
   updateEditorVirtualization();
 }
 
 function editorCollapseAll(){
+  expansionGeneration++;
+  editorTree.firstElementChild?._discardChildren?.();
   editorTree.querySelectorAll('.tree-node.open')
     .forEach(n => n.classList.remove('open'));
   updateEditorVirtualization();
@@ -2058,7 +2080,22 @@ window.addEventListener('contextmenu', e => {
   if(!e.target.closest('.node-card')) closeMenu();
 });
 document.addEventListener('keydown', e => {
+  const modifier = e.ctrlKey || e.metaKey;
+  const key = e.key.toLowerCase();
+  if(modifier && key === 'o'){ e.preventDefault(); chooseFiles(); return; }
+  if(modifier && key === 'f' && activeDoc()){ e.preventDefault(); searchInput.focus(); searchInput.select(); return; }
+  if(modifier && key === 'w' && activeDoc() && !e.target.closest('input,textarea,[contenteditable]')){
+    e.preventDefault(); closeDoc(activeDocId); return;
+  }
+  if(e.key === 'F3' && matches.length){
+    e.preventDefault(); focusMatch((currentMatchIndex + (e.shiftKey ? -1 : 1) + matches.length) % matches.length); return;
+  }
   if(e.key === 'Escape'){
+    clearTimeout(searchTimer);
+    expansionGeneration++;
+    searchGeneration++;
+    if(searchCount.textContent === '搜索中…') searchCount.textContent = '已取消';
+    if(activeLoad) activeLoad.abort();
     closeMenu();
     closeModal();
     closeSettings();
@@ -2067,59 +2104,31 @@ document.addEventListener('keydown', e => {
 });
 
 /* ---------- 搜索 ---------- */
-let searchTimer;
 searchInput.addEventListener('input', () => {
+  searchGeneration++;
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => searchTree(searchInput.value), 160);
 });
 
-function searchTree(query){
-  tree.querySelectorAll('.match,.current-match').forEach(n => {
-    n.classList.remove('match','current-match');
-  });
-
+async function searchTree(query){
+  const generation = ++searchGeneration;
+  tree.querySelectorAll('.match,.current-match').forEach(n => n.classList.remove('match','current-match'));
   matches = [];
   currentMatchIndex = -1;
-  searchCount.textContent = '';
-
+  nextMatchBtn.disabled = true;
   const q = query.trim().toLowerCase();
-  if(!q){
-    nextMatchBtn.disabled = true;
-    return;
-  }
-
-  /* 搜索前生成所有节点，但不全部展开 */
-  materializeAll(tree.firstElementChild);
-
-  matches = [...tree.querySelectorAll('.tree-node')]
-    .filter(n => n.dataset.searchText.includes(q));
-
-  matches.forEach(n => {
-    n.classList.add('match');
-    openAncestors(n);
+  if(!q){ searchCount.textContent = ''; return; }
+  searchCount.textContent = '搜索中…';
+  const result = await searchData(parsedData, q, {
+    rootLabel: currentRootLabel, indexBase: settings.indexBase, hidden: getHiddenSet(),
+    cancelled: () => generation !== searchGeneration
   });
-
-  if(matches.length){
-    currentMatchIndex = 0;
-    focusMatch(0);
-    nextMatchBtn.disabled = false;
-  }else{
-    searchCount.textContent = '0';
-    nextMatchBtn.disabled = true;
-  }
-
-  /* 搜索会把所有节点都实体化，顺手补测一次高度 */
-  scheduleOverflowSweep();
-}
-
-function materializeAll(node){
-  if(!node) return;
-  if(node.classList.contains('branch')) node._ensureChildren?.();
-
-  const children = directChildrenContainer(node);
-  if(children){
-    [...children.children].forEach(materializeAll);
-  }
+  if(!result || generation !== searchGeneration) return;
+  matches = result.hits;
+  searchTruncated = result.truncated;
+  if(!matches.length){ searchCount.textContent = '0'; return; }
+  nextMatchBtn.disabled = false;
+  focusMatch(0);
 }
 
 function directChildrenContainer(node){
@@ -2135,16 +2144,26 @@ function openAncestors(node){
 }
 
 function focusMatch(index){
-  matches.forEach(n => n.classList.remove('current-match'));
+  tree.querySelectorAll('.current-match').forEach(n => n.classList.remove('current-match'));
   if(!matches.length) return;
-
-  const node = matches[index];
-  node.classList.add('current-match');
-  openAncestors(node);
-
-  /* 把匹配节点移动到画布可视区域中央 */
-  requestAnimationFrame(() => centerNode(node));
-  searchCount.textContent = `${index + 1} / ${matches.length}`;
+  currentMatchIndex = index;
+  let node = tree.firstElementChild;
+  const path = matches[index];
+  for(const key of path){
+    if(!node) break;
+    node._ensureChildren?.(key);
+    node.classList.add('open');
+    node = [...(directChildrenContainer(node)?.children || [])]
+      .find(child => child._path?.length === node._path.length + 1 && child._path.at(-1) === key);
+  }
+  if(node){
+    node.classList.add('current-match');
+    openAncestors(node);
+    requestAnimationFrame(() => { if(node.isConnected) centerNode(node); });
+  }
+  searchCount.textContent = `${index + 1} / ${matches.length}${searchTruncated ? '+' : ''}`;
+  searchCount.title = searchTruncated ? '仅列出前 1000 项匹配，请缩小搜索范围' : '';
+  scheduleOverflowSweep();
 }
 
 nextMatchBtn.addEventListener('click', () => {
@@ -2323,3 +2342,25 @@ function clamp(v,min,max){return Math.min(max,Math.max(min,v))}
 /* 防止浏览器直接打开拖入的文件 */
 window.addEventListener('dragover', e => e.preventDefault());
 window.addEventListener('drop', e => e.preventDefault());
+
+// Native startup is deferred until the reader and canvas are initialized.
+const loadingStatus = document.getElementById('loadingStatus');
+const loadingLabel = document.getElementById('loadingLabel');
+document.getElementById('reopenHint').textContent = desktop
+  ? '从原路径读取文件，关闭后清除恢复记录'
+  : '在浏览器本地保存文件副本';
+document.getElementById('cancelLoadBtn').addEventListener('click', () => activeLoad?.abort());
+(async () => {
+  if(nativeRestore){
+    await openPaths(nativeRestore.paths, nativeRestore.sessions);
+    const active = docs.find(d => docKey(d) === nativeRestore.activeKey);
+    if(active) activateDoc(active.id);
+  }
+  await connectDesktop(openPaths, error => showToast('桌面文件入口失败：' + error), action => {
+    if(action === 'open') chooseFiles();
+    else if(action === 'close' && activeDocId) closeDoc(activeDocId);
+    else if(action === 'reset' && activeDocId) resetView();
+    else if(action === 'settings') openSettings();
+    else if(action === 'about') showToast('JSON Atlas 0.1.0 · Apache-2.0 · 本地 JSON / JSONL 阅读器');
+  });
+})().catch(error => showToast('启动失败：' + error));
