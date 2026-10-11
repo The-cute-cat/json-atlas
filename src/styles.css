@@ -22,40 +22,70 @@ body{
 }
 button,input{font:inherit}
 
-/* ---------- 桌面工作区 ---------- */
-#landing{width:100%;height:100%;display:grid;grid-template-columns:184px minmax(0,1fr);grid-template-rows:minmax(0,1fr) 25px;background:#f8f9fb;font-size:13px}
-.workspace-sidebar{display:flex;flex-direction:column;padding:18px 10px 10px;background:#eef0f3;border-right:1px solid var(--line);min-height:0}
-.workspace-brand{display:flex;align-items:center;gap:9px;padding:0 8px 26px;font-size:14px}
-.workspace-brand img{width:30px;height:30px;object-fit:contain}
-.sidebar-heading{padding:0 12px 8px;color:var(--muted);font-size:11px}
-.sidebar-current,.sidebar-action{display:flex;align-items:center;gap:10px;padding:9px 12px;border:0;border-radius:4px;text-align:left;font-size:13px}
-.sidebar-current{background:#dce6f2;color:#24588b}
-.sidebar-action{width:100%;margin-top:4px;background:transparent;color:var(--text);cursor:pointer}
-.sidebar-action:hover{background:#e0e4e9}
-.sidebar-current>span,.sidebar-action>span{width:16px;text-align:center;font-size:16px}
-.sidebar-note{padding:16px 12px;color:var(--muted);font-size:11px;line-height:1.9}
+/* ---------- 欢迎工作区 ---------- */
+#landing{
+  width:100%;height:100%;display:grid;
+  grid-template-columns:210px minmax(0,1fr);grid-template-rows:minmax(0,1fr) 25px;
+  background:#fafafa;font-size:13px;
+}
+.workspace-sidebar{
+  display:flex;flex-direction:column;min-height:0;padding:25px 12px 12px;
+  background:linear-gradient(145deg,#f1f2f5 0%,#eceef3 55%,#f0eff4 100%);
+  border-right:1px solid rgba(0,0,0,.07);
+}
+.workspace-brand{display:flex;align-items:center;gap:10px;padding:0 10px 32px}
+.workspace-brand img{width:38px;height:38px;object-fit:contain}
+.workspace-brand strong{display:block;font-size:14px;font-weight:650;letter-spacing:-.3px}
+.workspace-brand span{display:block;margin-top:3px;font-size:11px;color:#8b8b93}
+.sidebar-heading{padding:0 12px 8px;color:#8b8b93;font-size:11px;font-weight:600}
+.sidebar-current,.sidebar-action{
+  display:flex;align-items:center;gap:9px;min-height:35px;padding:8px 11px;
+  border:0;border-radius:8px;text-align:left;font-size:13px;letter-spacing:.1px;
+}
+.sidebar-current{background:rgba(0,0,0,.065);color:#26262a;font-weight:550}
+.sidebar-current svg{color:var(--accent)}
+.sidebar-action{width:100%;margin-top:4px;background:transparent;color:#47474d;cursor:pointer;transition:background .15s}
+.sidebar-action:hover{background:rgba(0,0,0,.045)}
+.sidebar-action:active{background:rgba(0,0,0,.08)}
+.workspace-sidebar svg,.desktop-open svg{width:18px;height:18px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.workspace-sidebar svg rect{fill:#eeeef2}
 .sidebar-settings{margin-top:auto}
-.workspace-main{display:flex;flex-direction:column;min-width:0;min-height:0}
-.workspace-toolbar{display:flex;align-items:center;justify-content:space-between;height:38px;flex-shrink:0;padding:0 16px;background:#fff;border-bottom:1px solid var(--line)}
-.workspace-toolbar-note{font-size:11px;color:var(--muted)}
-.workspace-empty{display:grid;place-items:center;flex:1;min-height:0;overflow:auto;padding:20px;outline-offset:-5px}
-.workspace-empty.dragover{background:#edf4fd;outline:2px solid var(--accent)}
-.empty-content{display:flex;flex-direction:column;align-items:center;text-align:center}
-.empty-document{width:76px;height:76px;object-fit:contain;margin-bottom:12px}
-.empty-content h1{margin:0;font-size:18px;font-weight:600}
-.empty-content p{margin:10px 0 20px;color:var(--muted);font-size:12px}
-.desktop-open{display:flex;align-items:center;justify-content:space-between;gap:30px;min-width:190px;padding:8px 12px;border:1px solid #165f9c;border-radius:4px;background:#176eb1;color:#fff;font-size:13px;cursor:pointer}
-.desktop-open:hover{background:#125c97}
-.desktop-open kbd{font:11px 'Segoe UI',sans-serif;opacity:.8}
-.empty-drop-hint{margin-top:14px;font-size:11px;color:var(--muted)}
-.workspace-status{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 12px;border-top:1px solid var(--line);background:#edf0f4;color:#596473;font-size:11px}
-.workspace-status i{display:inline-block;width:6px;height:6px;border-radius:50%;background:#39856b;margin-right:4px}
-#jsonlOpts{padding:7px 16px;border-top:1px solid #e8eaf0;background:#f4f6f8}
-#jsonlOpts .hint{display:block;color:var(--muted);font-size:11px;line-height:1.5}
+.workspace-main{display:flex;flex-direction:column;min-width:0;min-height:0;background:linear-gradient(180deg,#fff 0%,#fafafb 100%)}
+.workspace-toolbar{
+  display:flex;align-items:center;justify-content:space-between;min-height:48px;flex-shrink:0;
+  padding:0 24px;color:#55555c;font-size:12px;
+}
+.workspace-toolbar>span:first-child{font-weight:600}
+.workspace-toolbar-note{font-size:11px;color:#a1a1a7}
+.workspace-empty{
+  display:grid;place-items:center;flex:1;min-height:0;overflow:auto;padding:24px;
+  outline-offset:-12px;border-radius:14px;transition:background .15s;
+}
+.workspace-empty.dragover{background:#eef5ff;outline:2px solid #83b7f6}
+.empty-content{display:flex;flex-direction:column;align-items:center;text-align:center;padding-bottom:16px}
+.empty-document{width:104px;height:104px;object-fit:contain;margin-bottom:20px;filter:drop-shadow(0 8px 10px rgba(48,91,143,.09))}
+.empty-content h1{margin:0;font-size:30px;line-height:1.2;font-weight:650;letter-spacing:-1.1px;color:#222226}
+.empty-content p{margin:10px 0 30px;color:#8a8a92;font-size:13px;letter-spacing:.5px}
+.desktop-open{
+  display:flex;align-items:center;justify-content:center;gap:8px;min-width:210px;
+  padding:10px 22px;border:1px solid #0874e5;border-radius:10px;
+  background:linear-gradient(#268dff,#0877ed);box-shadow:0 1px 2px rgba(0,91,206,.18),inset 0 1px 0 rgba(255,255,255,.18);
+  color:#fff;font-size:13px;font-weight:550;cursor:pointer;transition:filter .15s,box-shadow .15s;
+}
+.desktop-open:hover{filter:brightness(1.05);box-shadow:0 3px 9px rgba(0,105,230,.18)}
+.desktop-open:active{filter:brightness(.95)}
+.empty-drop-hint{display:flex;align-items:center;gap:4px;margin-top:17px;font-size:11px;color:#9a9aa2}
+.empty-drop-hint kbd{min-width:18px;padding:2px 4px;border:1px solid #dfdfe4;border-radius:4px;background:#fff;color:#8d8d95;font:10px 'Segoe UI',sans-serif;box-shadow:0 1px 0 #e8e8ec}
+.workspace-status{
+  grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:0 15px;border-top:1px solid rgba(0,0,0,.045);background:#f5f5f7;color:#96969e;font-size:10px;
+}
+#jsonlOpts{padding:12px 24px 18px;text-align:center}
+#jsonlOpts .hint{display:block;color:#a0a0a8;font-size:10px;line-height:1.5;letter-spacing:.5px}
 #jsonlOpts.available{background:var(--accent-soft)}
 #fileInput{display:none}
-button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.primary{margin-top:18px;width:100%;padding:10px 16px;border:0;border-radius:4px;background:var(--accent);color:#fff;cursor:pointer;font-weight:600}
+button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
+.primary{margin-top:18px;width:100%;padding:10px 16px;border:0;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer;font-weight:600}
 .primary:hover{filter:brightness(.97)}
 /* ---------- 阅读器 ---------- */
 #viewer{
@@ -1228,14 +1258,24 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 }
 
 @media(max-height:500px){
-  .empty-document{width:48px;height:48px;margin-bottom:6px}
-  .empty-content p{margin:7px 0 12px}
-  .workspace-brand{padding-bottom:16px}
+  .workspace-sidebar{padding-top:16px}
+  .workspace-brand{padding-bottom:22px}
+  .workspace-toolbar{min-height:38px}
+  .workspace-empty{padding:16px}
+  .empty-content{padding-bottom:0}
+  .empty-document{width:68px;height:68px;margin-bottom:12px}
+  .empty-content h1{font-size:25px}
+  .empty-content p{margin:8px 0 20px}
+  .empty-drop-hint{margin-top:12px}
+  #jsonlOpts{padding:8px 16px 12px}
 }
 @media(max-width:620px){
-  #landing{grid-template-columns:148px minmax(0,1fr)}
-  .workspace-brand{font-size:12px;gap:5px;padding-left:4px}
-  .workspace-brand img{width:25px;height:25px}
-  .sidebar-note{padding:12px 8px}
+  #landing{grid-template-columns:158px minmax(0,1fr)}
+  .workspace-sidebar{padding-left:8px;padding-right:8px}
+  .workspace-brand{font-size:12px;gap:7px;padding-left:6px}
+  .workspace-brand img{width:30px;height:30px}
+  .workspace-brand strong{font-size:12px}
+  .workspace-toolbar{padding:0 18px}
   .workspace-toolbar-note{display:none}
+  .desktop-open{min-width:180px}
 }

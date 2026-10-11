@@ -25,9 +25,7 @@ export function parseJsonl(text) {
 
 export function parseDocument(text, name) {
   text = text.replace(/^\uFEFF/, '');
-  const head = text.trimStart().slice(0, 4096);
   let kind = /\.(jsonl|ndjson|jsonlines)$/i.test(name) ? 'jsonl' : 'json';
-  if (!/\.json$/i.test(name) && (/^\{[^\n]*\}\s*(\n|$)/.test(head) || /^\[[^\n]*\]\s*(\n|$)/.test(head))) kind = 'jsonl';
   if (kind === 'json') {
     try { return { kind, parsed: JSON.parse(text) }; }
     catch (error) {
@@ -47,7 +45,7 @@ export function* walkData(value, rootLabel = 'root', indexBase = 0, hidden = new
     const frame = stack[stack.length - 1];
     if (!frame.visited) {
       frame.visited = true;
-      const norm = encodeDataPath(frame.path).replace(/\[\d+\]/g, '[0]');
+      const norm = normalizeDataPath(encodeDataPath(frame.path));
       if (hidden.has(norm)) { stack.pop(); continue; }
       const v = frame.value;
       const type = v !== null && typeof v === 'object' ? (Array.isArray(v) ? 'array' : 'object') : String(v);
@@ -65,8 +63,14 @@ export function* walkData(value, rootLabel = 'root', indexBase = 0, hidden = new
 }
 
 export function encodeDataPath(path) {
-  return '$' + path.map(key => typeof key === 'number' || /^\d+$/.test(String(key))
+  return '$' + path.map(key => typeof key === 'number'
     ? `[${key}]` : /^[A-Za-z_$][\w$]*$/.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`).join('');
+}
+
+// Quoted object keys must remain literal, including digits and brackets in a key.
+export function normalizeDataPath(path) {
+  return path.replace(/\["(?:\\.|[^"\\])*"\]|\[\d+\]/g,
+    segment => segment.startsWith('["') ? segment : '[0]');
 }
 
 export async function searchData(value, query, { rootLabel, indexBase, hidden, cancelled = () => false,

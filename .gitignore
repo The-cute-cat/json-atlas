@@ -4,7 +4,7 @@ src-tauri/target/
 src-tauri/gen/
 *.log
 .DS_Store
-
+RELEASE_REVIEW.md
 .vscode/
 .idea/
 

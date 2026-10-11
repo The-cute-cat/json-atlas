@@ -1,5 +1,5 @@
 import { pagedChildren } from './paging.js';
-import { MAX_FILE_BYTES, searchData } from './data.js';
+import { MAX_FILE_BYTES, searchData, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath } from './data.js';
 import { desktop, readNativeFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
 
 let expansionGeneration = 0;
@@ -53,61 +53,8 @@ const MIN_SCALE = .45;
 const MAX_SCALE = 2.2;
 
 /* ---------- JSONL / 解析工具 ---------- */
-const JSONL_EXT = /\.(jsonl|ndjson|jsonlines)$/i;
-const JSON_EXT = /\.json$/i;
-
-/* 探测文件形态：扩展名优先；必要时看内容（JSONL 一定以 { 或 [ 的单行开头） */
-function detectFileKind(name, text){
-  if(JSONL_EXT.test(name)) return 'jsonl';
-  if(JSON_EXT.test(name)) return 'json';
-  const head = text.replace(/^\uFEFF/, '').trimStart().slice(0, 4096);
-  /* 内容像 JSONL：首行是完整的 {…} 或 […] 且文件能按行解析 */
-  if(/^\{[^\n]*\}\s*(\n|$)/.test(head) || /^\[[^\n]*\]\s*(\n|$)/.test(head)) return 'jsonl';
-  return 'json';
-}
-
-/* JSONL：逐行解析。
-   - 空行始终跳过（不视为数据，也不视为违规）
-   - `#` / `//` 注释行：默认模式下静默跳过；strict=true 时记为违规
-   - 非空且解析失败的行：始终记为违规
-   strict 只影响「哪些行算违规」，调用方据此决定是拒绝整文件还是跳过并提示。 */
-function parseJsonl(text, opts = {}){
-  const strict = !!opts.strict;
-  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
-  const records = [];
-  const bad = [];
-  const lineNoOf = [];
-
-  lines.forEach((raw, i) => {
-    const line = raw.trim();
-    if(!line) return;   /* 空行豁免 */
-
-    const isComment = line.startsWith('#') || line.startsWith('//');
-    if(isComment){
-      /* 严格模式：JSONL 规范不含注释，静默放行会让文件「看起来完整」 */
-      if(strict) bad.push({ line: i + 1, text: raw, comment: true, message: 'JSONL 规范不支持注释行（严格模式）' });
-      return;
-    }
-
-    try{
-      records.push(JSON.parse(line));
-      lineNoOf.push(i + 1);
-    }catch(err){
-      bad.push({ line: i + 1, text: raw, message: err.message });
-    }
-  });
-
-  return {
-    records,
-    bad,
-    totalLines: lines.length,
-    skipped: lines.length - records.length - bad.length,
-    lineNoOf
-  };
-}
-
 /* 文件形态提示：让用户知道本次是哪种解析路径、以及哪些设置正在生效 */
-const JSONL_IDLE_HINT = '支持 .json / .jsonl / .ndjson · JSONL 的根结构与坏行处理可在「设置」中配置';
+const JSONL_IDLE_HINT = 'JSON · JSONL · NDJSON';
 
 function modeHints(){
   const bits = [];
@@ -166,44 +113,9 @@ function makeDoc(name, size, text, kind){
 /* 文本 → 文档。解析失败不抛错，而是记进 doc.error：
    条纹栏里仍能看到这个文件，也便于关掉严格模式后再试一次 */
 function buildDoc(text, name, size){
-  text = text.replace(/^\uFEFF/, '');
-  const kind = detectFileKind(name, text);
-  const doc = makeDoc(name, size, text, kind);
-
-  if(kind === 'jsonl'){
-    fillJsonlDoc(doc);
-    return doc;
-  }
-
-  try{
-    doc.parsed = JSON.parse(text);
-    return doc;
-  }catch(err){
-    /* .json 解析失败时再按 JSONL 试一次（扩展名是 .json 但实际是 NDJSON 很常见） */
-    const probe = parseJsonl(text, { strict: true });
-    if(probe.records.length){
-      doc.kind = 'jsonl';
-      fillJsonlDoc(doc, probe);
-      return doc;
-    }
-    doc.error = 'JSON 解析失败：\n' + err.message;
-    return doc;
-  }
+  const result = parseDocument(text, name);
+  return Object.assign(makeDoc(name, size, text, result.kind), result);
 }
-
-function fillJsonlDoc(doc, parsed){
-  const res = parsed || parseJsonl(doc.text, { strict: true });
-  doc.records = res.records;
-  doc.bad = res.bad;
-  doc.totalLines = res.totalLines;
-
-  if(!res.records.length){
-    doc.error = 'JSONL 解析失败：\n' + (res.bad.length
-      ? `共 ${res.bad.length} 行解析失败，首个错误在第 ${res.bad[0].line} 行：${res.bad[0].message}`
-      : '文件内没有可解析的记录');
-  }
-}
-
 const badLinesPreview = list => list.slice(0, 10)
   .map(b => `  第 ${b.line} 行：${b.message}\n    ${(b.text || '').slice(0, 160)}`)
   .join('\n') + (list.length > 10 ? `\n  …另有 ${list.length - 10} 行` : '');
@@ -212,7 +124,7 @@ const badLinesPreview = list => list.slice(0, 10)
 function resolveDoc(doc){
   if(doc.kind !== 'jsonl'){
     if(doc.error) return { error: doc.error };
-    return { data: doc.parsed, rootLabel: doc.rootLabel || 'root', sub: '' };
+    return { data: doc.parsed, rootLabel: 'root', sub: '' };
   }
 
   const parseBad = doc.bad.filter(b => !b.comment);
@@ -290,6 +202,7 @@ function activateDoc(id){
 
   updateDocHeader(doc);
   renderRail();
+  saveReopenCopy();
 
   /* 搜索框 / 上一次的匹配列表一律重置：命中的节点属于上一份文件 */
   resetSearchState();
@@ -308,12 +221,13 @@ function activateDoc(id){
 
   requestAnimationFrame(() => {
     if(activeDocId !== doc.id) return;
-    if(doc.openPaths && doc.openPaths.length){
+    if(Array.isArray(doc.openPaths)){
       expandByPaths(doc.openPaths);
       if(doc.view) applySessionView(doc.view); else resetView();
     }else{
       resetView();
       applyOpenPolicy();
+      if(doc.view) applySessionView(doc.view);
     }
     if(doc.searchQuery){
       searchInput.value = doc.searchQuery;
@@ -555,7 +469,7 @@ dropZone.addEventListener('drop', e => {
 viewer.addEventListener('dragover', e => e.preventDefault());
 viewer.addEventListener('drop', e => {
   e.preventDefault();
-  if(e.dataTransfer.files.length) openFiles(e.dataTransfer.files);
+  if(!desktop && e.dataTransfer.files.length) openFiles(e.dataTransfer.files);
 });
 
 /* 一次打开多个文件（多选 / 拖入多个） */
@@ -628,7 +542,8 @@ async function loadFile(file, sessions){
       : !d.path && d.name === doc.name && d.size === doc.size && d.text === doc.text);
     if(duplicate){
       Object.assign(duplicate, { parsed: doc.parsed, records: doc.records, bad: doc.bad,
-        totalLines: doc.totalLines, text: doc.text, size: doc.size, kind: doc.kind, error: doc.error });
+        totalLines: doc.totalLines, text: doc.text, size: doc.size, kind: doc.kind, error: doc.error,
+        rootLabel: 'root', data: undefined });
       activateDoc(duplicate.id);
     }else{
       const session = sessions && sessionFor(doc, sessions);
@@ -1332,11 +1247,6 @@ function saveTemplate(){
   try{ localStorage.setItem(TEMPLATE_KEY, JSON.stringify(template)); }catch(_){}
 }
 
-/* 数组下标归一化：[3] → [0]，使模板与具体元素位置无关 */
-function normalizePath(p){
-  return p.replace(/\[\d+\]/g, '[0]');
-}
-
 /* prefix 按 JSONPath 段边界判断是否为 path 的严格前缀（避免 $.a 误配 $.ab） */
 function isPathPrefix(prefix, path){
   const p = normalizePath(prefix);
@@ -1363,6 +1273,8 @@ function recordTemplate(){
 
   template = {
     paths,
+    /* 结构模板 = 展开层级 + 隐藏字段：这里只改展开层级，保留已有的隐藏配置 */
+    hidden: (template && template.hidden) || [],
     file: fileName.textContent || '',
     savedAt: Date.now()
   };
@@ -1392,7 +1304,12 @@ function expandByPaths(paths){
   let deepest = null;
   let deepestLen = -1;
 
-  (function walk(node){
+  const pending = [root];
+  while(pending.length){
+    const node = pending.pop();
+    if(tree.querySelectorAll('.tree-node').length >= 5000){
+      showToast('已达到 5000 个显示节点，停止恢复展开'); break;
+    }
     if(!node.classList.contains('branch')){
       /* 字符串型 JSON 字段：命中它下级的路径时先按 JSON 展开，
          否则记录在它内部的结构会整体落空 */
@@ -1400,18 +1317,18 @@ function expandByPaths(paths){
          pathList.some(p => isPathPrefix(node.dataset.path, p))){
         buildJsonChildren(node);
       }else{
-        return;
+        continue;
       }
     }
-    if(!set.has(normalizePath(node.dataset.path))) return;
+    if(!set.has(normalizePath(node.dataset.path))) continue;
 
     expandOne(node);
 
     const p = node.dataset.path;
     if(p.length > deepestLen){ deepestLen = p.length; deepest = node; }
 
-    childNodesToVisit(node).forEach(walk);
-  })(root);
+    pending.push(...childNodesToVisit(node).reverse());
+  }
 
   return deepest;
 }
@@ -1424,11 +1341,16 @@ function applyTemplate(){
 
 /* 按固定层数展开（无模板时的默认策略），数组同样只展开第一项 */
 function expandLevels(node, levels){
-  (function walk(n, remain){
-    if(!n.classList.contains('branch') || remain <= 0) return;
+  const pending = [{ node, remain: levels }];
+  while(pending.length){
+    const { node: n, remain } = pending.pop();
+    if(!n || !n.classList.contains('branch') || remain <= 0) continue;
+    if(tree.querySelectorAll('.tree-node').length >= 5000){
+      showToast('已达到 5000 个显示节点，停止默认展开'); break;
+    }
     expandOne(n);
-    childNodesToVisit(n).forEach(k => walk(k, remain - 1));
-  })(node, levels);
+    pending.push(...childNodesToVisit(n).reverse().map(child => ({ node: child, remain: remain - 1 })));
+  }
   updateVirtualization();
 }
 
@@ -1510,7 +1432,7 @@ optDefaultLevels.addEventListener('change', () => {
 function relabelArrayIndexes(root){
   if(!root) return;
   root.querySelectorAll('.tree-node').forEach(node => {
-    if(!node._isArrayItem) return;
+    if(!node._isArrayItem || !node._path) return;
     const label = arrayIndexLabel(node._path[node._path.length - 1]);
     node._key = label;
     node.dataset.searchText =
@@ -1743,7 +1665,15 @@ settingsImportInput.addEventListener('change', () => {
       saveSettings();
       saveTemplate();
       openSettings();   /* 刷新面板显示 */
-      rebuildJsonlRoot();   /* 根结构设置可能变了，当前 JSONL 立即生效 */
+      if(activeDocId){ snapshotDoc(); activateDoc(activeDocId); }
+      relabelArrayIndexes(editorTree);
+      if(settings.reopenLast) saveReopenCopy();
+      else{
+        try{
+          localStorage.removeItem(LASTFILE_KEY);
+          localStorage.removeItem(SESSION_KEY);
+        }catch(_){}
+      }
       applyValueHeightSetting();   /* 高度限制可能变了，立即生效 */
       applyRailStyle();   /* 多文件栏样式可能变了，立即生效 */
       showToast('设置已导入');
@@ -1851,6 +1781,8 @@ clearTemplateBtn.addEventListener('click', () => {
   template = null;
   try{ localStorage.removeItem(TEMPLATE_KEY); }catch(_){}
   updateTemplateStatus();
+  /* 就地重建当前文档：模板隐藏掉的字段要当场恢复显示，而不是等下次切文件 */
+  if(activeDocId){ snapshotDoc(); activateDoc(activeDocId); }
   showToast('模板已清除');
 });
 
@@ -1876,7 +1808,9 @@ const editorView = createCanvasView(editorViewport, editorWorld, editorZoomLabel
 let editorHidden = new Set();
 
 function openEditor(){
-  if(!parsedData){ showToast('请先打开文件'); return; }
+  /* 用文档而不是 parsedData 判断：根值是 null / false / 0 也是合法数据 */
+  const doc = activeDoc();
+  if(!doc || doc.error){ showToast('请先打开文件'); return; }
   editorHidden = new Set((template && template.hidden) || []);
   renderEditorTree();
   editorView.reset();
@@ -1916,6 +1850,7 @@ function createEditorNode(key, value, path, isRoot=false, isArrayItem=false){
   node.className = 'tree-node ed-node'
     + (isBranch ? ' branch' : '')
     + (isRoot ? ' root-node' : '');
+  node._path = path;                 /* 与主视图一致：序号重标要按真实下标取标签 */
   node._isArrayItem = isArrayItem;   /* 数组元素：序号标签可随设置实时切换 */
 
   const main = document.createElement('div');
@@ -2287,20 +2222,6 @@ function centerNode(node){
 }
 
 /* ---------- 辅助 ---------- */
-function encodePath(path){
-  let result = '$';
-  for(const part of path){
-    if(typeof part === 'number' || /^\d+$/.test(String(part))){
-      result += `[${part}]`;
-    }else if(/^[A-Za-z_$][\w$]*$/.test(String(part))){
-      result += `.${part}`;
-    }else{
-      result += `[${JSON.stringify(String(part))}]`;
-    }
-  }
-  return result;
-}
-
 function primitiveToSearchText(value){
   if(value !== null && typeof value === 'object'){
     return Array.isArray(value) ? 'array' : 'object';

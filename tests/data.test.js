@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseDocument, parseJsonl, searchData, walkData, PAGE_SIZE } from '../src/data.js';
+import { parseDocument, parseJsonl, searchData, walkData, PAGE_SIZE, encodeDataPath, normalizeDataPath } from '../src/data.js';
 import { pageRange } from '../src/paging.js';
 
 test('JSON handles BOM, primitive roots, and a mislabeled JSONL file', () => {
@@ -21,6 +21,29 @@ test('JSONL preserves error line numbers and strict-mode comment evidence', () =
   assert.deepEqual(result.bad.map(b => !!b.comment), [true, true, false]);
   assert.equal(parseDocument('', 'empty.jsonl').records.length, 0);
   assert(parseDocument('', 'empty.jsonl').error);
+});
+
+test('TXT uses the whole JSON document before falling back to JSONL', () => {
+  for (const text of ['{"a":1}', '[1,2]', 'false', '{\n"a":1\n}']) {
+    const result = parseDocument(text, 'data.txt');
+    assert.equal(result.kind, 'json');
+    assert.deepEqual(result.parsed, JSON.parse(text));
+  }
+  assert.equal(parseDocument('{"a":1}\n{"a":2}', 'data.txt').kind, 'jsonl');
+  assert.equal(parseDocument('{"a":1}', 'data.jsonl').kind, 'jsonl');
+});
+
+test('paths preserve numeric object keys and bracket text while normalizing array indices', async () => {
+  const keys = ['0', '1', '01', 'a[12]', 'quote"[12]', 'slash\\"[42]'];
+  for (const key of keys) {
+    const path = encodeDataPath([7, key]);
+    assert.equal(path, `$[7][${JSON.stringify(key)}]`);
+    assert.equal(normalizeDataPath(path), `$[0][${JSON.stringify(key)}]`);
+  }
+  const value = { '0': 'keep', '1': 'secret', 'a[12]': 'keep', 'a[0]': 'secret' };
+  const hidden = new Set(['$["1"]', '$["a[0]"]']);
+  assert.deepEqual((await searchData(value, 'keep', { hidden })).hits, [['0'], ['a[12]']]);
+  assert.deepEqual((await searchData(value, 'secret', { hidden })).hits, []);
 });
 
 test('large JSONL scans without a split-line array and preserves last record', () => {

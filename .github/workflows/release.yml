@@ -9,16 +9,29 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '已存在的版本标签，例如 v0.1.0'
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   build:
     name: 构建 Windows 安装包
     runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
 
       - uses: actions/setup-node@v4
         with:
@@ -28,9 +41,30 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: 校验发布版本
+        run: node scripts/check-release.js
+
+      - name: 前端检查与回归测试
+        run: |
+          npm run check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+
+      - name: 构建前端
+        run: npm run build
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      - name: Rust 检查与回归测试
+        working-directory: src-tauri
+        run: |
+          cargo fmt --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --release --locked -- -D warnings
 
       # 未配置代码签名：Windows 用户首次运行可能出现 SmartScreen 提示。
       # 后续如需签名，在 tauri.conf.json 的 bundle.windows 下补 certificateThumbprint
@@ -40,8 +74,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'JSON Atlas ${{ github.ref_name }}'
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: 'JSON Atlas ${{ env.RELEASE_TAG }}'
           releaseBody: |
             下载 `*-setup.exe` 安装。当前安装包未配置代码签名，安装前请核对下载来源。
 
@@ -49,3 +83,4 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: false
+          args: -- --locked

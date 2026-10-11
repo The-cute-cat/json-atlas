@@ -1,8 +1,6 @@
 # JSON Atlas
 
-JSON Atlas 是由独立开发者 The_cute_cat 开发的本地 JSON / JSONL 可视化阅读器，基于 Tauri 2，在可交互的树形画布中探索、搜索和阅读数据。
-
-项目名称为 **JSON Atlas**，仓库与包名为 `json-atlas`。
+JSON Atlas 是本地 JSON / JSONL 可视化阅读器，基于 Tauri 2，在可交互的树形画布中探索、搜索和阅读数据。
 
 ## 当前功能
 
@@ -70,6 +68,10 @@ Windows 安装包声明支持 `.json`、`.jsonl`、`.ndjson`、`.jsonlines`。�
 
 ## 发布前验收
 
+发布标签须采用 `vX.Y.Z` 格式，并与 package.json、package-lock.json、Cargo.toml 和 tauri.conf.json 的版本一致。推送标签会触发检查和打包；手动运行 Release 工作流时，填写已存在的版本标签。工作流检出该标签，运行前端测试和 Rust 检查后生成草稿 Release。
+
+本次首版代码检查与修复记录见 [docs/RELEASE_REVIEW.md](docs/RELEASE_REVIEW.md)。
+
 - 安装后启动应用，打开示例 JSON / JSONL，检查中文、搜索与多文件切换。
 - 在资源管理器中选择 JSON Atlas 作为打开方式，检查文档图标与双击打开；应用运行时再次双击文件，应复用现有窗口。
 - 检查文件拖入、设置保存和可选的重启恢复。
@@ -78,6 +80,4 @@ Windows 安装包声明支持 `.json`、`.jsonl`、`.ndjson`、`.jsonlines`。�
 
 ## 来源和许可
 
-JSON Atlas 使用 Apache-2.0 许可证，见 [LICENSE](LICENSE)。版权所有 (c) 2026 The_cute_cat 和其他贡献者。安装包发布者为 The_cute_cat。
-
-阅读器界面与逻辑迁移自开发者个人网站中的 json_mindmap_reader.html，[迁移参考版本](reference/json_mindmap_reader.html)不参与构建。hopecat 为开发者个人网站的域名前缀。应用与文档图标由维护者提供，原图保存在 `src-tauri/icons/`。维护者已确认原网页及两张图标为自有作品或已获开源使用授权；第三方依赖保留各自的许可证。
+JSON Atlas 使用 Apache-2.0 许可证，见 [LICENSE](LICENSE)。版权所有 (c) 2026 The_cute_cat 和其他贡献者。

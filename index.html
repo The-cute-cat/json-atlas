@@ -13,35 +13,32 @@
 
 <section id="landing" aria-label="工作区">
   <aside class="workspace-sidebar">
-    <div class="workspace-brand"><img src="/src/assets/app-icon.png" alt="" /><strong>JSON Atlas</strong></div>
+    <div class="workspace-brand"><img src="/src/assets/app-icon.png" alt="" /><div><strong>JSON Atlas</strong><span>数据阅读器</span></div></div>
     <div class="sidebar-heading">工作区</div>
-    <div class="sidebar-current"><span aria-hidden="true">▤</span> 文件</div>
-    <button id="sidebarOpenBtn" class="sidebar-action"><span aria-hidden="true">＋</span> 打开文件…</button>
-    <div class="sidebar-note">打开的文件将在这里切换。<br />支持同时阅读多个文件。</div>
-    <button id="landingSettingsBtn" class="sidebar-action sidebar-settings"><span aria-hidden="true">⚙</span> 设置</button>
+    <div class="sidebar-current"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="3"/><path d="M8 3v14M11 7h3M11 10h3"/></svg>开始使用</div>
+    <button id="sidebarOpenBtn" class="sidebar-action"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h3l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>打开文件…</button>
+    <button id="landingSettingsBtn" class="sidebar-action sidebar-settings"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/><rect x="6" y="3" width="3" height="4" rx="1"/><rect x="12" y="8" width="3" height="4" rx="1"/><rect x="6" y="13" width="3" height="4" rx="1"/></svg>设置</button>
   </aside>
   <main class="workspace-main">
-    <header class="workspace-toolbar"><span>文件</span><span class="workspace-toolbar-note">本地工作区</span></header>
+    <header class="workspace-toolbar"><span>开始使用</span><span class="workspace-toolbar-note">JSON Atlas</span></header>
     <div id="dropZone" class="workspace-empty">
       <div class="empty-content">
-        <img class="empty-document" src="/src/assets/document-icon.png" alt="" />
-        <h1>尚未打开文件</h1>
-        <p>打开文件，查看数据结构与内容</p>
-        <button id="chooseBtn" class="desktop-open">打开文件… <kbd>Ctrl+O</kbd></button>
-        <span class="empty-drop-hint">也可将文件拖入此窗口</span>
+        <img class="empty-document" src="/src/assets/app-icon.png" alt="" />
+        <h1>JSON Atlas</h1>
+        <p>浏览结构，专注内容</p>
+        <button id="chooseBtn" class="desktop-open"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h3l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>打开文件…</button>
+        <span class="empty-drop-hint">拖入文件，或按 <kbd>Ctrl</kbd> <kbd>O</kbd></span>
         <input id="fileInput" type="file" multiple accept=".json,.jsonl,.ndjson,.jsonlines,application/json,application/x-ndjson,application/jsonl" />
       </div>
     </div>
-    <div id="jsonlOpts"><span class="hint" id="jsonlHint">支持 JSON / JSONL / NDJSON</span></div>
+    <div id="jsonlOpts"><span class="hint" id="jsonlHint">JSON · JSONL · NDJSON</span></div>
   </main>
-  <footer class="workspace-status"><span><i></i> 就绪</span><span>文件仅在本地处理</span></footer>
+  <footer class="workspace-status"><span>就绪</span><span>本地处理</span></footer>
 </section>
 
 <section id="viewer">
   <header class="toolbar">
     
-    <span class="sep"></span>
-
     <div class="file-meta">
       <div id="fileName" class="file-name">-</div>
       <div id="fileSub" class="file-sub">-</div>
