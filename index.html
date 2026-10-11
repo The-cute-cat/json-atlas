@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>JSON Atlas</title>
+<meta name="description" content="JSON Atlas：在可交互的树形画布中探索、搜索和阅读 JSON / JSONL 文件，支持字段隐藏与结构模板。文件仅在本地解析，不会上传。" />
+<meta name="theme-color" content="#1e88e5" />
+<link rel="icon" type="image/svg+xml"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1026 1024'%3E%3Cpath fill='%234DECE1' d='m977.89 456.88c0-84.47-52.32-155.41-123.18-175.37-16.59-80.67-81.92-140.72-160.1-140.72-53.96 0-101.8 28.71-131.85 73.08-29.9-44.38-77.73-73.08-131.85-73.08-81.02 0-148.29 64.67-161.75 149.8-58.45 27.72-99.26 91.89-99.26 166.46 0 58.9 25.41 111.03 64.73 144.19-9.27 32.83-14.35 65.82-14.35 95.35 0 116.97 80.72 212.82 179.38 212.82h352.94c98.66 0 179.38-95.68 179.38-212.82 0-30.52-5.53-64.67-15.25-98.65 37.37-33.49 61.14-84.3 61.14-141.05z'/%3E%3Cpath fill='%23FCFFFB' d='m880.87 399.8c0-84.47-52.32-155.41-123.18-175.37-16.59-80.67-81.92-140.72-160.1-140.72-53.96 0-101.8 28.71-131.85 73.08-29.9-44.38-77.73-73.08-131.85-73.08-81.02 0-148.29 64.67-161.75 149.8-58.45 27.72-99.26 91.89-99.26 166.46 0 58.9 25.41 111.03 64.73 144.19-9.27 32.83-14.35 65.82-14.35 95.35 0 116.97 80.72 212.82 179.38 212.82h353.24c98.66 0 179.38-95.68 179.38-212.82 0-30.52-5.53-64.67-15.25-98.65 37.07-33.49 60.84-84.3 60.84-141.05z'/%3E%3Cpath fill='%236B3437' d='m655.9 864.37h-352.94c-105.09 0-190.6-100.96-190.6-225.19 0-27.72 4.34-59.06 12.56-90.9-40.21-36.95-63.08-90.57-63.08-148.64 0-75.23 39.32-143.2 100.6-175.04 16.89-89.42 88.2-153.59 171.61-153.59 50.38 0 98.66 24.42 131.85 65.82 33.04-41.57 81.32-65.82 131.85-65.82 39.91 0 79.08 15.18 110.17 42.89 28.85 25.74 49.63 61.04 59.2 100.3 73.85 24.42 124.97 99.64 124.97 185.6 0 55.76-21.53 108.22-59.2 145.01 8.97 33.16 13.6 65.66 13.6 94.53 0 124.06-85.51 225.02-190.6 225.02zm-321.85-768.45c-74.44 0-137.83 58.73-150.68 139.57l-1.05 6.6-5.53 2.64c-56.21 26.73-92.53 87.6-92.53 155.07 0 53.12 21.97 102.12 60.39 134.29l6.28 5.28-2.24 8.25c-8.97 32.33-13.75 64.01-13.75 91.73 0 53.45 17.64 103.77 49.63 141.88 31.84 37.78 73.85 58.57 118.39 58.57h352.94c44.55 0 86.55-20.79 118.39-58.57 31.99-37.94 49.63-88.43 49.63-141.88 0-28.71-5.08-61.54-14.8-95.02l-2.39-8.08 5.98-5.28c36.03-32.17 56.66-80.01 56.66-131.15 0-77.04-47.24-144.35-114.66-163.49l-6.58-1.81-1.49-7.42c-7.62-36.62-26.46-69.95-53.07-93.71-27.06-24.09-61.14-37.45-95.97-37.45-48.88 0-93.58 24.91-122.73 68.13l-8.97 13.36-8.97-13.36c-29.15-43.39-74-68.13-122.88-68.13z'/%3E%3Cpath fill='%23FEA7C1' d='m327.17 236.31m-94.33 0a94.33 104.1 0 1 0 188.65 0 94.33 104.1 0 1 0-188.65 0z'/%3E%3Cpath fill='%23FEA7C1' d='m592.81 236.31m-94.33 0a94.33 104.1 0 1 0 188.65 0 94.33 104.1 0 1 0-188.65 0z'/%3E%3Cpath fill='%23FEA7C1' d='m737.66 404.59m-82.52 0a82.52 91.07 0 1 0 165.03 0 82.52 91.07 0 1 0-165.03 0z'/%3E%3Cpath fill='%23FEA7C1' d='m186.51 404.59m-82.52 0a82.52 91.07 0 1 0 165.03 0 82.52 91.07 0 1 0-165.03 0z'/%3E%3Cpath fill='%23FEA7C1' d='m730.34 667.06c-19.43 58.57-138.87 61.37-240.97 63.19-102.1 1.81-214.96 4.29-235.59-50.98-26.46-70.11 92.98-245.48 236.79-246.97 140.97-1.65 263.55 162.99 239.78 234.76z'/%3E%3Cpath fill='%23F27A97' d='m514.78 435.11c116.6 32.5 204.05 171.24 183.42 233.93-10.61 32.17-50.68 49.66-101.5 59.06 67.27-5.61 124.97-19.8 137.83-59.06 22.42-68.3-87.6-221.07-219.75-233.93z'/%3E%3Cpath fill='%23F1E8E3' d='m799.7 544.81s50.08 117.13-11.96 210.34c-60.99 91.73-148.44 80.51-148.44 80.51s156.36-30.85 160.4-290.85zm24.67-247.63s46.19 42.07 40.81 116.97c-5.38 74.9-51.87 97.83-51.87 97.83s77.14-84.63 11.06-214.8z'/%3E%3Cpath fill='%23FFFFFF' d='m385.92 492.85c-1.94 0-3.89-1.15-4.78-3.3-1.35-2.8-0.15-6.43 2.39-7.75 7.77-4.29 16-7.75 24.37-10.39 2.84-0.82 5.68 0.82 6.58 3.96s-0.75 6.27-3.59 7.26c-7.77 2.47-15.4 5.77-22.57 9.73-0.9 0.33-1.64 0.5-2.39 0.5zm-72.5 78.53c-0.6 0-1.35-0.16-1.94-0.49-2.69-1.15-4.04-4.62-2.99-7.59 0.6-1.48 14.05-37.78 54.26-66.65 2.39-1.81 5.68-0.99 7.32 1.65 1.64 2.64 0.9 6.27-1.49 8.08-19.43 13.86-31.99 29.86-39.17 40.58-7.77 11.88-10.91 20.46-11.06 20.46-0.75 2.47-2.84 3.96-4.93 3.96zm-184.62-196.98c-0.6 0-1.2-0.16-1.79-0.33-2.99-1.15-4.78-4.78-3.74-8.08 0.3-1.15 8.07-26.89 40.96-38.6 3.14-1.15 6.43 0.82 7.32 4.12 1.05 3.46-0.75 7.09-3.74 8.08-26.76 9.4-33.19 29.37-33.34 30.19-0.9 2.97-3.29 4.62-5.68 4.62z'/%3E%3C/svg%3E" />
+
+</head>
+<body>
+
+<section id="landing">
+  <div class="import-card">
+    
+    <h1>JSON Atlas</h1>
+    <p class="desc">
+      在可交互的树形画布中探索、搜索和阅读 JSON 的层级、键名与内容。同时支持 JSONL / NDJSON（每行一条 JSON 记录）。文件仅在本地解析，不会上传。
+    </p>
+
+    <div id="dropZone" class="drop-zone">
+      <div class="drop-icon">{ }</div>
+      <strong>拖入 JSON / JSONL 文件</strong>
+      <span>也可以点击下方按钮选择文件</span>
+      <button id="chooseBtn" class="primary">选择 JSON / JSONL 文件</button>
+      <input id="fileInput" type="file" multiple accept=".json,.jsonl,.ndjson,.jsonlines,application/json,application/x-ndjson,application/jsonl" />
+    </div>
+
+    <div id="jsonlOpts">
+      <span class="hint" id="jsonlHint">支持 .json / .jsonl / .ndjson · JSONL 的根结构与坏行处理可在「设置」中配置</span>
+    </div>
+  </div>
+</section>
+
+<section id="viewer">
+  <header class="toolbar">
+    
+    <span class="sep"></span>
+
+    <div class="file-meta">
+      <div id="fileName" class="file-name">-</div>
+      <div id="fileSub" class="file-sub">-</div>
+    </div>
+
+    <button id="openAnotherBtn">打开文件</button>
+    <span class="sep"></span>
+    <button id="expandAllBtn">全部展开</button>
+    <button id="collapseAllBtn">全部收起</button>
+    <button id="resetViewBtn">重置视图</button>
+
+    <div class="search-wrap">
+      <input id="searchInput" type="search" placeholder="搜索键名或值…" />
+      <div class="search-nav">
+        <span id="searchCount"></span>
+        <button id="nextMatchBtn" disabled title="下一个匹配">›</button>
+      </div>
+    </div>
+
+    <button id="moreBtn" class="icon-btn" title="更多">⋯</button>
+
+    <div id="moreMenu">
+      <button id="recordTemplateBtn" title="以当前展开状态为模板">记录当前展开为模板</button>
+      <button id="editorBtn" title="编辑模板：显示/隐藏字段">模板编辑…</button>
+      <div class="ctx-sep"></div>
+      <button id="settingsBtn" title="设置">设置…</button>
+    </div>
+  </header>
+
+  <div class="viewer-body">
+    <aside id="fileRail" class="file-rail" aria-label="已打开的文件"></aside>
+
+    <div class="canvas-area">
+      <main id="viewport" class="viewport">
+        <div id="world" class="world">
+          <div id="tree" class="tree"></div>
+        </div>
+        <div id="zoomDock">
+          <button id="zoomOutBtn" title="缩小">−</button>
+          <span id="zoomLabel" class="zoom-label">100%</span>
+          <button id="zoomInBtn" title="放大">＋</button>
+        </div>
+      </main>
+      <div id="docError" class="doc-error"></div>
+    </div>
+  </div>
+
+  <footer class="statusbar">
+    <span id="pathText">路径：$</span>
+    <span class="help">空白处拖动 · 滚轮平移 · Ctrl/⌘ + 滚轮缩放 · 右键节点展开/收起子树</span>
+  </footer>
+</section>
+
+<div id="ctxMenu">
+  <button id="ctxExpandOne">展开一级</button>
+  <button id="ctxExpandSubtree">展开所有下级</button>
+  <div class="ctx-sep"></div>
+  <button id="ctxCollapse">收起该节点（含下级）</button>
+  <div class="ctx-sep"></div>
+  <button id="ctxViewFull">查看完整内容</button>
+  <button id="ctxCopy">复制节点内容</button>
+</div>
+
+<div id="settingsMask">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div class="modal-titles">
+        <div id="settingsTitle" style="font-size:15px;font-weight:670;letter-spacing:-.01em">设置</div>
+        <div id="settingsSub" style="margin-top:2px;color:var(--muted);font-size:11px">所有选项保存在浏览器本地（localStorage）</div>
+      </div>
+      <button id="settingsClose" title="关闭">✕</button>
+    </div>
+    <div class="settings-body">
+      <div class="settings-group">
+      <div class="settings-row">
+        <div>
+          <div class="s-label">打开文件时自动应用结构模板</div>
+          <div class="s-hint">自动展开模板记录的层级，并定位到最深处</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="optAutoTemplate" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="s-label">无模板时的默认展开层级</div>
+          <div class="s-hint">从根节点算起；数组仅展开第一项</div>
+        </div>
+        <select id="optDefaultLevels">
+          <option value="0">全部收起</option>
+          <option value="1">1 层</option>
+          <option value="2">2 层</option>
+          <option value="3">3 层</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="s-label">数组索引编号</div>
+          <div class="s-hint">树中数组元素的序号从 0 还是从 1 开始；仅影响显示（含搜索），JSONPath 仍使用真实的 0 基下标</div>
+        </div>
+        <select id="optIndexBase">
+          <option value="0">从 0 开始（0, 1, 2…）</option>
+          <option value="1">从 1 开始（1, 2, 3…）</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="s-label">多文件栏样式</div>
+          <div class="s-hint">「默认竖条」贴在左侧、从顶铺到底，指针进入整条侧栏一起展开；「悬浮细线」把每份文件收成一根小横线，整列竖直居中浮在画布上，指针移到哪一根就只展开哪一根（收起时没有「打开文件」条，可用工具栏按钮或直接拖入）</div>
+        </div>
+        <select id="optRailStyle">
+          <option value="default">默认竖条</option>
+          <option value="dial">悬浮细线</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="s-label">刷新后继续打开之前的文件</div>
+          <div class="s-hint">文件内容副本保存在本地；关闭开关时自动清除副本</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="optReopenLast" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="s-label">刷新后恢复阅读位置与展开状态</div>
+          <div class="s-hint">自动回到上次的平移 / 缩放位置，并展开当时展开的层级；需先开启「刷新后继续打开之前的文件」</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="optRestoreSession" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      </div>
+      <div class="settings-group">
+        <div class="settings-group-title">字段内容</div>
+        <div class="settings-row">
+          <div>
+            <div class="s-label">限制内容的最大高度</div>
+            <div class="s-hint">开启后，超长的值只显示到设定高度，完整内容通过卡片右上角的 … 图标在弹窗中查看</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="optLimitValueHeight" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="s-label">最大高度</div>
+            <div class="s-hint">按行数计（1 行 = 13px 字号 × 1.62 行高）</div>
+          </div>
+          <select id="optValueMaxLines">
+            <option value="3">3 行</option>
+            <option value="6">6 行</option>
+            <option value="10">10 行</option>
+            <option value="20">20 行</option>
+          </select>
+        </div>
+      </div>
+      <div class="settings-group">
+        <div class="settings-group-title">JSONL</div>
+        <div class="settings-row">
+          <div>
+            <div class="s-label">多条记录时挂在数组根节点下</div>
+            <div class="s-hint">开启：根为「N 条记录」的数组；关闭：直接以第一条记录为根。仅单条记录时始终以该记录为根</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="optSettingsJsonlArray" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="s-label">遇到坏行时拒绝加载整个文件</div>
+            <div class="s-hint">开启：任一行解析失败即拒绝，不显示任何数据；关闭：跳过坏行并在顶部提示行号与原因</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="optStrictJsonl" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="settings-group">
+      <div class="settings-row">
+        <div>
+          <div class="s-label">结构模板</div>
+          <div class="s-hint" id="templateStatus">未记录</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button id="applyTemplateBtn" class="tf-btn">立即应用</button>
+          <button id="clearTemplateBtn" class="tf-btn">清除</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="s-label">设置导入 / 导出</div>
+          <div class="s-hint">导出包含全部设置与结构模板，可在其他浏览器导入</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button id="exportSettingsBtn" class="tf-btn">导出</button>
+          <button id="importSettingsBtn" class="tf-btn">导入</button>
+          <input id="settingsImportInput" type="file" accept=".json,application/json" hidden />
+        </div>
+      </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="recordTemplateBtn2" class="tf-btn">记录当前展开为模板</button>
+    </div>
+  </div>
+</div>
+
+<div id="modalMask">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div class="modal-titles">
+        <div id="modalTitle">-</div>
+        <div id="modalPath">$</div>
+      </div>
+      <button id="modalClose" title="关闭">✕</button>
+    </div>
+    <div id="modalBody" class="modal-body"></div>
+    <div class="modal-foot">
+      <button id="modalCopyBtn" class="primary">复制内容</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<div id="editorMask">
+  <div class="modal-box editor-box">
+    <div class="modal-head">
+      <div class="modal-titles">
+        <div style="font-size:14px;font-weight:600;letter-spacing:-.01em">结构模板编辑器</div>
+        <div style="margin-top:2px;color:var(--muted);font-size:11px">
+          勾选 = 显示，取消 = 隐藏该字段及其子级 · 数组仅展示第一项结构，配置对所有元素生效
+        </div>
+      </div>
+      <button id="editorClose" title="关闭">✕</button>
+    </div>
+
+    <div id="editorViewport" class="editor-canvas">
+      <div id="editorWorld" class="world" style="padding:20px 40px 60px 20px">
+        <div id="editorTree" class="tree"></div>
+      </div>
+      <div id="editorZoomDock" class="zoom-dock-inline">
+        <button id="editorZoomOutBtn" title="缩小">−</button>
+        <span id="editorZoomLabel" class="zoom-label">100%</span>
+        <button id="editorZoomInBtn" title="放大">＋</button>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <span id="editorCount" class="ed-count"></span>
+      <button id="editorExpandAllBtn" class="tf-btn">全部展开</button>
+      <button id="editorCollapseAllBtn" class="tf-btn">全部收起</button>
+      <button id="editorShowAllBtn" class="tf-btn">全部显示</button>
+      <button id="editorSaveBtn" class="primary">保存并应用</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

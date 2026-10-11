@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: 前端检查与构建
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 语法检查
+        run: npm run check
+
+      - name: 构建前端
+        run: npm run build
+
+  desktop:
+    name: 桌面端编译检查
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # tauri-build 在编译期会校验 frontendDist 目录存在，因此先出一次前端产物。
+      - name: 构建前端
+        run: npm run build
+
+      # rust-toolchain.toml 已把 channel 固定为 stable-x86_64-pc-windows-msvc，
+      # 与 windows-latest 主机一致，因此这里不再指定 toolchain。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --locked
+
+      - name: cargo fmt
+        working-directory: src-tauri
+        run: cargo fmt --check

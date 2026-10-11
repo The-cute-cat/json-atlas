@@ -1,0 +1,27 @@
+{
+  "project": "JSON Atlas",
+  "description": "在可交互的树形画布中探索、搜索和阅读 JSON / JSONL 文件",
+  "records": [
+    {
+      "id": 1,
+      "input": "你好",
+      "output": "你好！",
+      "metadata": {
+        "score": 0.95,
+        "tags": [
+          "示例",
+          "中文"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "input": "嵌套 JSON 字符串",
+      "output": "{\"status\":\"ok\",\"items\":[1,2,3]}",
+      "metadata": {
+        "score": 0.8,
+        "tags": []
+      }
+    }
+  ]
+}
