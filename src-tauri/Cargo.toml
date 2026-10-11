@@ -7,6 +7,29 @@ license = "Apache-2.0"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# 见文件末尾“上游 workaround”说明，勿删。
+indexmap = { version = "1.9", features = ["std"] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# 见文件末尾“上游 workaround”说明，勿删。
+indexmap = { version = "1.9", features = ["std"] }
+
+# ---------------------------------------------------------------------------
+# 上游 workaround（勿删）
+#
+# 依赖链：tauri-build / tauri-utils -> schemars 0.8.22 -> indexmap 1.9
+#         （schemars 以 default-features = false 引入，indexmap 的 std 被关掉）
+#
+# indexmap 1.9 的 build.rs 行为：
+#   std feature 打开 -> 直接 emit `has_std`
+#   std feature 关闭 -> 用 autocfg 探测 sysroot 中的 std
+#
+# 实测：该 autocfg 探测在 release profile 下失败、在 debug 下成功，
+# 于是 release 构建时 IndexMap 退化为无默认泛型参数的三参数版本，
+# schemars 的 `pub type Map<K, V> = indexmap::IndexMap<K, V>;` 报 E0107。
+# 症状是 `cargo check` 通过、`tauri build` 失败。
+#
+# 显式打开 indexmap 的 std feature 可让 build.rs 跳过探测、两条 profile 结果一致。
+# 待 schemars 升到用 indexmap 2.x 后可移除这两行直接依赖。
+# ---------------------------------------------------------------------------

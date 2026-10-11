@@ -62,6 +62,14 @@ jobs:
         working-directory: src-tauri
         run: cargo check --locked
 
+      # debug 与 release 的构建脚本行为可能不同，只在 debug 下检查会漏掉
+      # 仅 release 复现的编译失败。实例：indexmap 1.9 的 sysroot 探测在
+      # release 下失败，导致 schemars 0.8 报 E0107，而 cargo check 正常。
+      # 详见 src-tauri/Cargo.toml 末尾的上游 workaround 说明。
+      - name: cargo check（release profile）
+        working-directory: src-tauri
+        run: cargo check --release --locked
+
       - name: cargo fmt
         working-directory: src-tauri
         run: cargo fmt --check

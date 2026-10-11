@@ -1618,6 +1618,7 @@ dependencies = [
 name = "json-atlas"
 version = "0.1.0"
 dependencies = [
+ "indexmap 1.9.3",
  "tauri",
  "tauri-build",
 ]
