@@ -30,6 +30,7 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "The_cute_cat",
     "targets": [
       "nsis"
     ],

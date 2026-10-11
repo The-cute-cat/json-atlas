@@ -1,6 +1,6 @@
 # JSON Atlas
 
-JSON Atlas 是基于 Tauri 2 的本地 JSON / JSONL 可视化阅读器，在可交互的树形画布中探索、搜索和阅读 JSON / JSONL 文件。当前是从 Hopecat 网页阅读器迁移而来的桌面项目起点。
+JSON Atlas 是由独立开发者 The_cute_cat 开发的本地 JSON / JSONL 可视化阅读器，基于 Tauri 2，在可交互的树形画布中探索、搜索和阅读数据。
 
 项目名称为 **JSON Atlas**，仓库与包名为 `json-atlas`。
 
@@ -64,12 +64,20 @@ npm run desktop:dev
 
 Windows 安装包声明支持 `.json`、`.jsonl`、`.ndjson`、`.jsonlines`。安装后可在资源管理器中右键文件 → 打开方式 → 选择 JSON Atlas，并选择始终使用。也可在 Windows 的“默认应用”中按扩展名设置。应用支持首次启动及已运行时接收文件路径；单独复制 exe 不会安装文件关联。安装器将独立的 document.ico 放入应用目录，并为 JSONAtlas.Document 设置文档图标；只有选择本应用关联的文件才使用此图标。
 
+卸载后会通知资源管理器刷新文件关联和图标。若曾将 JSON Atlas 设为默认应用，卸载后可能需要通过“打开方式”重新选择编辑器；卸载程序不替用户指定默认应用。
+
 快捷键：Ctrl+O 打开文件，Ctrl+F 搜索，Ctrl+W 关闭当前文件（输入框外），F3 / Shift+F3 切换匹配，Esc 取消搜索或打开操作并关闭弹窗。
 
-桌面交互验收步骤见 `docs/DESKTOP_VALIDATION.md`。
+## 发布前验收
+
+- 安装后启动应用，打开示例 JSON / JSONL，检查中文、搜索与多文件切换。
+- 在资源管理器中选择 JSON Atlas 作为打开方式，检查文档图标与双击打开；应用运行时再次双击文件，应复用现有窗口。
+- 检查文件拖入、设置保存和可选的重启恢复。
+- 检查小屏、高 DPI 与多显示器下的初始窗口尺寸和工具栏显示。
+- 卸载应用，确认程序文件与本应用的文件关联注册已清理。
 
 ## 来源和许可
 
-JSON Atlas 使用 Apache-2.0 许可证，见 [LICENSE](LICENSE)。版权所有 (c) 2026 JSON Atlas contributors。
+JSON Atlas 使用 Apache-2.0 许可证，见 [LICENSE](LICENSE)。版权所有 (c) 2026 The_cute_cat 和其他贡献者。安装包发布者为 The_cute_cat。
 
-阅读器界面与逻辑迁移自 Hopecat 工具集的 json_mindmap_reader.html，迁移参考版本保存在 `reference/json_mindmap_reader.html`，不参与构建。代码与图标的来源记录见 [来源说明](docs/ASSETS.md)，第三方依赖保留各自的许可证。
+阅读器界面与逻辑迁移自开发者个人网站中的 json_mindmap_reader.html，[迁移参考版本](reference/json_mindmap_reader.html)不参与构建。hopecat 为开发者个人网站的域名前缀。应用与文档图标由维护者提供，原图保存在 `src-tauri/icons/`。维护者已确认原网页及两张图标为自有作品或已获开源使用授权；第三方依赖保留各自的许可证。

@@ -2,6 +2,7 @@
 name = "json-atlas"
 version = "0.1.0"
 description = "Explore, search, and read JSON / JSONL files on an interactive tree canvas"
+authors = ["The_cute_cat"]
 edition = "2021"
 license = "Apache-2.0"
 
