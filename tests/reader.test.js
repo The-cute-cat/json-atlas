@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, encodeDataPath, normalizeDataPath } from '../src/data.js';
+import { MemoryDataSource } from '../src/data-source.js';
+import { normalizeThreshold, needsIndex, IndexedDataSource } from '../src/large-files.js';
+import { ViewportWindow } from '../src/viewport-window.js';
 
 // A small DOM harness for reader state transitions; this does not test layout/WebView2.
 class Element {
@@ -26,9 +29,10 @@ class Element {
   set innerHTML(value) { this.replaceChildren(); this.textContent = value; }
   appendChild(child) { this.children.push(child); child.parentElement = this; return child; }
   append(...children) { children.forEach(child => this.appendChild(child)); }
-  replaceChildren() { this.children.forEach(child => { child.parentElement = null; }); this.children = []; }
+  replaceChildren(...children) { this.children.forEach(child => { child.parentElement = null; }); this.children = []; this.append(...children); }
   addEventListener(name, handler) { this.listeners.set(name, handler); }
   setAttribute() {}
+  removeAttribute() {}
   querySelectorAll(selector) {
     const result = [];
     const groups = selector.split(',').map(s => s.trim().split('.').filter(Boolean));
@@ -49,7 +53,7 @@ const source = readFileSync(new URL('../src/reader.js', import.meta.url), 'utf8'
 const pagingSource = readFileSync(new URL('../src/paging.js', import.meta.url), 'utf8')
   .replace(/^import .*;\r?\n/gm, '').replaceAll('export function', 'function');
 
-function reader(storage = new Map()) {
+function reader(storage = new Map(), native = {}) {
   const elements = new Map();
   const frames = [];
   const document = {
@@ -68,19 +72,19 @@ function reader(storage = new Map()) {
       removeItem: key => storage.delete(key)
     },
     requestAnimationFrame: callback => frames.push(callback),
-    setTimeout: () => 1, clearTimeout() {},
+    setTimeout: (callback, delay) => delay === 0 ? setTimeout(callback, 0) : 1, clearTimeout() {},
     desktop: false, connectDesktop: async () => {}, updateWindowTitle() {},
-    MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument,
+    MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow,
     encodePath: encodeDataPath, normalizePath: normalizeDataPath,
-    console, Blob
+    console, Blob, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
     ;({ buildDoc, resolveDoc, activateDoc, collectSession, expandByPaths, expandLevels,
-      openEditor, relabelArrayIndexes,
+      openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile,
       add: doc => docs.push(doc), configure: value => Object.assign(settings, value),
       setTemplate: value => { template = value; }, template: () => template,
-      state: () => ({ activeDocId, currentRootLabel, view: { ...mainView.state } }) });`, context);
-  return { api, elements, storage, flush: () => { while (frames.length) frames.shift()(); } };
+      state: () => ({ activeDocId, currentRootLabel, doc: activeDoc(), view: { ...mainView.state } }) });`, context);
+  return { api, elements, storage, flush: async () => { while (frames.length) await frames.shift()(); } };
 }
 
 test('switching files persists the selected document even with session restoration disabled', () => {
@@ -94,13 +98,13 @@ test('switching files persists the selected document even with session restorati
   assert.equal(JSON.parse(storage.get('json-atlas_lastfile_v1')).activeKey, 'first.json::7');
 });
 
-test('a collapsed root preserves its saved pan and zoom instead of applying default expansion', () => {
+test('a collapsed root preserves its saved pan and zoom instead of applying default expansion', async () => {
   const { api, elements, flush } = reader();
   api.configure({ defaultLevels: 3 });
   const doc = api.buildDoc('{"a":{}}', 'data.json', 8);
   doc.openPaths = [];
   doc.view = { x: 123, y: -45, scale: 1.5 };
-  api.add(doc); api.activateDoc(doc.id); flush();
+  api.add(doc); api.activateDoc(doc.id); await flush();
   assert.equal(elements.get('tree').firstElementChild.classList.contains('open'), false);
   const { view } = api.state();
   assert.equal(view.x, 123);
@@ -126,7 +130,7 @@ test('web startup restores JSONL errors with the same parser used when opening f
   assert.equal(elements.get('docError').classList.contains('show'), true);
 });
 
-test('default expansion and template restoration both bound wide trees', () => {
+test('default expansion and template restoration both bound wide trees', async () => {
   for (const mode of ['default', 'template']) {
     const { api, elements } = reader();
     const value = Object.fromEntries(Array.from({ length: 100 }, (_, i) =>
@@ -142,8 +146,8 @@ test('default expansion and template restoration both bound wide trees', () => {
       const found = query(selector);
       return selector === '.tree-node' ? { length: 4800 + found.length } : found;
     };
-    if (mode === 'default') api.expandLevels(elements.get('tree').firstElementChild, 3);
-    else api.expandByPaths(['$', ...Object.keys(value).map(key => '$.' + key)]);
+    if (mode === 'default') await api.expandLevels(elements.get('tree').firstElementChild, 3);
+    else await api.expandByPaths(['$', ...Object.keys(value).map(key => '$.' + key)]);
     const count = tree.querySelectorAll('.tree-node').length;
     assert(count >= 5000 && count <= 5100, `${mode}: ${count}`);
   }
@@ -151,7 +155,7 @@ test('default expansion and template restoration both bound wide trees', () => {
 
 const nodeKeys = scope => [...scope.querySelectorAll('.tree-node')].map(node => node._key);
 
-test('changing the array index base relabels editor array items instead of throwing', () => {
+test('changing the array index base relabels editor array items instead of throwing', async () => {
   const { api, elements } = reader();
   const doc = api.buildDoc('[{"a":1}]', 'list.json', 10);
   api.add(doc); api.activateDoc(doc.id);
@@ -159,7 +163,7 @@ test('changing the array index base relabels editor array items instead of throw
 
   const editorTree = elements.get('editorTree');
   const root = editorTree.firstElementChild;
-  root._ensureChildren();   // 编辑器里数组只挂载第一项
+  await root._ensureChildren();   // 编辑器里数组只挂载第一项
   const item = [...root.children].find(el => el.classList.contains('children')).children[0];
   assert.equal(item._isArrayItem, true);
 
@@ -178,19 +182,19 @@ test('a document whose root value is null can still open the template editor', (
   assert.equal(elements.get('editorMask').classList.contains('open'), true);
 });
 
-test('clearing the template rebuilds the tree so hidden fields come back', () => {
+test('clearing the template rebuilds the tree so hidden fields come back', async () => {
   const { api, elements } = reader();
   api.setTemplate({ paths: ['$'], hidden: ['$.secret'], file: 'data.json', savedAt: 1 });
   const doc = api.buildDoc('{"secret":1,"keep":2}', 'data.json', 20);
   api.add(doc); api.activateDoc(doc.id);
 
   const tree = elements.get('tree');
-  tree.firstElementChild._ensureChildren();
+  await tree.firstElementChild._ensureChildren();
   assert.equal(nodeKeys(tree).includes('secret'), false);
   assert.equal(nodeKeys(tree).includes('keep'), true);
 
   elements.get('clearTemplateBtn').listeners.get('click')();
-  tree.firstElementChild._ensureChildren();
+  await tree.firstElementChild._ensureChildren();
   assert.equal(nodeKeys(tree).includes('secret'), true);
 });
 
@@ -205,4 +209,148 @@ test('recording the current expansion keeps the hidden-field configuration', () 
 
   assert.deepEqual(api.template().hidden, ['$.secret']);
   assert(api.template().paths.includes('$'));
+});
+
+test('reader renders branch metadata and reads full content through its source', async () => {
+  const { api, elements } = reader();
+  const doc = api.buildDoc('{"a":{"b":1}}', 'data.json', 13);
+  api.add(doc); api.activateDoc(doc.id);
+  const root = elements.get('tree').firstElementChild;
+  assert.equal(root._value, undefined);
+  assert.equal(root._childrenType, 'object');
+  assert.equal(await api.nodeContentText(root), '{\n  "a": {\n    "b": 1\n  }\n}');
+  await root._ensureChildren();
+  const child = root.children.find(n => n.classList.contains('children')).firstElementChild;
+  assert.equal(child._value, undefined);
+  assert.equal(child._childrenType, 'object');
+  assert.equal(await api.nodeContentText(child), '{\n  "b": 1\n}');
+});
+
+test('search waits for unloaded ancestor pages before selecting a match', async () => {
+  const { api, elements } = reader();
+  const text = JSON.stringify(Array.from({ length: 201 }, (_, i) => ({ content: `record-${i}` })));
+  const doc = api.buildDoc(text, 'list.json', text.length);
+  api.add(doc); api.activateDoc(doc.id);
+  await api.searchTree('record-200');
+  const selected = elements.get('tree').querySelectorAll('.current-match');
+  assert.equal(selected.length, 1);
+  assert.equal(JSON.stringify(selected[0]._path), '[200,"content"]');
+  assert.equal(elements.get('searchCount').textContent, '1 / 1');
+});
+
+test('closing the last document cancels branch loads and disposes its source', async () => {
+  const { api, elements } = reader();
+  const doc = api.buildDoc('[1,2]', 'data.json', 5);
+  api.add(doc); api.activateDoc(doc.id);
+  const root = elements.get('tree').firstElementChild;
+  const pending = root._ensureChildren();
+  const source = doc.source;
+  api.closeDoc(doc.id);
+  assert.equal(await pending, false);
+  await assert.rejects(source.getChildren([]), /关闭/);
+  assert.equal(elements.get('tree').children.length, 0);
+});
+
+test('a slow expansion cannot refill the tree after switching documents', async () => {
+  const { api, elements } = reader();
+  const first = api.buildDoc('{"old":1}', 'old.json', 9);
+  const second = api.buildDoc('{"new":2}', 'new.json', 9);
+  api.add(first); api.add(second); api.activateDoc(first.id);
+  const oldRoot = elements.get('tree').firstElementChild;
+  let release;
+  first.source.getChildren = () => new Promise(resolve => { release = resolve; });
+  const expansion = api.expandLevels(oldRoot, 2);
+  await new Promise(resolve => setImmediate(resolve));
+  api.activateDoc(second.id);
+  release({ start: 0, end: 1, total: 1, items: [
+    { key: 'old', path: ['old'], type: 'number', childCount: 0, value: 1 }
+  ] });
+  await expansion;
+  const tree = elements.get('tree');
+  await tree.firstElementChild._ensureChildren();
+  assert.equal(nodeKeys(tree).includes('old'), false);
+  assert.equal(nodeKeys(tree).includes('new'), true);
+});
+
+test('native opening chooses disk indexing above threshold and keeps that source through rendering', async () => {
+  const memory = new MemoryDataSource({ value: 42 });
+  const info = { root: memory.getRoot(), kind: 'json', records: 0, badCount: 0, commentCount: 0 };
+  const calls = [];
+  const indexed = new IndexedDataSource(async (op, id, args) => {
+    calls.push(op);
+    if (op === 'page') return memory.getChildren(args.path, args);
+    if (op === 'text') return memory.getText(args.path);
+  }, 'native-test', info);
+  const { api, elements } = reader(new Map(), {
+    statNativeFile: async path => ({ path, name: 'large.json', size: 33 * 1024 ** 2 }),
+    readNativeFile: () => { throw new Error('must not read the complete file'); },
+    openIndexedFile: async (metadata, options) => { options.progress(metadata.size / 2); return indexed; }
+  });
+  api.configure({ largeFileThresholdMiB: 32 });
+  await api.loadFile({ path: 'D:/large.json' });
+  const doc = api.state().doc;
+  assert.equal(doc.source, indexed); assert.equal(doc.parsed, undefined); assert.equal(doc.text, '');
+  assert(doc.sub.includes('索引模式'));
+  await elements.get('tree').firstElementChild._ensureChildren();
+  assert(nodeKeys(elements.get('tree')).includes('value'));
+  assert.equal(elements.get('loadingStatus').hidden, true);
+  api.closeDoc(doc.id); assert.equal(calls.at(-1), 'close');
+});
+
+test('native opening at the threshold retains the ordinary worker parser', async () => {
+  let read = 0;
+  const { api } = reader(new Map(), {
+    URL,
+    Worker: class {
+      terminate() {}
+      postMessage(payload) { this.onmessage({ data: { result: parseDocument(payload.text, payload.name), text: '' } }); }
+    },
+    statNativeFile: async path => ({ path, name: 'normal.json', size: 32 * 1024 ** 2 }),
+    readNativeFile: async path => { read++; return { path, name: 'normal.json', size: 32 * 1024 ** 2, text: '{"ok":true}' }; },
+    openIndexedFile: () => { throw new Error('must not index at the threshold'); }
+  });
+  api.configure({ largeFileThresholdMiB: 32 });
+  await api.loadFile({ path: 'D:/normal.json' });
+  assert.equal(read, 1); assert.equal(api.state().doc.parsed.ok, true);
+});
+
+test('reading action labels follow the active file mode and small files have no paging controls', async () => {
+  const { api, elements } = reader();
+  const doc = api.buildDoc(JSON.stringify(Array.from({length:201},(_,i)=>i)), 'small.json', 800);
+  api.add(doc); api.activateDoc(doc.id);
+  await elements.get('tree').firstElementChild._ensureChildren();
+  assert.equal(elements.get('expandAllBtn').textContent, '展开全部');
+  assert.equal(elements.get('ctxExpandSubtree').textContent, '展开全部下级');
+  assert.equal(elements.get('tree').querySelectorAll('.page-navigation').length, 0);
+  const large = api.buildDoc('[]', 'large.json', 65000000);
+  large.source = new IndexedDataSource(async()=>{},'labels',{root:{path:[],type:'array',childCount:0},kind:'json'});
+  api.add(large); api.activateDoc(large.id);
+  assert.equal(elements.get('expandAllBtn').textContent, '展开当前页');
+  api.activateDoc(doc.id); assert.equal(elements.get('editorExpandAllBtn').textContent, '展开全部');
+});
+
+test('cancelling an index load leaves the current document active and hides the loading indicator', async () => {
+  let started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const { api, elements } = reader(new Map(), {
+    statNativeFile: async path => ({ path, name: 'large.json', size: 65 * 1024 ** 2 }),
+    openIndexedFile: async (metadata, { signal }) => new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true }); started();
+    })
+  });
+  const old = api.buildDoc('[1]', 'old.json', 3); api.add(old); api.activateDoc(old.id);
+  const pending = api.loadFile({ path: 'D:/large.json' }); await ready;
+  assert.equal(elements.get('loadingStatus').hidden, false);
+  elements.get('cancelLoadBtn').listeners.get('click')(); await pending;
+  assert.equal(api.state().activeDocId, old.id); assert.equal(elements.get('loadingStatus').hidden, true);
+});
+
+test('threshold select saves the chosen size and reopens at the persisted value', () => {
+  const { elements, storage } = reader();
+  const select = elements.get('optLargeFileThreshold'); select.value = '128';
+  select.listeners.get('change')();
+  const saved = [...storage.values()].map(s => JSON.parse(s)).find(v => v.largeFileThresholdMiB);
+  assert.equal(saved.largeFileThresholdMiB, 128);
+  const restored = reader(storage); restored.elements.get('settingsBtn').listeners.get('click')();
+  assert.equal(restored.elements.get('optLargeFileThreshold').value, '128');
 });

@@ -1,11 +1,15 @@
-import { pagedChildren } from './paging.js';
+import { pagedChildren, discardPagedTree } from './paging.js';
+import { MemoryDataSource } from './data-source.js';
+import { normalizeThreshold, needsIndex } from './large-files.js';
+import { ViewportWindow } from './viewport-window.js';
 import { openAbout } from './about.js';
-import { MAX_FILE_BYTES, searchData, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath } from './data.js';
-import { desktop, readNativeFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
+import { MAX_FILE_BYTES, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath } from './data.js';
+import { desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
 
 let expansionGeneration = 0;
 let searchTimer;
 let searchGeneration = 0;
+let focusGeneration = 0;
 let searchTruncated = false;
 let activeLoad = null;
 let openQueue = Promise.resolve();
@@ -31,6 +35,7 @@ const searchCount = document.getElementById('searchCount');
 const viewport = document.getElementById('viewport');
 const world = document.getElementById('world');
 const tree = document.getElementById('tree');
+const viewportWindow = new ViewportWindow(viewport);
 const pathText = document.getElementById('pathText');
 
 const fileRail = document.getElementById('fileRail');
@@ -123,6 +128,17 @@ const badLinesPreview = list => list.slice(0, 10)
 
 /* 按当前 settings 把文档折算成可渲染状态：{data, rootLabel, sub, warn} 或 {error} */
 function resolveDoc(doc){
+  if(doc.source?.indexed){
+    const info = doc.source.info;
+    if(settings.strictJsonl && info.kind === 'jsonl' && info.badCount + info.commentCount > 0){
+      return { error: `严格模式下拒绝加载：${info.badCount + info.commentCount} 行不合规（含注释行）。可在设置中关闭严格模式后继续阅读。` };
+    }
+    const wrap = doc.source.wrap && info.records > 1;
+    return { data: doc.source, rootLabel: info.kind === 'jsonl'
+      ? (wrap ? `${info.records} 条记录` : info.records === 1 ? '单条记录' : '首条记录') : 'root',
+      sub: ['索引模式 · 按页读取', info.kind === 'jsonl' ? `${info.records} 条记录` : '',
+        info.badCount ? `${info.badCount} 行已跳过` : ''].filter(Boolean).join(' · ') };
+  }
   if(doc.kind !== 'jsonl'){
     if(doc.error) return { error: doc.error };
     return { data: doc.parsed, rootLabel: 'root', sub: '' };
@@ -186,6 +202,12 @@ function activateDoc(id){
   if(activeDocId && activeDocId !== id) snapshotDoc();
   activeDocId = id;
   expansionGeneration++;
+  viewportWindow.clear();
+  discardPagedTree(tree);
+  const oldEditor = document.getElementById('editorTree');
+  discardPagedTree(oldEditor);
+  document.getElementById('editorMask').classList.remove('open');
+  closeModal();
   updateWindowTitle(doc.name);
 
   const r = resolveDoc(doc);
@@ -193,7 +215,7 @@ function activateDoc(id){
   doc.sub = r.sub || '';
   if(r.data !== undefined){ doc.data = r.data; doc.rootLabel = r.rootLabel; }
 
-  /* 全局镜像：渲染 / 搜索 / 模板编辑器都读这两个变量 */
+  /* 当前仍保留内存解析结果；树、搜索及全文读取经 doc.source 访问。 */
   parsedData = doc.data;
   currentRootLabel = doc.rootLabel;
 
@@ -220,14 +242,18 @@ function activateDoc(id){
   /* 重建树：初始全收起，稍后按这份文件上次的展开状态恢复 */
   renderTree(parsedData, currentRootLabel);
 
-  requestAnimationFrame(() => {
+  const activation = expansionGeneration;
+  requestAnimationFrame(async () => {
+    if(activation !== expansionGeneration) return;
     if(activeDocId !== doc.id) return;
     if(Array.isArray(doc.openPaths)){
-      expandByPaths(doc.openPaths);
+      await expandByPaths(doc.openPaths);
+      if(activeDocId !== doc.id || activation !== expansionGeneration) return;
       if(doc.view) applySessionView(doc.view); else resetView();
     }else{
       resetView();
-      applyOpenPolicy();
+      await applyOpenPolicy();
+      if(activeDocId !== doc.id || activation !== expansionGeneration) return;
       if(doc.view) applySessionView(doc.view);
     }
     if(doc.searchQuery){
@@ -246,6 +272,7 @@ function closeDoc(id){
 
   const wasActive = id === activeDocId;
   const closing = docs[idx];
+  closing.source?.dispose();
 
   if(wasActive) snapshotDoc();
   docs.splice(idx, 1);
@@ -268,11 +295,13 @@ function updateDocHeader(doc){
   fileName.title = doc.path || doc.name;
 
   const kindTag = doc.kind === 'jsonl' ? ' · JSONL' : '';
-  const typeName = doc.error ? '无法预览' : getTypeName(doc.data);
+  const rootType = doc.source?.indexed ? doc.source.getRoot().type : null;
+  const typeName = doc.error ? '无法预览' : rootType ? ({array:'Array',object:'Object'}[rootType] || rootType) : getTypeName(doc.data);
   fileSub.textContent = `${formatBytes(doc.size)} · ${typeName}${kindTag}`;
 }
 
 function resetSearchState(){
+  focusGeneration++;
   clearTimeout(searchTimer);
   searchGeneration++;
   matches = [];
@@ -525,16 +554,36 @@ async function loadFile(file, sessions){
   activeLoad = controller;
   loadingStatus.hidden = false;
   loadingLabel.textContent = '正在读取 ' + (file.name || file.path) + '…';
+  loadingProgress.removeAttribute('value');
+  let indexedSource = null;
+  let attached = false;
   try{
-    const source = file.path ? await readNativeFile(file.path) : file;
+    const metadata = file.path ? await statNativeFile(file.path) : file;
     if(controller.signal.aborted) return;
-    loadingLabel.textContent = '正在后台解析 ' + source.name + '…';
-    const { result, text } = await parseInBackground({
-      name: source.name, size: source.size, file: file.path ? null : file,
-      text: file.path ? source.text : null, keepText: !desktop
-    }, controller.signal);
+    let result, text, source = metadata;
+    if(file.path && needsIndex(metadata.size, settings.largeFileThresholdMiB)){
+      loadingLabel.textContent = '正在后台建立索引 · 0% · ' + metadata.name;
+      indexedSource = await openIndexedFile(metadata, {
+        signal: controller.signal, wrap: settings.jsonlWrapArray !== false, strict: !!settings.strictJsonl,
+        progress(bytes){
+          const percent = Math.min(99, Math.floor(bytes / Math.max(1, metadata.size) * 100));
+          loadingProgress.value = percent;
+          loadingLabel.textContent = `正在后台建立索引 · ${percent}% · ${metadata.name}`;
+        }
+      });
+      result = { kind: indexedSource.info.kind }; text = '';
+    }else{
+      source = file.path ? await readNativeFile(metadata.path) : file;
+      controller.signal.throwIfAborted();
+      loadingLabel.textContent = '正在后台解析 ' + source.name + '…';
+      ({ result, text } = await parseInBackground({
+        name: source.name, size: source.size, file: file.path ? null : file,
+        text: file.path ? source.text : null, keepText: !desktop
+      }, controller.signal));
+    }
     if(controller.signal.aborted) return;
     const doc = Object.assign(makeDoc(source.name, source.size, text, result.kind), result);
+    if(indexedSource) doc.source = indexedSource;
     doc.path = source.path || null;
     // Windows paths are case insensitive; native canonical paths identify documents.
     doc.identity = doc.path && navigator.platform.startsWith('Win') ? doc.path.toLowerCase() : doc.path;
@@ -542,20 +591,24 @@ async function loadFile(file, sessions){
     const duplicate = docs.find(d => doc.path ? docKey(d) === docKey(doc)
       : !d.path && d.name === doc.name && d.size === doc.size && d.text === doc.text);
     if(duplicate){
+      duplicate.source?.dispose();
       Object.assign(duplicate, { parsed: doc.parsed, records: doc.records, bad: doc.bad,
         totalLines: doc.totalLines, text: doc.text, size: doc.size, kind: doc.kind, error: doc.error,
-        rootLabel: 'root', data: undefined });
+        rootLabel: 'root', data: undefined, source: indexedSource });
+      attached = true;
       activateDoc(duplicate.id);
     }else{
       const session = sessions && sessionFor(doc, sessions);
       if(session){ doc.openPaths = session.paths; doc.view = session.view; }
       docs.push(doc);
+      attached = true;
       activateDoc(doc.id);
     }
     saveReopenCopy();
   }catch(error){
     if(error.name !== 'AbortError') showToast('打开失败：' + (error.message || String(error)));
   }finally{
+    if(indexedSource && !attached) indexedSource.dispose();
     if(activeLoad === controller){ activeLoad = null; loadingStatus.hidden = true; }
   }
 }
@@ -663,20 +716,22 @@ window.addEventListener('pagehide', saveSession);
 
 /* 打开时的展开策略：模板优先，其次默认层级。
    「刷新后恢复」由 activateDoc 直接按文档自己的会话铺开，不走这里 */
-function applyOpenPolicy(){
+async function applyOpenPolicy(){
   let focusNode = null;
 
   if(settings.autoTemplate && template && template.paths.length){
-    focusNode = applyTemplate();
+    focusNode = await applyTemplate();
   }else if(settings.defaultLevels > 0){
-    expandLevels(tree.firstElementChild, settings.defaultLevels);
+    await expandLevels(tree.firstElementChild, settings.defaultLevels);
   }
-  if(focusNode) requestAnimationFrame(() => centerNode(focusNode));
+  if(focusNode) requestAnimationFrame(() => { if(focusNode.isConnected) centerNode(focusNode); });
   return focusNode;
 }
 
 /* 撤回阅读器视图，回到落地页（关掉最后一份文件时用） */
 function withdrawView(){
+  viewportWindow.clear();
+  discardPagedTree(tree);
   activeDocId = null;
   docs = [];
   parsedData = null;
@@ -692,9 +747,18 @@ function withdrawView(){
 
 /* ---------- 树渲染 ---------- */
 function renderTree(data, rootLabel){
+  viewportWindow.clear();
+  expansionGeneration++;
+  discardPagedTree(tree);
+  const doc = activeDoc();
+  if(!doc.source?.matches(data)){
+    doc.source?.dispose();
+    doc.source = new MemoryDataSource(data);
+  }
   tree.innerHTML = '';
-  const root = createNode(rootLabel || 'root', data, [], true);
+  const root = createNode(rootLabel || 'root', doc.source.getRoot(), [], true, false, doc.source);
   tree.appendChild(root);
+  syncReadingActions();
 
   /* 初始全部收起，只显示根节点 */
   root.classList.remove('open');
@@ -710,9 +774,77 @@ const CV_THRESHOLD = 1500;
 
 function updateVirtualization(){
   const n = tree.querySelectorAll('.tree-node').length;
-  tree.classList.toggle('virtualized', n > CV_THRESHOLD);
+  tree.classList.toggle('virtualized', n > CV_THRESHOLD && !activeDoc()?.source?.indexed);
+  if(viewportWindow.enabled && activeDoc()?.source?.indexed){
+    for(const node of tree.querySelectorAll('.tree-node')){
+      if(node._source?.indexed && node._setPageRetained){
+        const children = directChildrenContainer(node);
+        if(children) viewportWindow.watch(children, {
+          suspend: () => { node._setPageRetained(false); },
+          resume: () => { node._setPageRetained(true); }
+        });
+      }
+      if(node._source?.indexed && !node.classList.contains('branch') && !node.classList.contains('root-node') && !node._jsonSource) observeLeaf(node);
+    }
+  }
   scheduleSessionSave();   /* 树的结构变了：展开状态要记进会话 */
 }
+
+function syncReadingActions(){
+  const indexed = !!activeDoc()?.source?.indexed;
+  expandAllBtn.textContent = indexed ? '展开当前页' : '展开全部';
+  expandAllBtn.title = indexed ? '展开当前页的节点，最多显示约 5000 个节点' : '展开全部节点，最多显示约 5000 个节点';
+  document.getElementById('ctxExpandSubtree').textContent = indexed ? '展开当前页的下级' : '展开全部下级';
+  document.getElementById('editorExpandAllBtn').textContent = indexed ? '展开当前页' : '展开全部';
+}
+
+// Keep only identity and geometry off screen. Branches retain their lightweight
+// structure, expansion state and page cursor; payload cards are recreated on demand.
+function observeLeaf(node){
+  viewportWindow.watch(node, {
+    suspend(){
+      if(node.classList.contains('branch') || node._jsonSource || node.classList.contains('current-match')) return false;
+      const main = node.firstElementChild;
+      if(!main || main.offsetWidth <= 0 || main.offsetHeight <= 0) return false;
+      const rect = main.getBoundingClientRect();
+      const scale = lastViewState?.scale || 1;
+      const shell = document.createElement('button');
+      shell.type = 'button'; shell.className = 'node-main viewport-placeholder';
+      shell.style.width = rect.width / scale + 'px'; shell.style.height = rect.height / scale + 'px';
+      shell.textContent = '加载内容…'; shell.setAttribute('aria-label', '加载字段 ' + node._key);
+      shell.addEventListener('click', wakeViewportNode);
+      main.replaceWith(shell);
+      node._searchValue = ''; node._keyEl = null; node.dataset.searchText = '';
+      node.classList.add('viewport-sleeping');
+      return true;
+    },
+    async resume(signal){
+      try {
+        const path = node._sourcePath;
+        const page = await node._source.getChildren(path.slice(0,-1), { key: path.at(-1), signal });
+        signal.throwIfAborted();
+        if(!node.isConnected) return false;
+        const descriptor = page.items.find(item => item.key === path.at(-1));
+        if(!descriptor) throw new Error('节点不存在');
+        node.parentElement?.parentElement?._rememberPage?.(page);
+        const fresh = createNode(node._isArrayItem ? arrayIndexLabel(path.at(-1)) : node._key,
+          descriptor, node._path, false, node._isArrayItem, node._source);
+        node.firstElementChild.replaceWith(fresh.firstElementChild);
+        node._keyEl = fresh._keyEl; node._searchValue = fresh._searchValue;
+        node.dataset.searchText = fresh.dataset.searchText;
+        node.classList.remove('viewport-sleeping');
+        scheduleOverflowSweep(); return true;
+      }catch(error){
+        if(!signal.aborted && node.isConnected){
+          node.firstElementChild.textContent = '加载失败，点击重试';
+          node.firstElementChild.title = error.message || String(error);
+        }
+        return false;
+      }
+    }
+  });
+}
+function wakeViewportNode(event){ event.currentTarget.parentElement?._wakeViewport?.(); }
 
 /* ---------- 字符串里的 JSON ----------
    只认「外形是对象 / 数组、且真的能解析」的字符串，避免把普通文本误判成 JSON */
@@ -743,22 +875,23 @@ function arrayIndexLabel(index){
 }
 
 /* 挂载子节点容器与展开逻辑：分支节点、以及「字符串型 JSON」升级后的节点共用 */
-function attachChildren(node, card, toggle, value, path){
+function attachChildren(node, card, toggle, source, sourcePath, path){
   const children = document.createElement('div');
   children.className = 'children';
   node.appendChild(children);
 
-  const ensureChildren = pagedChildren(node, children, value, (childKey, childValue, isArr) => {
-    if(getHiddenSet().has(normalizePath(encodePath(path.concat(childKey))))) return null;
-    return createNode(isArr ? arrayIndexLabel(childKey) : String(childKey), childValue,
-      path.concat(childKey), false, isArr);
+  const ensureChildren = pagedChildren(node, children, source, sourcePath, item => {
+    if(getHiddenSet().has(normalizePath(encodePath(path.concat(item.key))))) return null;
+    return createNode(item.arrayItem ? arrayIndexLabel(item.key) : String(item.key), item,
+      path.concat(item.key), false, item.arrayItem, source);
   }, () => { updateVirtualization(); scheduleOverflowSweep(); });
 
   const toggleNode = e => {
     e.stopPropagation();
-    if(!node.classList.contains('open')) ensureChildren();
+    expansionGeneration++;
     node.classList.toggle('open');
-    if(!node.classList.contains('open')) node._discardChildren?.();
+    if(node.classList.contains('open')) ensureChildren();
+    else node._discardChildren?.();
     updateVirtualization();
     scheduleOverflowSweep();
   };
@@ -767,11 +900,10 @@ function attachChildren(node, card, toggle, value, path){
   card.addEventListener('click', toggleNode);
 }
 
-/* 把「内容是 JSON 文本」的叶子升级成可展开的分支：
-   _value 仍是原始字符串（复制 / 查看完整内容不变），子树用解析后的值渲染 */
+/* 字符串的原文仍由原数据源读取；解析出的结构使用独立的数据源。 */
 function buildJsonChildren(node){
-  const parsed = node._jsonValue;
-  if(parsed === undefined || node._jsonTreeReady) return;
+  const source = node._jsonSource;
+  if(!source || node._jsonTreeReady) return;
 
   const main = node.querySelector(':scope > .node-main');
   const toggle = main?.querySelector('.toggle');
@@ -786,17 +918,20 @@ function buildJsonChildren(node){
   toggle.classList.remove('placeholder');
   toggle.title = '展开 / 收起该字段解析出的 JSON';
 
-  attachChildren(node, card, toggle, parsed, node._path || []);
+  node._childrenType = source.getRoot().type;
+  attachChildren(node, card, toggle, source, [], node._path || []);
   updateVirtualization();
 }
 
 /* 角标点击：首次点击构造 JSON 子树，之后与 chevron 一致地展开 / 收起 */
 function expandJsonField(node){
+  expansionGeneration++;
   if(!node._jsonTreeReady) buildJsonChildren(node);
   if(!node._jsonTreeReady) return;
 
   if(!node.classList.contains('open')) node._ensureChildren?.();
   node.classList.toggle('open');
+  if(!node.classList.contains('open')) node._discardChildren?.();
   updateVirtualization();
 
   /* 原始字符串的显示形态变了（多行原文 ↔ 单行摘要），这张卡片要重测一次 */
@@ -880,7 +1015,7 @@ function refreshValueOverflow(scope, force){
     if(!el.offsetParent) continue;   /* 收起节点里的值量不了，留给下次 */
 
     card._ovMeasured = true;
-    setFullViewIcon(card, el.scrollHeight - el.clientHeight > 1);
+    setFullViewIcon(card, card._previewTruncated || el.scrollHeight - el.clientHeight > 1);
   }
 
   if(wasVirt) tree.classList.remove('no-cv');
@@ -914,8 +1049,9 @@ function createJsonBadge(node){
   return btn;
 }
 
-function createNode(key, value, path, isRoot=false, isArrayItem=false){
-  const isBranch = value !== null && typeof value === 'object';
+function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, source){
+  const isBranch = descriptor.type === 'object' || descriptor.type === 'array';
+  const value = descriptor.value;
 
   const node = document.createElement('div');
   node.className = 'tree-node'
@@ -923,9 +1059,12 @@ function createNode(key, value, path, isRoot=false, isArrayItem=false){
     + (isRoot ? ' root-node' : '');
   node.dataset.path = encodePath(path);
   node.dataset.searchText =
-    `${String(key)} ${primitiveToSearchText(value)}`.toLowerCase();
+    `${String(key)} ${isBranch ? descriptor.type : String(value)}`.toLowerCase();
   /* 保留原始值，供弹窗/复制使用；路径供 JSON 展开时拼接子节点用 */
-  node._value = value;
+  node._source = source;
+  node._sourcePath = descriptor.path;
+  node._childrenType = descriptor.type;
+  node._searchValue = isBranch ? descriptor.type : String(value);
   node._key = String(key);
   node._path = path;
   node._isArrayItem = isArrayItem;   /* 数组元素：序号标签可随设置实时切换 */
@@ -949,8 +1088,7 @@ function createNode(key, value, path, isRoot=false, isArrayItem=false){
     card.appendChild(keyEl);
     const badge = document.createElement('span');
     badge.className = 'badge';
-    const count = Array.isArray(value) ? value.length : Object.keys(value).length;
-    badge.textContent = `${Array.isArray(value) ? 'Array' : 'Object'} · ${count}`;
+    badge.textContent = `${descriptor.type === 'array' ? 'Array' : 'Object'} · ${descriptor.childCount}`;
     card.appendChild(badge);
   }else{
     const text = document.createElement('span');
@@ -964,11 +1102,16 @@ function createNode(key, value, path, isRoot=false, isArrayItem=false){
     valueEl.textContent = formatPrimitive(value);
     text.append(keyEl, sep, valueEl);
     card.appendChild(text);
+    if(descriptor.truncated){
+      card._previewTruncated = true;
+      setFullViewIcon(card, true);
+      card.title = '长字段仅显示预览，点击 … 读取全文（上限 8 MiB）';
+    }
 
     /* 该字段的内容本身就是 JSON：右上角给角标，点击即以 JSON 展开 */
-    const jsonValue = parseJsonInString(value);
+    const jsonValue = descriptor.truncated ? undefined : parseJsonInString(value);
     if(jsonValue !== undefined){
-      node._jsonValue = jsonValue;
+      node._jsonSource = new MemoryDataSource(jsonValue);
       card.classList.add('has-json-badge');
       cardIconsOf(card).appendChild(createJsonBadge(node));
     }
@@ -985,7 +1128,7 @@ function createNode(key, value, path, isRoot=false, isArrayItem=false){
     pathText.textContent = '路径：$';
   });
 
-  if(isBranch) attachChildren(node, card, toggle, value, path);
+  if(isBranch) attachChildren(node, card, toggle, source, descriptor.path, path);
 
   return node;
 }
@@ -1002,8 +1145,10 @@ async function expandVisible(root, scope = tree){
       showToast('已达到 5000 个显示节点，请收起部分节点后继续展开'); break;
     }
     const node = stack.pop();
+    if(node.isConnected === false) continue;
     if(!node.classList.contains('branch')) continue;
-    node._ensureChildren?.();
+    await node._ensureChildren?.();
+    if(generation !== expansionGeneration || docId !== activeDocId || !root.isConnected) return;
     node.classList.add('open');
     const children = directChildrenContainer(node);
     if(children) stack.push(...[...children.children].filter(n => n.classList.contains('tree-node')));
@@ -1032,10 +1177,11 @@ const ctxCollapseBtn = document.getElementById('ctxCollapse');
 let ctxTarget = null;
 
 /* 展开该节点的一级子节点 */
-function expandOne(node){
+async function expandOne(node){
   if(!node.classList.contains('branch')) return;
-  node._ensureChildren?.();
   node.classList.add('open');
+  await node._ensureChildren?.();
+  if(node.isConnected === false) return;
   updateVirtualization();
   scheduleOverflowSweep();
 }
@@ -1091,6 +1237,7 @@ tree.addEventListener('contextmenu', e => {
 });
 
 ctxExpandOne.addEventListener('click', () => {
+  expansionGeneration++;
   if(ctxTarget) expandOne(ctxTarget);
   closeMenu();
 });
@@ -1125,12 +1272,7 @@ function showToast(msg){
 /* 生成节点的完整内容文本：
    分支节点 → 格式化 JSON；字符串 → 原始文本（不带引号）；其余 → String() */
 function nodeContentText(node){
-  const v = node._value;
-  if(v !== null && typeof v === 'object'){
-    return JSON.stringify(v, null, 2);
-  }
-  if(typeof v === 'string') return v;
-  return String(v);
+  return node._source.getText(node._sourcePath);
 }
 
 /* 写剪贴板：优先 Clipboard API，file:// 等场景回退 execCommand */
@@ -1155,8 +1297,13 @@ async function copyText(text){
 
 const MODAL_TRUNCATE = 300000; /* 弹窗内渲染上限，复制仍取完整内容 */
 
-function openModal(node){
-  const full = nodeContentText(node);
+let modalGeneration = 0;
+async function openModal(node){
+  const generation = ++modalGeneration;
+  let full;
+  try{ full = await nodeContentText(node); }
+  catch(error){ if(generation === modalGeneration) showToast('读取内容失败：' + error.message); return; }
+  if(generation !== modalGeneration || !node.isConnected) return;
 
   modalTitle.textContent = node._key;
   modalPath.textContent = node.dataset.path;
@@ -1170,6 +1317,7 @@ function openModal(node){
 }
 
 function closeModal(){
+  modalGeneration++;
   modalMask.classList.remove('open');
 }
 
@@ -1189,7 +1337,10 @@ ctxViewFull.addEventListener('click', () => {
 ctxCopy.addEventListener('click', async () => {
   closeMenu();
   if(!ctxTarget) return;
-  const ok = await copyText(nodeContentText(ctxTarget));
+  let content;
+  try{ content = await nodeContentText(ctxTarget); }
+  catch(error){ showToast('读取内容失败：' + error.message); return; }
+  const ok = await copyText(content);
   showToast(ok ? '已复制到剪贴板' : '复制失败，请手动选择文本复制');
 });
 
@@ -1221,6 +1372,7 @@ const SESSION_KEY = 'json-atlas_session_v1';
 })();
 
 let settings = {
+  largeFileThresholdMiB: 64,
   legacyTreeLayout: false,
   autoTemplate: true,
   defaultLevels: 0,
@@ -1239,6 +1391,7 @@ try{
   const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
   if(s && typeof s === 'object') settings = Object.assign(settings, s);
 }catch(_){}
+settings.largeFileThresholdMiB = normalizeThreshold(settings.largeFileThresholdMiB);
 try{
   const t = JSON.parse(localStorage.getItem(TEMPLATE_KEY));
   if(t && Array.isArray(t.paths)) template = t;
@@ -1293,13 +1446,13 @@ function childNodesToVisit(node){
   if(!c) return [];
   const kids = [...c.children].filter(n => n.classList.contains('tree-node'));
   /* 字符串型 JSON 节点：按解析出来的值判断是否为数组 */
-  const v = node._jsonValue !== undefined ? node._jsonValue : node._value;
-  return Array.isArray(v) ? kids.slice(0, 1) : kids;
+  return node._childrenType === 'array' ? kids.slice(0, 1) : kids;
 }
 
 /* 按归一化路径集合展开（结构模板与刷新恢复共用）：
    数组只走第一项；返回最深的命中节点，由调用方决定是否居中 */
-function expandByPaths(paths){
+async function expandByPaths(paths){
+  const generation = expansionGeneration;
   const root = tree.firstElementChild;
   const set = new Set(paths || []);
   if(!root || !set.size) return null;
@@ -1310,6 +1463,7 @@ function expandByPaths(paths){
 
   const pending = [root];
   while(pending.length){
+    if(generation !== expansionGeneration) return null;
     const node = pending.pop();
     if(tree.querySelectorAll('.tree-node').length >= 5000){
       showToast('已达到 5000 个显示节点，停止恢复展开'); break;
@@ -1317,7 +1471,7 @@ function expandByPaths(paths){
     if(!node.classList.contains('branch')){
       /* 字符串型 JSON 字段：命中它下级的路径时先按 JSON 展开，
          否则记录在它内部的结构会整体落空 */
-      if(node._jsonValue !== undefined &&
+      if(node._jsonSource &&
          pathList.some(p => isPathPrefix(node.dataset.path, p))){
         buildJsonChildren(node);
       }else{
@@ -1326,7 +1480,8 @@ function expandByPaths(paths){
     }
     if(!set.has(normalizePath(node.dataset.path))) continue;
 
-    expandOne(node);
+    await expandOne(node);
+    if(generation !== expansionGeneration) return null;
 
     const p = node.dataset.path;
     if(p.length > deepestLen){ deepestLen = p.length; deepest = node; }
@@ -1344,15 +1499,18 @@ function applyTemplate(){
 }
 
 /* 按固定层数展开（无模板时的默认策略），数组同样只展开第一项 */
-function expandLevels(node, levels){
+async function expandLevels(node, levels){
+  const generation = expansionGeneration;
   const pending = [{ node, remain: levels }];
   while(pending.length){
+    if(generation !== expansionGeneration) return;
     const { node: n, remain } = pending.pop();
     if(!n || !n.classList.contains('branch') || remain <= 0) continue;
     if(tree.querySelectorAll('.tree-node').length >= 5000){
       showToast('已达到 5000 个显示节点，停止默认展开'); break;
     }
-    expandOne(n);
+    await expandOne(n);
+    if(generation !== expansionGeneration) return;
     pending.push(...childNodesToVisit(n).reverse().map(child => ({ node: child, remain: remain - 1 })));
   }
   updateVirtualization();
@@ -1367,6 +1525,14 @@ const optDefaultLevels = document.getElementById('optDefaultLevels');
 const optIndexBase = document.getElementById('optIndexBase');
 const optRailStyle = document.getElementById('optRailStyle');
 const optLegacyTreeLayout = document.getElementById('optLegacyTreeLayout');
+const optLargeFileThreshold = document.getElementById('optLargeFileThreshold');
+function syncThresholdControl(){
+  optLargeFileThreshold.value = String(settings.largeFileThresholdMiB);
+}
+optLargeFileThreshold.addEventListener('change', () => {
+  settings.largeFileThresholdMiB = normalizeThreshold(optLargeFileThreshold.value);
+  syncThresholdControl(); saveSettings();
+});
 const optReopenLast = document.getElementById('optReopenLast');
 const optRestoreSession = document.getElementById('optRestoreSession');
 const exportSettingsBtn = document.getElementById('exportSettingsBtn');
@@ -1397,6 +1563,7 @@ function updateTemplateStatus(){
 }
 
 function openSettings(){
+  syncThresholdControl();
   optLegacyTreeLayout.checked = settings.legacyTreeLayout === true;
   optAutoTemplate.checked = settings.autoTemplate;
   optDefaultLevels.value = String(settings.defaultLevels);
@@ -1442,7 +1609,7 @@ function relabelArrayIndexes(root){
     const label = arrayIndexLabel(node._path[node._path.length - 1]);
     node._key = label;
     node.dataset.searchText =
-      `${label} ${primitiveToSearchText(node._value)}`.toLowerCase();
+      `${label} ${node._searchValue ?? ''}`.toLowerCase();
     if(node._keyEl) node._keyEl.textContent = label;
   });
 }
@@ -1467,6 +1634,7 @@ function applyTreeLayout(){
   for(const id of ['tree', 'editorTree']){
     document.getElementById(id).classList.toggle('legacy-tree-layout', settings.legacyTreeLayout === true);
   }
+  viewportWindow.restoreAll();
   requestAnimationFrame(() => refreshValueOverflow(tree, true));
 }
 
@@ -1540,7 +1708,7 @@ optSettingsJsonlArray.addEventListener('change', () => {
   rebuildJsonlRoot();
 });
 
-optStrictJsonl.addEventListener('change', () => {
+optStrictJsonl.addEventListener('change', async () => {
   settings.strictJsonl = optStrictJsonl.checked;
   saveSettings();
 
@@ -1548,6 +1716,7 @@ optStrictJsonl.addEventListener('change', () => {
      展开状态保留在同一份文档上，所以关掉严格模式后还能恢复到原来的层级。 */
   const doc = activeDoc();
   if(doc && doc.kind === 'jsonl'){
+    if(doc.source?.indexed){ await rebuildJsonlRoot(); return; }
     snapshotDoc();
     activateDoc(doc.id);
 
@@ -1573,6 +1742,7 @@ function syncValueHeightControls(){
 }
 
 function applyValueHeightSetting(){
+  viewportWindow.restoreAll();
   const on = !!settings.limitValueHeight;
 
   syncValueHeightControls();
@@ -1586,6 +1756,7 @@ function applyValueHeightSetting(){
 
   /* 关闭时把所有 … 图标收回去，DOM 保持干净 */
   tree.querySelectorAll('.node-card.has-fullview').forEach(card => {
+    if(card._previewTruncated) return;
     card.classList.remove('has-fullview');
     card.querySelector(':scope > .card-icons > .fullview-badge')?.remove();
     dropEmptyCardIcons(card);
@@ -1611,6 +1782,7 @@ optValueMaxLines.addEventListener('change', () => {
 /* 窗口变窄会让值换行更多：全部重测一次（防抖） */
 let overflowResizeTimer = null;
 window.addEventListener('resize', () => {
+  viewportWindow.restoreAll();
   if(!settings.limitValueHeight) return;
   clearTimeout(overflowResizeTimer);
   overflowResizeTimer = setTimeout(() => refreshValueOverflow(tree, true), 200);
@@ -1618,11 +1790,19 @@ window.addEventListener('resize', () => {
 
 /* 按当前 settings 重建当前文档的根结构（不重新读盘）。
    仅当当前文档是 JSONL 时生效。 */
-function rebuildJsonlRoot(){
+let jsonlConfigurationGeneration = 0;
+async function rebuildJsonlRoot(){
   const doc = activeDoc();
   if(!doc || doc.kind !== 'jsonl') return;
 
   snapshotDoc();
+  if(doc.source?.indexed){
+    const generation = ++jsonlConfigurationGeneration;
+    try {
+      await doc.source.configure(settings.jsonlWrapArray !== false, false);
+      if(generation !== jsonlConfigurationGeneration || activeDocId !== doc.id) return;
+    } catch(error) { showToast('更新失败：' + (error.message || String(error))); return; }
+  }
   activateDoc(doc.id);
 }
 
@@ -1663,6 +1843,7 @@ settingsImportInput.addEventListener('change', () => {
         ? payload.settings : payload;
 
       settings = {
+        largeFileThresholdMiB: normalizeThreshold(s.largeFileThresholdMiB),
         legacyTreeLayout: s.legacyTreeLayout === true,
         autoTemplate: !!s.autoTemplate,
         defaultLevels: parseInt(s.defaultLevels, 10) || 0,
@@ -1685,7 +1866,10 @@ settingsImportInput.addEventListener('change', () => {
       saveSettings();
       saveTemplate();
       openSettings();   /* 刷新面板显示 */
-      if(activeDocId){ snapshotDoc(); activateDoc(activeDocId); }
+      if(activeDocId){
+        if(activeDoc()?.source?.indexed && activeDoc().kind === 'jsonl') rebuildJsonlRoot();
+        else { snapshotDoc(); activateDoc(activeDocId); }
+      }
       relabelArrayIndexes(editorTree);
       if(settings.reopenLast) saveReopenCopy();
       else{
@@ -1788,11 +1972,12 @@ recordTemplateBtn2.addEventListener('click', () => {
   recordTemplate();
 });
 
-applyTemplateBtn.addEventListener('click', () => {
+applyTemplateBtn.addEventListener('click', async () => {
+  expansionGeneration++;
   closeSettings();
-  const deepest = applyTemplate();
+  const deepest = await applyTemplate();
   if(deepest){
-    requestAnimationFrame(() => centerNode(deepest));
+    requestAnimationFrame(() => { if(deepest.isConnected) centerNode(deepest); });
     showToast('模板已应用');
   }else{
     showToast('模板未命中任何节点（结构可能不一致）');
@@ -1840,12 +2025,17 @@ function openEditor(){
 }
 
 function closeEditor(){
+  expansionGeneration++;
+  discardPagedTree(editorTree);
   editorMask.classList.remove('open');
 }
 
 function renderEditorTree(){
+  expansionGeneration++;
+  discardPagedTree(editorTree);
   editorTree.textContent = '';
-  const root = createEditorNode('root', parsedData, [], true);
+  const source = activeDoc().source;
+  const root = createEditorNode('root', source.getRoot(), [], true, false, source);
   editorTree.appendChild(root);
   updateEditorCount();
   updateEditorVirtualization();
@@ -1864,8 +2054,8 @@ function updateEditorCount(){
 }
 
 /* 编辑器节点：完全复用主视图的树结构 / 卡片样式，额外挂一个勾选框 */
-function createEditorNode(key, value, path, isRoot=false, isArrayItem=false){
-  const isBranch = value !== null && typeof value === 'object';
+function createEditorNode(key, descriptor, path, isRoot=false, isArrayItem=false, source){
+  const isBranch = descriptor.type === 'object' || descriptor.type === 'array';
   const normPath = normalizePath(encodePath(path));
 
   const node = document.createElement('div');
@@ -1873,6 +2063,7 @@ function createEditorNode(key, value, path, isRoot=false, isArrayItem=false){
     + (isBranch ? ' branch' : '')
     + (isRoot ? ' root-node' : '');
   node._path = path;                 /* 与主视图一致：序号重标要按真实下标取标签 */
+  node._childrenType = descriptor.type;
   node._isArrayItem = isArrayItem;   /* 数组元素：序号标签可随设置实时切换 */
 
   const main = document.createElement('div');
@@ -1917,11 +2108,10 @@ function createEditorNode(key, value, path, isRoot=false, isArrayItem=false){
   if(isBranch){
     const badge = document.createElement('span');
     badge.className = 'badge';
-    const count = Array.isArray(value) ? value.length : Object.keys(value).length;
-    badge.textContent = `${Array.isArray(value) ? 'Array' : 'Object'} · ${count}`;
+    badge.textContent = `${descriptor.type === 'array' ? 'Array' : 'Object'} · ${descriptor.childCount}`;
     card.appendChild(badge);
 
-    if(Array.isArray(value)){
+    if(descriptor.type === 'array'){
       const hint = document.createElement('span');
       hint.className = 'ed-hint';
       hint.textContent = '仅第一项结构';
@@ -1930,7 +2120,7 @@ function createEditorNode(key, value, path, isRoot=false, isArrayItem=false){
   }else{
     const typeEl = document.createElement('span');
     typeEl.className = 'badge';
-    typeEl.textContent = getTypeName(value);
+    typeEl.textContent = descriptor.type;
     card.appendChild(typeEl);
   }
 
@@ -1949,14 +2139,16 @@ function createEditorNode(key, value, path, isRoot=false, isArrayItem=false){
     children.className = 'children';
     node.appendChild(children);
 
-    const ensureChildren = pagedChildren(node, children, value, (childKey, childValue, isArr) =>
-      createEditorNode(isArr ? arrayIndexLabel(childKey) : String(childKey), childValue,
-        path.concat(childKey), false, isArr), () => {}, true);
+    const ensureChildren = pagedChildren(node, children, source, descriptor.path, item =>
+      createEditorNode(item.arrayItem ? arrayIndexLabel(item.key) : String(item.key), item,
+        path.concat(item.key), false, item.arrayItem, source), updateEditorVirtualization, true);
 
     const toggleNode = e => {
       e.stopPropagation();
-      if(!node.classList.contains('open')) ensureChildren();
+      expansionGeneration++;
       node.classList.toggle('open');
+      if(node.classList.contains('open')) ensureChildren();
+      else node._discardChildren?.();
       updateEditorVirtualization();
     };
     toggle.addEventListener('click', toggleNode);
@@ -1993,7 +2185,7 @@ editorShowAllBtn.addEventListener('click', () => {
   renderEditorTree();
 });
 
-editorSaveBtn.addEventListener('click', () => {
+editorSaveBtn.addEventListener('click', async () => {
   template = {
     paths: (template && template.paths) || [],
     hidden: [...editorHidden],
@@ -2006,7 +2198,7 @@ editorSaveBtn.addEventListener('click', () => {
 
   /* 重渲染主视图，隐藏字段立即生效 */
   renderTree(parsedData, currentRootLabel);
-  const focusNode = applyOpenPolicy();
+  const focusNode = await applyOpenPolicy();
   if(!focusNode) resetView();
 
   showToast(editorHidden.size
@@ -2079,16 +2271,22 @@ async function searchTree(query){
   const q = query.trim().toLowerCase();
   if(!q){ searchCount.textContent = ''; return; }
   searchCount.textContent = '搜索中…';
-  const result = await searchData(parsedData, q, {
+  const source = activeDoc()?.source;
+  if(!source || activeDoc().error){ searchCount.textContent = '0'; return; }
+  let result;
+  try{ result = await source.search(q, {
     rootLabel: currentRootLabel, indexBase: settings.indexBase, hidden: getHiddenSet(),
     cancelled: () => generation !== searchGeneration
-  });
+  }); }catch(error){
+    if(generation === searchGeneration){ searchCount.textContent = '搜索失败'; showToast(error.message); }
+    return;
+  }
   if(!result || generation !== searchGeneration) return;
   matches = result.hits;
   searchTruncated = result.truncated;
   if(!matches.length){ searchCount.textContent = '0'; return; }
   nextMatchBtn.disabled = false;
-  focusMatch(0);
+  await focusMatch(0);
 }
 
 function directChildrenContainer(node){
@@ -2103,7 +2301,10 @@ function openAncestors(node){
   }
 }
 
-function focusMatch(index){
+async function focusMatch(index){
+  expansionGeneration++;
+  const generation = ++focusGeneration;
+  const search = searchGeneration;
   tree.querySelectorAll('.current-match').forEach(n => n.classList.remove('current-match'));
   if(!matches.length) return;
   currentMatchIndex = index;
@@ -2111,12 +2312,15 @@ function focusMatch(index){
   const path = matches[index];
   for(const key of path){
     if(!node) break;
-    node._ensureChildren?.(key);
+    const loaded = await node._ensureChildren?.(key);
+    if(loaded === false || generation !== focusGeneration || search !== searchGeneration) return;
     node.classList.add('open');
     node = [...(directChildrenContainer(node)?.children || [])]
       .find(child => child._path?.length === node._path.length + 1 && child._path.at(-1) === key);
   }
   if(node){
+    await node._wakeViewport?.();
+    if(generation !== focusGeneration || search !== searchGeneration) return;
     node.classList.add('current-match');
     openAncestors(node);
     requestAnimationFrame(() => { if(node.isConnected) centerNode(node); });
@@ -2292,6 +2496,7 @@ window.addEventListener('drop', e => e.preventDefault());
 // Native startup is deferred until the reader and canvas are initialized.
 const loadingStatus = document.getElementById('loadingStatus');
 const loadingLabel = document.getElementById('loadingLabel');
+const loadingProgress = document.getElementById('loadingProgress');
 document.getElementById('reopenHint').textContent = desktop
   ? '下次启动时从原路径读取文件的最新内容。关闭此项会清除恢复记录，不会删除原文件。'
   : '在浏览器本地保存文件副本，刷新后继续打开。关闭此项会清除副本，不会删除原文件。';

@@ -29,7 +29,7 @@ pub fn argument_paths(
 
 // canonicalize() 在 Windows 上返回 \\?\ 逐字路径。它能正常读写，但会出现在
 // 界面提示与本地存储里，所以对外只使用去掉前缀的常见写法。
-fn display_path(path: &Path) -> String {
+pub fn display_path(path: &Path) -> String {
     let text = path.to_string_lossy();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")

@@ -46,7 +46,7 @@
 
     <button id="openAnotherBtn">打开文件</button>
     <span class="sep"></span>
-    <button id="expandAllBtn" title="展开当前页的节点，最多显示约 5000 个节点">展开当前页</button>
+    <button id="expandAllBtn" title="展开全部节点，最多显示约 5000 个节点">展开全部</button>
     <button id="collapseAllBtn">全部收起</button>
     <button id="resetViewBtn">重置视图</button>
 
@@ -95,7 +95,7 @@
 
 <div id="ctxMenu">
   <button id="ctxExpandOne">展开一级</button>
-  <button id="ctxExpandSubtree">展开当前页的下级</button>
+  <button id="ctxExpandSubtree">展开全部下级</button>
   <div class="ctx-sep"></div>
   <button id="ctxCollapse">收起该节点（含下级）</button>
   <div class="ctx-sep"></div>
@@ -115,6 +115,18 @@
     <div class="settings-body">
       <div class="settings-group">
       <div class="settings-group-title">阅读与布局</div>
+      <div class="settings-row">
+        <div>
+          <label class="s-label" for="optLargeFileThreshold">大文件处理阈值</label>
+          <div class="s-hint" id="largeFileThresholdHint">超过此大小时，桌面版会在后台建立磁盘索引，展开节点时按页读取，减少内存占用。调整后对下次打开的文件生效。这里按 1 MB = 1024 × 1024 字节计算；浏览器预览仍使用内存解析。</div>
+        </div>
+        <select id="optLargeFileThreshold" aria-describedby="largeFileThresholdHint">
+          <option value="32">32 MB</option>
+          <option value="64" selected>64 MB</option>
+          <option value="128">128 MB</option>
+          <option value="256">256 MB</option>
+        </select>
+      </div>
       <div class="settings-row">
         <div>
           <label class="s-label" for="optLegacyTreeLayout">使用旧版横向布局</label>
@@ -311,7 +323,7 @@
 
     <div class="modal-foot">
       <span id="editorCount" class="ed-count"></span>
-      <button id="editorExpandAllBtn" class="tf-btn">展开当前页</button>
+      <button id="editorExpandAllBtn" class="tf-btn">展开全部</button>
       <button id="editorCollapseAllBtn" class="tf-btn">全部收起</button>
       <button id="editorShowAllBtn" class="tf-btn">全部显示</button>
       <button id="editorSaveBtn" class="primary">保存并应用</button>
@@ -350,7 +362,11 @@
 
 <script type="module" src="/src/main.js"></script>
 <div id="loadingStatus" class="loading-status" role="status" hidden>
-  <span id="loadingLabel">正在打开文件…</span>
+  <span class="loading-spinner" aria-hidden="true"></span>
+  <div class="loading-details">
+    <span id="loadingLabel">正在打开文件…</span>
+    <progress id="loadingProgress" max="100" aria-label="文件处理进度"></progress>
+  </div>
   <button id="cancelLoadBtn">取消</button>
 </div>
 </body>

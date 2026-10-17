@@ -6,8 +6,11 @@ src-tauri/gen/
 .DS_Store
 RELEASE_REVIEW.md
 ROADMAP.md
+docs/*.md
+!docs/README.md
 .vscode/
 .idea/
+.workbuddy/
 
 # Local configuration and credentials
 .env
