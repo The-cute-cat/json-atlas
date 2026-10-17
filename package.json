@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "node --check src/reader.js && node --check src/main.js && node --check src/data.js && node --check src/paging.js && node --check src/desktop.js && node --check src/parser.worker.js",
+    "check": "node --check src/reader.js && node --check src/main.js && node --check src/data.js && node --check src/paging.js && node --check src/desktop.js && node --check src/parser.worker.js && node --check src/about.js",
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",

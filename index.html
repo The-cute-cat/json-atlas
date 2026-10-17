@@ -65,6 +65,7 @@
       <button id="editorBtn" title="编辑模板：显示/隐藏字段">模板编辑…</button>
       <div class="ctx-sep"></div>
       <button id="settingsBtn" title="设置">设置…</button>
+      <button id="aboutBtn">关于 JSON Atlas…</button>
     </div>
   </header>
 
@@ -107,16 +108,27 @@
     <div class="modal-head">
       <div class="modal-titles">
         <div id="settingsTitle" style="font-size:15px;font-weight:670;letter-spacing:-.01em">设置</div>
-        <div id="settingsSub" style="margin-top:2px;color:var(--muted);font-size:11px">阅读设置保存在本机</div>
+        <div id="settingsSub" style="margin-top:2px;color:var(--muted);font-size:11px">设置自动保存在本机，关闭面板即可继续阅读</div>
       </div>
       <button id="settingsClose" title="关闭">✕</button>
     </div>
     <div class="settings-body">
       <div class="settings-group">
+      <div class="settings-group-title">阅读与布局</div>
+      <div class="settings-row">
+        <div>
+          <label class="s-label" for="optLegacyTreeLayout">使用旧版横向布局</label>
+          <div class="s-hint" id="legacyTreeLayoutHint">开启后，子树在父节点右侧展开；关闭后，子树从父节点下方向右缩进。切换不会收起已展开的节点。</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="optLegacyTreeLayout" aria-describedby="legacyTreeLayoutHint" />
+          <span class="slider"></span>
+        </label>
+      </div>
       <div class="settings-row">
         <div>
           <div class="s-label">自动应用结构模板</div>
-          <div class="s-hint">打开文件时按模板展开</div>
+          <div class="s-hint">打开文件时按已记录的模板展开，适合连续阅读结构相似的文件。恢复阅读状态时，优先使用上次的展开状态。</div>
         </div>
         <label class="switch">
           <input type="checkbox" id="optAutoTemplate" />
@@ -126,7 +138,7 @@
       <div class="settings-row">
         <div>
           <div class="s-label">默认展开层数</div>
-          <div class="s-hint">无模板时生效；数组仅展开第一项</div>
+          <div class="s-hint">未恢复阅读状态、也未应用展开模板时，按所选层数展开。数组仅展开第一项，避免一次显示过多内容。</div>
         </div>
         <select id="optDefaultLevels">
           <option value="0">全部收起</option>
@@ -138,7 +150,7 @@
       <div class="settings-row">
         <div>
           <div class="s-label">数组编号起点</div>
-          <div class="s-hint">仅影响显示，JSONPath 仍从 0 开始</div>
+          <div class="s-hint">选择数组条目显示为 0、1、2… 或 1、2、3…。仅改变阅读编号，路径中的真实下标仍从 0 开始。</div>
         </div>
         <select id="optIndexBase">
           <option value="0">从 0 开始</option>
@@ -148,7 +160,7 @@
       <div class="settings-row">
         <div>
           <div class="s-label">多文件栏样式</div>
-          <div class="s-hint">悬停时展开文件列表或对应文件</div>
+          <div class="s-hint">调整左侧已打开文件的展示方式。将鼠标移到栏上可查看文件名，并切换到对应文件。</div>
         </div>
         <select id="optRailStyle">
           <option value="default">默认竖条</option>
@@ -158,7 +170,7 @@
       <div class="settings-row">
         <div>
           <div class="s-label">重启时重新打开文件</div>
-          <div class="s-hint" id="reopenHint">关闭后清除文件恢复记录</div>
+          <div class="s-hint" id="reopenHint">下次启动时继续打开本次的文件；关闭此项会清除已保存的恢复记录。</div>
         </div>
         <label class="switch">
           <input type="checkbox" id="optReopenLast" />
@@ -168,7 +180,7 @@
       <div class="settings-row">
         <div>
           <div class="s-label">恢复阅读状态</div>
-          <div class="s-hint">重新打开文件时恢复视图和展开层级</div>
+          <div class="s-hint">需先开启“重启时重新打开文件”。恢复上次的平移位置、缩放比例和展开层级，继续之前的阅读。</div>
         </div>
         <label class="switch">
           <input type="checkbox" id="optRestoreSession" />
@@ -181,7 +193,7 @@
         <div class="settings-row">
           <div>
             <div class="s-label">限制内容高度</div>
-            <div class="s-hint">长内容折叠显示，点击 … 查看全文</div>
+            <div class="s-hint">将过长的字段内容限制在指定行数内，让树形结构更紧凑。超出部分可点击卡片上的 … 查看全文。</div>
           </div>
           <label class="switch">
             <input type="checkbox" id="optLimitValueHeight" />
@@ -191,6 +203,7 @@
         <div class="settings-row">
           <div>
             <div class="s-label">最多显示行数</div>
+            <div class="s-hint">开启“限制内容高度”后生效，只影响卡片显示，不会截断复制的内容。</div>
           </div>
           <select id="optValueMaxLines">
             <option value="3">3 行</option>
@@ -205,7 +218,7 @@
         <div class="settings-row">
           <div>
             <div class="s-label">以数组显示多条记录</div>
-            <div class="s-hint">关闭后仅显示第一条记录</div>
+            <div class="s-hint">多条 JSONL 记录放在同一个数组根节点下，便于逐条浏览；关闭后只显示第一条记录。</div>
           </div>
           <label class="switch">
             <input type="checkbox" id="optSettingsJsonlArray" />
@@ -215,7 +228,7 @@
         <div class="settings-row">
           <div>
             <div class="s-label">严格模式</div>
-            <div class="s-hint">遇到无效行时停止加载；关闭后跳过无效行</div>
+            <div class="s-hint">任意记录行解析失败或包含注释时，拒绝预览整个文件。关闭后跳过这些行；空行始终忽略。</div>
           </div>
           <label class="switch">
             <input type="checkbox" id="optStrictJsonl" />
@@ -224,9 +237,11 @@
         </div>
       </div>
       <div class="settings-group">
+      <div class="settings-group-title">模板与备份</div>
       <div class="settings-row">
         <div>
           <div class="s-label">结构模板</div>
+          <div class="s-hint">记录常用的展开层级，也可通过模板编辑器隐藏字段。“立即应用”用于当前文件，“清除”会恢复隐藏字段。</div>
           <div class="s-hint" id="templateStatus">未记录</div>
         </div>
         <div style="display:flex;gap:8px">
@@ -237,7 +252,7 @@
       <div class="settings-row">
         <div>
           <div class="s-label">设置导入 / 导出</div>
-          <div class="s-hint">包含阅读设置和结构模板</div>
+          <div class="s-hint">导出阅读设置和结构模板，便于备份或迁移到另一台电脑。导入后替换对应设置，不包含已打开的数据文件。</div>
         </div>
         <div style="display:flex;gap:8px">
           <button id="exportSettingsBtn" class="tf-btn">导出</button>
@@ -303,6 +318,35 @@
     </div>
   </div>
 </div>
+
+<dialog id="aboutDialog" aria-labelledby="aboutTitle" aria-describedby="aboutDescription">
+  <button id="aboutClose" class="about-close" aria-label="关闭关于窗口" title="关闭" autofocus>✕</button>
+  <div id="aboutBody">
+  <div class="about-brand">
+    <img src="/src/assets/app-icon.png" width="72" height="72" alt="" />
+    <h2 id="aboutTitle">JSON Atlas</h2>
+    <span id="aboutVersion" class="about-version"></span>
+    <p class="about-tagline">浏览结构，专注内容</p>
+  </div>
+  <p id="aboutDescription">本地 JSON / JSONL 数据阅读器。在树形画布中浏览嵌套结构、搜索字段，并通过结构模板定制阅读方式。</p>
+  <dl class="about-info">
+    <div><dt>开发者</dt><dd>The_cute_cat</dd></div>
+    <div><dt>开源许可</dt><dd>Apache License 2.0</dd></div>
+    <div><dt>数据处理</dt><dd>文件在本地解析，不会上传</dd></div>
+    <div><dt>项目地址</dt><dd class="about-project">github.com/The-cute-cat/json-atlas</dd></div>
+  </dl>
+  <details id="aboutLicense" class="about-license">
+    <summary>查看开源许可证</summary>
+    <pre id="aboutLicenseText" tabindex="0" aria-label="Apache License 2.0 全文"></pre>
+  </details>
+  <p class="about-copyright">© 2026 The_cute_cat 和其他贡献者</p>
+  <div class="about-actions">
+    <button id="aboutCopyProject" type="button">复制项目地址</button>
+    <button id="aboutConfirm" type="button" class="primary">确定</button>
+  </div>
+  <p id="aboutStatus" class="about-status" role="status"></p>
+  </div>
+</dialog>
 
 <script type="module" src="/src/main.js"></script>
 <div id="loadingStatus" class="loading-status" role="status" hidden>

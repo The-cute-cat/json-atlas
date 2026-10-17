@@ -5,6 +5,7 @@ src-tauri/gen/
 *.log
 .DS_Store
 RELEASE_REVIEW.md
+ROADMAP.md
 .vscode/
 .idea/
 

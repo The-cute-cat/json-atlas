@@ -1,4 +1,5 @@
 import { pagedChildren } from './paging.js';
+import { openAbout } from './about.js';
 import { MAX_FILE_BYTES, searchData, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath } from './data.js';
 import { desktop, readNativeFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
 
@@ -867,7 +868,7 @@ function refreshValueOverflow(scope, force){
   const pending = [];
   for(const el of els){
     const card = el.closest('.node-card');
-    if(card && (force || !card._ovMeasured)) pending.push([el, card]);
+    if(card && (force || !card._ovMeasured)) pending.push([el.closest('.node-text') || el, card]);
   }
   if(!pending.length) return;
 
@@ -942,25 +943,27 @@ function createNode(key, value, path, isRoot=false, isArrayItem=false){
   const keyEl = document.createElement('span');
   keyEl.className = 'node-key';
   keyEl.textContent = key;
-  card.appendChild(keyEl);
   node._keyEl = keyEl;
 
   if(isBranch){
+    card.appendChild(keyEl);
     const badge = document.createElement('span');
     badge.className = 'badge';
     const count = Array.isArray(value) ? value.length : Object.keys(value).length;
     badge.textContent = `${Array.isArray(value) ? 'Array' : 'Object'} · ${count}`;
     card.appendChild(badge);
   }else{
+    const text = document.createElement('span');
+    text.className = 'node-text';
     const sep = document.createElement('span');
     sep.className = 'node-sep';
-    sep.textContent = ':';
-    card.appendChild(sep);
+    sep.textContent = ' : ';
 
     const valueEl = document.createElement('span');
     valueEl.className = 'node-value ' + typeClass(value);
     valueEl.textContent = formatPrimitive(value);
-    card.appendChild(valueEl);
+    text.append(keyEl, sep, valueEl);
+    card.appendChild(text);
 
     /* 该字段的内容本身就是 JSON：右上角给角标，点击即以 JSON 展开 */
     const jsonValue = parseJsonInString(value);
@@ -1218,6 +1221,7 @@ const SESSION_KEY = 'json-atlas_session_v1';
 })();
 
 let settings = {
+  legacyTreeLayout: false,
   autoTemplate: true,
   defaultLevels: 0,
   indexBase: 0,              /* 数组索引编号起始值：0 基 / 1 基（仅影响显示） */
@@ -1362,6 +1366,7 @@ const optAutoTemplate = document.getElementById('optAutoTemplate');
 const optDefaultLevels = document.getElementById('optDefaultLevels');
 const optIndexBase = document.getElementById('optIndexBase');
 const optRailStyle = document.getElementById('optRailStyle');
+const optLegacyTreeLayout = document.getElementById('optLegacyTreeLayout');
 const optReopenLast = document.getElementById('optReopenLast');
 const optRestoreSession = document.getElementById('optRestoreSession');
 const exportSettingsBtn = document.getElementById('exportSettingsBtn');
@@ -1392,6 +1397,7 @@ function updateTemplateStatus(){
 }
 
 function openSettings(){
+  optLegacyTreeLayout.checked = settings.legacyTreeLayout === true;
   optAutoTemplate.checked = settings.autoTemplate;
   optDefaultLevels.value = String(settings.defaultLevels);
   optIndexBase.value = settings.indexBase === 1 ? '1' : '0';
@@ -1456,6 +1462,19 @@ optIndexBase.addEventListener('change', () => {
 function applyRailStyle(){
   fileRail.classList.toggle('rail-dial', settings.railStyle === 'dial');
 }
+
+function applyTreeLayout(){
+  for(const id of ['tree', 'editorTree']){
+    document.getElementById(id).classList.toggle('legacy-tree-layout', settings.legacyTreeLayout === true);
+  }
+  requestAnimationFrame(() => refreshValueOverflow(tree, true));
+}
+
+optLegacyTreeLayout.addEventListener('change', () => {
+  settings.legacyTreeLayout = optLegacyTreeLayout.checked;
+  saveSettings();
+  applyTreeLayout();
+});
 
 optRailStyle.addEventListener('change', () => {
   settings.railStyle = optRailStyle.value === 'dial' ? 'dial' : 'default';
@@ -1644,6 +1663,7 @@ settingsImportInput.addEventListener('change', () => {
         ? payload.settings : payload;
 
       settings = {
+        legacyTreeLayout: s.legacyTreeLayout === true,
         autoTemplate: !!s.autoTemplate,
         defaultLevels: parseInt(s.defaultLevels, 10) || 0,
         indexBase: parseInt(s.indexBase, 10) === 1 ? 1 : 0,
@@ -1676,6 +1696,7 @@ settingsImportInput.addEventListener('change', () => {
       }
       applyValueHeightSetting();   /* 高度限制可能变了，立即生效 */
       applyRailStyle();   /* 多文件栏样式可能变了，立即生效 */
+      applyTreeLayout();
       showToast('设置已导入');
     }catch(err){
       showToast('导入失败：' + err.message);
@@ -1688,6 +1709,7 @@ settingsImportInput.addEventListener('change', () => {
 /* 启动时先应用两项与显示相关的设置，避免渲染完再变化的跳动 / 联动项状态不对 */
 applyValueHeightSetting();
 syncReopenControls();
+applyTreeLayout();
 
 let nativeRestore = null;
 
@@ -2012,9 +2034,12 @@ window.addEventListener('blur', closeMoreMenu);
 window.addEventListener('click', closeMenu);
 window.addEventListener('blur', closeMenu);
 window.addEventListener('contextmenu', e => {
-  if(!e.target.closest('.node-card')) closeMenu();
+  // Node cards handle their own menu above; suppress WebView/browser menus elsewhere.
+  e.preventDefault();
+  closeMenu();
 });
 document.addEventListener('keydown', e => {
+  if(document.getElementById('aboutDialog').open) return;
   const modifier = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
   if(modifier && key === 'o'){ e.preventDefault(); chooseFiles(); return; }
@@ -2268,8 +2293,8 @@ window.addEventListener('drop', e => e.preventDefault());
 const loadingStatus = document.getElementById('loadingStatus');
 const loadingLabel = document.getElementById('loadingLabel');
 document.getElementById('reopenHint').textContent = desktop
-  ? '从原路径读取文件，关闭后清除恢复记录'
-  : '在浏览器本地保存文件副本';
+  ? '下次启动时从原路径读取文件的最新内容。关闭此项会清除恢复记录，不会删除原文件。'
+  : '在浏览器本地保存文件副本，刷新后继续打开。关闭此项会清除副本，不会删除原文件。';
 document.getElementById('cancelLoadBtn').addEventListener('click', () => activeLoad?.abort());
 (async () => {
   if(nativeRestore){
@@ -2282,6 +2307,6 @@ document.getElementById('cancelLoadBtn').addEventListener('click', () => activeL
     else if(action === 'close' && activeDocId) closeDoc(activeDocId);
     else if(action === 'reset' && activeDocId) resetView();
     else if(action === 'settings') openSettings();
-    else if(action === 'about') showToast('JSON Atlas 0.1.0 · Apache-2.0 · 本地 JSON / JSONL 阅读器');
+    else if(action === 'about') openAbout();
   });
 })().catch(error => showToast('启动失败：' + error));

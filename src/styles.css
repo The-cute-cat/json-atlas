@@ -583,9 +583,11 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .tree-node{
   position:relative;
   display:flex;
+  flex-direction:column;
   align-items:flex-start;
-  margin:9px 0;
+  margin:0;
 }
+.root-node{margin:9px 0}
 .node-main{
   display:flex;
   align-items:flex-start;
@@ -634,6 +636,17 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   transition:.14s ease;
 }
 .branch>.node-main .node-card{cursor:pointer}
+/* One text flow: continuation lines reuse the space below the field name. */
+.node-text{
+  display:block;
+  min-width:0;
+  max-width:660px;
+  font-size:13px;
+  line-height:1.62;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  word-break:break-word;
+}
 .node-card:hover{
   border-color:rgba(0,113,227,.28);
   box-shadow:0 4px 14px rgba(0,0,0,.06);
@@ -715,13 +728,19 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   text-overflow:ellipsis;
   color:var(--muted);
 }
+.node-card.json-expanded .node-text{
+  max-width:60ch;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
 /* ---------- 限制字段内容高度（设置项，默认关闭） ----------
    值只显示到设定行数，底部渐隐 + 右上角 … 图标提示还有内容 */
-#tree.limit-value .node-value{
+#tree.limit-value .node-text{
   max-height:calc(var(--value-max-lines,6) * 1.62em);
   overflow:hidden;
 }
-#tree.limit-value .node-card.has-fullview .node-value{
+#tree.limit-value .node-card.has-fullview .node-text{
   -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 14px),transparent);
   mask-image:linear-gradient(to bottom,#000 calc(100% - 14px),transparent);
 }
@@ -742,12 +761,51 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .children{
   display:none;
   flex-direction:column;
-  margin-left:36px;
-  padding-left:30px;
+  /* Start the spine beneath the parent card, independent of its width/height. */
+  margin-left:45px;
   position:relative;
 }
 .tree-node.open>.children{display:flex}
-.children::before{
+.children>.tree-node{
+  padding-top:14px;
+  padding-left:24px;
+}
+/* Keep connectors inside each node's bounds for content-visibility containment. */
+.children>.tree-node::after{
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:1px;
+  background:var(--line);
+}
+.children>.tree-node:last-child::after,
+.children>.tree-node:has(+ .page-navigation)::after{
+  bottom:auto;
+  height:31px;
+}
+.children>.tree-node::before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:31px;
+  width:24px;
+  height:1px;
+  background:var(--line);
+}
+/* Leaf nodes have an invisible toggle: bridge that space up to the card. */
+.children>.tree-node:not(.branch)::before{width:57px}
+/* Optional original layout, shared by the reader and template editor. */
+.legacy-tree-layout .tree-node{
+  flex-direction:row;
+  margin:9px 0;
+}
+.legacy-tree-layout .children{
+  margin-left:36px;
+  padding-left:30px;
+}
+.legacy-tree-layout .children::before{
   content:"";
   position:absolute;
   left:9px;
@@ -756,14 +814,12 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   width:1px;
   background:var(--line);
 }
-.children>.tree-node::before{
-  content:"";
-  position:absolute;
+.legacy-tree-layout .children>.tree-node{padding:0}
+.legacy-tree-layout .children>.tree-node::after{content:none}
+.legacy-tree-layout .children>.tree-node::before{
   left:-21px;
   top:17px;
   width:21px;
-  height:1px;
-  background:var(--line);
 }
 .match>.node-main .node-card{
   border-color:#e6b400;
@@ -959,6 +1015,87 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 }
 .modal-foot button.primary:hover{filter:brightness(.96)}
 
+/* ---------- 关于应用 ---------- */
+#aboutDialog{
+  width:min(440px,calc(100vw - 32px));
+  max-height:calc(100vh - 40px);
+  margin:auto;
+  padding:12px;
+  overflow:hidden;
+  border:1px solid rgba(0,0,0,.08);
+  border-radius:16px;
+  background:#fff;
+  color:var(--text);
+  box-shadow:0 24px 80px rgba(0,0,0,.22);
+  user-select:text;
+}
+#aboutDialog::backdrop{background:rgba(0,0,0,.28)}
+#aboutBody{
+  max-height:calc(100vh - 66px);
+  padding:16px 16px 0;
+  overflow:auto;
+}
+#aboutBody,.about-license pre{
+  scrollbar-gutter:stable;
+  scroll-behavior:auto;
+}
+#aboutBody::-webkit-scrollbar,.about-license pre::-webkit-scrollbar{width:6px;height:6px}
+#aboutBody::-webkit-scrollbar-track,.about-license pre::-webkit-scrollbar-track{background:transparent}
+#aboutBody::-webkit-scrollbar-thumb,.about-license pre::-webkit-scrollbar-thumb{
+  background:#c4c4cb;border-radius:999px;
+}
+#aboutBody::-webkit-scrollbar-thumb:hover,.about-license pre::-webkit-scrollbar-thumb:hover{background:#9b9ba4}
+#aboutBody::-webkit-scrollbar-button,.about-license pre::-webkit-scrollbar-button{display:none;width:0;height:0}
+.about-close{
+  position:absolute;
+  top:12px;right:24px;
+  z-index:1;
+  width:28px;height:28px;
+  padding:0;
+  border:0;border-radius:50%;
+  background:#f0f0f4;color:var(--muted);
+  cursor:pointer;
+}
+.about-close:hover{background:#e3e3e8;color:var(--text)}
+.about-brand{text-align:center}
+.about-brand img{display:block;margin:0 auto 14px}
+.about-brand h2{margin:0 0 8px;font-size:25px;font-weight:700;letter-spacing:-.035em}
+.about-version{
+  display:inline-block;
+  padding:3px 10px;
+  border-radius:999px;
+  background:#f0f0f4;color:var(--muted);
+  font-size:12px;
+}
+.about-tagline{margin:12px 0 18px;color:var(--muted);font-size:13px}
+#aboutDescription{margin:0 0 18px;color:#626269;font-size:12.5px;line-height:1.75}
+.about-info{margin:0;padding:12px 0;border-block:1px solid #eeeef2;font-size:12px}
+.about-info>div{display:flex;align-items:baseline;gap:16px;padding:5px 0;line-height:1.6}
+.about-info dt{flex:0 0 64px;color:var(--muted)}
+.about-info dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.about-project{user-select:all}
+.about-license{margin-top:14px;font-size:12px}
+.about-license summary{width:fit-content;color:var(--accent);cursor:pointer;padding:4px 0}
+.about-license pre{
+  max-height:160px;
+  margin:10px 0 0;padding:12px;
+  overflow:auto;border:1px solid #e5e5ea;border-radius:8px;
+  background:#f8f8fa;color:#626269;
+  white-space:pre-wrap;overflow-wrap:anywhere;
+  font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;
+}
+.about-copyright{margin:16px 0;color:var(--muted);font-size:11px;line-height:1.6}
+.about-actions{display:flex;justify-content:flex-end;gap:8px}
+.about-actions button{
+  width:auto;margin:0;flex-shrink:0;white-space:nowrap;
+  padding:8px 14px;border:0;border-radius:8px;
+  background:#f0f0f4;color:var(--text);font-size:12px;cursor:pointer;
+}
+.about-actions button:hover{background:#e5e5ea}
+.about-actions button.primary{min-width:76px;background:var(--accent);color:#fff;font-weight:600}
+.about-actions button.primary:hover{filter:brightness(.96)}
+.about-status{min-height:16px;margin:7px 0 0;color:var(--muted);font-size:11px;text-align:right;line-height:1.5}
+
 /* ---------- 设置面板 ---------- */
 .settings-body{
   flex:1;
@@ -993,6 +1130,9 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   border-bottom:1px solid rgba(0,0,0,.05);
 }
 .settings-row:last-child{border-bottom:0}
+.settings-row>div:first-child{min-width:0;flex:1}
+.settings-row>select{flex-shrink:0}
+.settings-row>div:last-child:not(:first-child){flex-shrink:0}
 .s-label{font-size:13.5px;font-weight:600}
 .s-hint{margin-top:2px;color:var(--muted);font-size:11px;line-height:1.5}
 .tf-btn{
