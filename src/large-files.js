@@ -14,6 +14,7 @@ export class IndexedDataSource {
   #request; #id; #root; #closed = false; #configuration = 0; #version = 0;
   #cache; #owner = ++sourceSequence; #inflight = new Map(); #prefetching = false;
   #pageGroups = new WeakMap();
+  #searchJobs = new Map(); #searchSequence = 0;
   indexed = true;
   wrap = true;
   constructor(request, id, info, wrap = true, { cache = sharedPageCache } = {}) {
@@ -33,6 +34,7 @@ export class IndexedDataSource {
     this.#check(signal); return result;
   }
   async configure(wrap, strict) {
+    for (const cancel of this.#searchJobs.values()) cancel();
     const generation = ++this.#configuration;
     const result = await this.#call('info', { wrap, strict });
     if (generation !== this.#configuration) return;
@@ -95,7 +97,42 @@ export class IndexedDataSource {
     finally { this.#prefetching = false; }
   }
   getText(path, { signal } = {}) { return this.#call('text', { path }, signal); }
+  async #nativeSearch(query, { rootLabel, indexBase, hidden, cancelled, signal, limit }) {
+    this.#check(signal);
+    if (cancelled()) return null;
+    for (const cancel of this.#searchJobs.values()) cancel();
+    const version = this.#version, searchId = `search-${this.#owner}-${++this.#searchSequence}`;
+    let stopped = false;
+    const cancel = () => {
+      stopped = true;
+      // This operation bypasses the document lock and remains valid during close.
+      this.#request('searchCancel', this.#id, { searchId }).catch(() => {});
+    };
+    this.#searchJobs.set(searchId, cancel);
+    const timer = setInterval(() => {
+      // Retry until completion: cancellation can arrive before native registration.
+      if (stopped || cancelled() || this.#closed || version !== this.#version) cancel();
+    }, 40);
+    signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      const result = await this.#call('search', { searchId, query, rootLabel, indexBase, hidden: [...hidden], limit }, signal);
+      this.#checkVersion(version, signal);
+      return stopped || cancelled() ? null : result;
+    } catch (error) {
+      this.#checkVersion(version, signal);
+      if (stopped || cancelled()) return null;
+      this.#cache.deleteOwner(this.#owner);
+      throw error;
+    } finally {
+      clearInterval(timer); signal?.removeEventListener('abort', cancel); this.#searchJobs.delete(searchId);
+    }
+  }
   async search(query, { rootLabel = 'root', indexBase = 0, hidden = new Set(), cancelled = () => false, signal, limit = 1000 } = {}) {
+    // JSON IPC cannot represent lone UTF-16 surrogates. Keep the old local
+    // matcher for those unusual queries rather than changing their meaning.
+    if (this.info.nativeSearch && query && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(query)) {
+      return this.#nativeSearch(query, { rootLabel, indexBase, hidden, cancelled, signal, limit });
+    }
     const hits = [], stack = [{ node: this.getRoot(), key: rootLabel }];
     const version = this.#version, batches = new Map();
     const finish = async truncated => {
@@ -175,6 +212,7 @@ export class IndexedDataSource {
   }
   dispose() {
     if (this.#closed) return;
+    for (const cancel of this.#searchJobs.values()) cancel();
     this.#closed = true;
     this.#version++; this.#cache.deleteOwner(this.#owner); this.#inflight.clear();
     this.#request('close', this.#id, {}).catch(console.error);

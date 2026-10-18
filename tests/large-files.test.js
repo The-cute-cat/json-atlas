@@ -4,6 +4,71 @@ import { normalizeThreshold, needsIndex, IndexedDataSource } from '../src/large-
 import { MemoryDataSource } from '../src/data-source.js';
 import { PageCache } from '../src/page-cache.js';
 
+function nativeFixture() {
+  const calls = [], pending = [];
+  const info = { root: { path: [], type: 'object', childCount: 1 }, nativeSearch: true };
+  const cache = new PageCache();
+  const source = new IndexedDataSource(async (op, id, args) => {
+    calls.push({ op, id, args });
+    if (op === 'search') return new Promise((resolve, reject) => pending.push({ resolve, reject }));
+    if (op === 'info') return info;
+    if (op === 'page') return { start: 0, end: 0, total: 0, items: [] };
+  }, 'native-test', info, true, { cache });
+  return { source, calls, pending, cache };
+}
+
+test('native search sends one bounded result request and preserves all matching options', async () => {
+  const { source, calls, pending, cache } = nativeFixture();
+  const search = source.search('中文😀', { rootLabel: '根', indexBase: 1, hidden: new Set(['$.secret']), limit: 3 });
+  assert.equal(calls.length, 1); assert.equal(calls[0].op, 'search');
+  assert.deepEqual({ ...calls[0].args, searchId: 'id' }, { searchId: 'id', query: '中文😀', rootLabel: '根', indexBase: 1, hidden: ['$.secret'], limit: 3, wrap: true });
+  const result = { hits: [['value']], truncated: false };
+  pending[0].resolve(result); assert.deepEqual(await search, result);
+  assert.equal(cache.stats.entries, 0); source.dispose();
+});
+
+test('native search cancellation retries independently of the pending document request', async () => {
+  const { source, calls, pending } = nativeFixture(); let cancelled = false;
+  const search = source.search('target', { cancelled: () => cancelled });
+  cancelled = true;
+  await new Promise(resolve => setTimeout(resolve, 110));
+  assert(calls.filter(c => c.op === 'searchCancel').length >= 2);
+  pending[0].reject(new Error('已取消')); assert.equal(await search, null);
+  const count = calls.length;
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(calls.length, count); source.dispose();
+});
+
+test('native search abort, close, replacement and configuration reject or discard stale results', async () => {
+  for (const action of ['abort', 'close', 'replace', 'configure']) {
+    const { source, calls, pending } = nativeFixture(); const control = new AbortController();
+    const search = source.search('first', { signal: control.signal });
+    let newer;
+    if (action === 'abort') control.abort();
+    if (action === 'close') source.dispose();
+    if (action === 'replace') newer = source.search('second');
+    if (action === 'configure') await source.configure(false, false);
+    assert(calls.some(c => c.op === 'searchCancel'));
+    pending[0].resolve({ hits: [[]], truncated: false });
+    if (action === 'abort' || action === 'configure') await assert.rejects(search, { name: 'AbortError' });
+    else if (action === 'close') await assert.rejects(search, /关闭/);
+    else { assert.equal(await search, null); pending[1].resolve({ hits: [], truncated: false }); await newer; }
+    source.dispose();
+  }
+});
+
+test('native search errors clear reading cache and pre-cancelled requests never start', async () => {
+  const { source, calls, pending, cache } = nativeFixture();
+  await source.getChildren([]); assert.equal(cache.stats.entries, 1);
+  const search = source.search('target'); pending[0].reject(new Error('文件已变化'));
+  await assert.rejects(search, /文件已变化/); assert.equal(cache.stats.entries, 0);
+  const count = calls.length;
+  assert.equal(await source.search('target', { cancelled: () => true }), null);
+  const control = new AbortController(); control.abort();
+  await assert.rejects(source.search('target', { signal: control.signal }), { name: 'AbortError' });
+  assert.equal(calls.length, count); source.dispose();
+});
+
 test('threshold accepts exactly four sizes and routes only strictly larger files', () => {
   for (const n of [32, 64, 128, 256]) {
     assert.equal(normalizeThreshold(String(n)), n);
@@ -49,6 +114,14 @@ test('indexed search crosses pages, respects hidden fields and can cancel betwee
   const count = calls.length;
   assert.equal(await source.search('nothing', { cancelled: () => calls.length > count }), null);
   assert(calls.length <= count + 1);
+});
+
+test('lone UTF-16 surrogate queries use local fallback while valid pairs use native search', async () => {
+  const { source, calls } = fixture({ text: 'a\uD800z' });
+  source.info.nativeSearch = true;
+  assert.deepEqual((await source.search('\uD800')).hits, [['text']]);
+  assert(!calls.some(c => c.op === 'search'));
+  source.dispose();
 });
 
 test('latest JSONL configuration wins and uses the requested wrap option', async () => {

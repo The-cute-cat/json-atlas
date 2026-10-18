@@ -92,6 +92,98 @@ fn jsonl_256mib_benchmark() {
 }
 
 #[test]
+#[ignore = "release native search benchmark: JSON and JSONL, 200,000 six-field records"]
+fn native_search_benchmark() {
+    for ext in ["json", "jsonl"] {
+        let base = std::env::temp_dir().join(format!(
+            "atlas-native-search-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = base.with_extension(ext);
+        let index = base.with_extension("idx");
+        {
+            let mut out = BufWriter::new(File::create(&path).unwrap());
+            if ext == "json" {
+                write!(out, "[").unwrap();
+            }
+            for id in 0..200_000 {
+                if ext == "json" && id > 0 {
+                    write!(out, ",").unwrap();
+                }
+                write!(out,r#"{{"id":{id},"name":"item","active":true,"score":1,"group":"a","value":null}}"#).unwrap();
+                if ext == "jsonl" {
+                    writeln!(out).unwrap();
+                }
+            }
+            if ext == "json" {
+                write!(out, "]").unwrap();
+            }
+            out.flush().unwrap();
+        }
+        let doc = Arc::new(Mutex::new(
+            Indexed::open(
+                path.to_str().unwrap(),
+                index,
+                &AtomicBool::new(false),
+                &|_| {},
+            )
+            .unwrap(),
+        ));
+        for query in ["no-such-value", "199999"] {
+            let options =
+                serde_json::from_value(json!({"searchId":"bench","query":query})).unwrap();
+            let start = Instant::now();
+            let result = doc
+                .lock()
+                .unwrap()
+                .search_copy()
+                .unwrap()
+                .native_search(&options, &AtomicBool::new(false))
+                .unwrap();
+            assert_eq!(
+                result["hits"].as_array().unwrap().len(),
+                if query == "199999" { 2 } else { 0 }
+            );
+            eprintln!(
+                "NATIVE_SEARCH kind={ext} source_bytes={} query={query} elapsed_ms={:.3}",
+                path.metadata().unwrap().len(),
+                start.elapsed().as_secs_f64() * 1000.
+            );
+        }
+        let mut snapshot = doc.lock().unwrap().search_copy().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let options =
+            serde_json::from_value(json!({"searchId":"cancel","query":"missing"})).unwrap();
+        let worker = std::thread::spawn(move || snapshot.native_search(&options, &worker_cancel));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let start = Instant::now();
+        assert_eq!(
+            doc.lock()
+                .unwrap()
+                .page(&[], 199900, None, 100, false, true)
+                .unwrap()["total"],
+            200_000
+        );
+        let page = start.elapsed();
+        let start = Instant::now();
+        cancel.store(true, Ordering::Relaxed);
+        assert!(worker.join().unwrap().unwrap_err().contains("取消"));
+        eprintln!(
+            "NATIVE_SEARCH kind={ext} concurrent_page_ms={:.3} cancel_join_ms={:.3}",
+            page.as_secs_f64() * 1000.,
+            start.elapsed().as_secs_f64() * 1000.
+        );
+        drop(doc);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
 #[ignore = "release I/O benchmark: ordinary JSON array with 200,000 six-field objects"]
 fn json_many_fields_benchmark() {
     json_benchmark(200_000, 3);

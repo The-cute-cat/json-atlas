@@ -38,12 +38,32 @@ async fn indexed_document(
         if let Some(cancel) = state.jobs.lock().map_err(|e| e.to_string())?.get(&id) {
             cancel.store(true, Ordering::Relaxed);
         }
-        state
-            .sessions
-            .lock()
-            .map_err(|e| e.to_string())?
-            .remove(&id);
+        state.close_session(&id)?;
         return Ok(json!(null));
+    }
+    if op == "searchCancel" {
+        state.cancel_search(&id, args["searchId"].as_str().ok_or("缺少搜索标识")?)?;
+        return Ok(json!(null));
+    }
+    if op == "search" {
+        let options: indexed::native_search::Options =
+            serde_json::from_value(args).map_err(|e| e.to_string())?;
+        let lease = state.begin_search(&id, &options.search_id)?;
+        let original = lease.doc.clone();
+        let cancel = lease.cancel.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let mut snapshot = original.lock().map_err(|e| e.to_string())?.search_copy()?;
+            let result = snapshot.native_search(&options, &cancel);
+            drop(snapshot);
+            drop(original);
+            result
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        if lease.cancel.load(Ordering::Relaxed) {
+            return Err("已取消".into());
+        }
+        return result;
     }
     if op == "open" {
         let path = path.ok_or("缺少文件路径")?;

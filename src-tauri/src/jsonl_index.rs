@@ -157,6 +157,72 @@ fn at<'a>(mut value: &'a Value, path: &[Value]) -> Result<&'a Value> {
 }
 
 impl LineIndex {
+    pub(super) fn native_search(
+        &mut self,
+        search: &mut super::native_search::Search<'_>,
+        wrap: bool,
+    ) -> Result<bool> {
+        let wrapped = self.wrapped(wrap);
+        if wrapped {
+            if !search.visible(&[])? {
+                return Ok(false);
+            }
+            if search.array_root(&search.root_label())? {
+                return Ok(true);
+            }
+        }
+        let count = if wrapped {
+            self.records
+        } else {
+            self.records.min(1)
+        };
+        for start in (0..count).step_by(100) {
+            search.check()?;
+            for (i, tag) in self
+                .tags(start, (count - start).min(100))?
+                .into_iter()
+                .enumerate()
+            {
+                let row = start + i as u64;
+                let mut path = if wrapped {
+                    vec![json!(row)]
+                } else {
+                    Vec::new()
+                };
+                let label = if wrapped {
+                    search.index_label(row)
+                } else {
+                    search.root_label()
+                };
+                if !search.visible(&path)? {
+                    continue;
+                }
+                let stop = if tag & LONG != 0 {
+                    search.indexed(self.long_row(tag)?, &mut path, &label)?
+                } else {
+                    search.value(self.value(row, tag)?.as_ref(), &mut path, &label)?
+                };
+                if stop {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+    pub(super) fn search_copy(&self, path: &Path, index: &Path) -> Result<Self> {
+        Ok(Self {
+            reader: BufReader::with_capacity(256 * 1024, File::open(path).map_err(err)?),
+            cursor: 0,
+            offsets: File::open(index).map_err(err)?,
+            records: self.records,
+            bad: self.bad,
+            comments: self.comments,
+            long: self.long.as_ref().map(Indexed::search_copy).transpose()?,
+            long_nodes: self.long_nodes,
+            cached: None,
+            width: self.width,
+        })
+    }
     pub(super) fn build(
         path: &Path,
         offsets: &File,

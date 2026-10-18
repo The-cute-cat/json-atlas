@@ -25,6 +25,8 @@ mod benchmarks;
 mod jsonl;
 #[path = "key_index.rs"]
 mod key_index;
+#[path = "native_search.rs"]
+pub(super) mod native_search;
 type Result<T> = std::result::Result<T, String>;
 
 #[derive(Clone, Copy)]
@@ -37,6 +39,79 @@ struct Branch {
 pub struct IndexState {
     pub jobs: Mutex<HashMap<String, Arc<AtomicBool>>>,
     pub sessions: Mutex<HashMap<String, Arc<Mutex<Indexed>>>>,
+    searches: Arc<Mutex<HashMap<(String, String), Arc<AtomicBool>>>>,
+}
+
+pub struct SearchLease {
+    jobs: Arc<Mutex<HashMap<(String, String), Arc<AtomicBool>>>>,
+    key: (String, String),
+    pub doc: Arc<Mutex<Indexed>>,
+    pub cancel: Arc<AtomicBool>,
+}
+impl Drop for SearchLease {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        if let Ok(mut jobs) = self.jobs.lock() {
+            jobs.remove(&self.key);
+        }
+    }
+}
+impl IndexState {
+    pub fn begin_search(&self, id: &str, query_id: &str) -> Result<SearchLease> {
+        if query_id.is_empty()
+            || query_id.len() > 100
+            || !query_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err("无效的搜索标识".into());
+        }
+        let sessions = self.sessions.lock().map_err(err)?;
+        let doc = sessions
+            .get(id)
+            .cloned()
+            .ok_or("索引已关闭，请重新打开文件")?;
+        let mut jobs = self.searches.lock().map_err(err)?;
+        let key = (id.to_string(), query_id.to_string());
+        if jobs.contains_key(&key) {
+            return Err("搜索标识已存在".into());
+        }
+        for ((owner, _), cancel) in jobs.iter() {
+            if owner == id {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        jobs.insert(key.clone(), cancel.clone());
+        Ok(SearchLease {
+            jobs: self.searches.clone(),
+            key,
+            doc,
+            cancel,
+        })
+    }
+    pub fn cancel_search(&self, id: &str, query_id: &str) -> Result<()> {
+        if let Some(cancel) = self
+            .searches
+            .lock()
+            .map_err(err)?
+            .get(&(id.into(), query_id.into()))
+        {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+    pub fn close_session(&self, id: &str) -> Result<()> {
+        // Same lock order as begin_search closes the registration/close race.
+        let mut sessions = self.sessions.lock().map_err(err)?;
+        for ((owner, _), cancel) in self.searches.lock().map_err(err)?.iter() {
+            if owner == id {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        sessions.remove(id);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -501,6 +576,7 @@ impl Scanner<'_> {
 }
 
 pub struct Indexed {
+    owned: bool,
     source_path: PathBuf,
     jsonl: Option<Box<jsonl::LineIndex>>,
     source: File,
@@ -528,6 +604,9 @@ pub struct Indexed {
 }
 impl Drop for Indexed {
     fn drop(&mut self) {
+        if !self.owned {
+            return;
+        }
         self.jsonl.take();
         self.index.take();
         if self.children.take().is_some() {
@@ -578,6 +657,7 @@ impl Indexed {
             .open(&index_path)
             .map_err(err)?;
         Ok(Self {
+            owned: true,
             source_path: PathBuf::from(path),
             jsonl: None,
             source,
@@ -603,6 +683,51 @@ impl Indexed {
             kind: "json".into(),
             syntax_failed: false,
         })
+    }
+    pub fn search_copy(&self) -> Result<Self> {
+        self.check()?;
+        let open_optional = |file: &Option<File>, path: &Path| -> Result<Option<File>> {
+            file.as_ref()
+                .map(|_| File::open(path).map_err(err))
+                .transpose()
+        };
+        let copy = Self {
+            owned: false,
+            source_path: self.source_path.clone(),
+            source: File::open(&self.source_path).map_err(err)?,
+            index: Some(File::open(&self.index_path).map_err(err)?),
+            node_buffer: NodeBuffer::new(self.width),
+            children: open_optional(&self.children, &self.children_path)?,
+            children_path: self.children_path.clone(),
+            branches: open_optional(&self.branches, &self.branches_path)?,
+            branches_path: self.branches_path.clone(),
+            keys: open_optional(&self.keys, &self.keys_path)?,
+            keys_path: self.keys_path.clone(),
+            key_state: self.key_state.clone(),
+            branch_count: self.branch_count,
+            branch_cache: HashMap::new(),
+            width: self.width,
+            index_path: self.index_path.clone(),
+            size: self.size,
+            modified: self.modified,
+            root: self.root,
+            records: self.records,
+            bad: self.bad,
+            comments: self.comments,
+            kind: self.kind.clone(),
+            syntax_failed: false,
+            jsonl: self
+                .jsonl
+                .as_ref()
+                .map(|lines| {
+                    lines
+                        .search_copy(&self.source_path, &self.index_path)
+                        .map(Box::new)
+                })
+                .transpose()?,
+        };
+        copy.check()?;
+        Ok(copy)
     }
     fn scan(&mut self, jsonl: bool, cancel: &AtomicBool, progress: &dyn Fn(u64)) -> Result<()> {
         if jsonl {
@@ -980,7 +1105,7 @@ impl Indexed {
             self.describe(self.root_id(wrap), &[])?
         };
         Ok(
-            json!({"root":root,"kind":self.kind,"records":self.records,"badCount":self.bad,"commentCount":self.comments,"searchBatch":true}),
+            json!({"root":root,"kind":self.kind,"records":self.records,"badCount":self.bad,"commentCount":self.comments,"searchBatch":true,"nativeSearch":true}),
         )
     }
     pub fn search_pages(&mut self, paths: &[Vec<Value>], wrap: bool) -> Result<Value> {

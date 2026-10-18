@@ -11,6 +11,9 @@ docs/*.md
 .vscode/
 .idea/
 .workbuddy/
+tests/*.json
+!tests/native-search-fixtures.json
+!tests/native-search-numbers.json
 
 # Local configuration and credentials
 .env

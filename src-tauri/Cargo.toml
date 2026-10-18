@@ -16,7 +16,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 memchr = "2"
 # 见文件末尾“上游 workaround”说明，勿删。
 indexmap = { version = "1.9", features = ["std"] }
