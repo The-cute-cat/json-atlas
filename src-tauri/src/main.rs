@@ -119,6 +119,11 @@ async fn indexed_document(
         match op.as_str() {
             "check" => doc.check().map(|_| json!(null)),
             "info" => doc.info(wrap, args["strict"].as_bool().unwrap_or(false)),
+            "searchPages" => {
+                let paths: Vec<Vec<serde_json::Value>> =
+                    serde_json::from_value(args["paths"].clone()).map_err(|e| e.to_string())?;
+                doc.search_pages(&paths, wrap)
+            }
             "page" => doc.page(
                 &path,
                 args["offset"].as_u64().unwrap_or(0),

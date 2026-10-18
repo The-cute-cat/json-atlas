@@ -1,7 +1,7 @@
 //! JSONL has one 4/8-byte entry per valid record, not one entry per JSON field.
 //! Ordinary rows are validated while scanning and parsed locally on demand.
 //! Oversized rows use a streaming subtree index, keeping memory bounded.
-use super::{err, Indexed, NodeBuffer, Result, Scanner, PREVIEW, RECORD, TEXT_LIMIT};
+use super::{err, Indexed, NodeBuffer, Result, Scanner, PREVIEW, TEXT_LIMIT};
 use memchr::memchr;
 use serde_json::{json, Value};
 use std::{
@@ -279,7 +279,7 @@ impl LineIndex {
         let mut scanner = Scanner {
             input: BufReader::with_capacity(256 * 1024, input),
             index: long.index.as_mut().unwrap(),
-            buffer: NodeBuffer::default(),
+            buffer: NodeBuffer::new(long.width),
             pos: start,
             nodes: before,
             cancel,
@@ -332,7 +332,10 @@ impl LineIndex {
                 Ok(Some(LONG | id))
             }
             Err(_) => {
-                scanner.index.set_len(before * RECORD).map_err(err)?;
+                scanner
+                    .index
+                    .set_len(before * scanner.buffer.record())
+                    .map_err(err)?;
                 self.bad += 1;
                 Ok(None)
             }

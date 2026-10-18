@@ -2,8 +2,9 @@
 //! parser stack, fixed-size I/O buffers and one page of previews stay in memory.
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{hash_map::RandomState, HashMap},
     fs::{File, OpenOptions},
+    hash::BuildHasher,
     io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
@@ -13,8 +14,8 @@ use std::{
     time::SystemTime,
 };
 
-const RECORD: u64 = 64;
-const INDEX_BLOCK: usize = RECORD as usize * 4096;
+// 8192 compact records or 4096 wide records: both fit without division per node.
+const INDEX_BLOCK: usize = 192 * 1024;
 const PREVIEW: u64 = 8192;
 const TEXT_LIMIT: u64 = 8 * 1024 * 1024;
 #[cfg(test)]
@@ -22,7 +23,15 @@ const TEXT_LIMIT: u64 = 8 * 1024 * 1024;
 mod benchmarks;
 #[path = "jsonl_index.rs"]
 mod jsonl;
+#[path = "key_index.rs"]
+mod key_index;
 type Result<T> = std::result::Result<T, String>;
+
+#[derive(Clone, Copy)]
+struct Branch {
+    children: u64,
+    keys: u64,
+}
 
 #[derive(Default)]
 pub struct IndexState {
@@ -30,7 +39,7 @@ pub struct IndexState {
     pub sessions: Mutex<HashMap<String, Arc<Mutex<Indexed>>>>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Node {
     start: u64,
     end: u64,
@@ -39,20 +48,33 @@ struct Node {
     ks: u64,
     ke: u64,
     kind: u64,
-    // Byte offset + 1 in the child table; zero keeps the small-container chain.
+    // Hydrated from the sparse branch directory, never stored in every node.
     children: u64,
 }
 
 /// One fixed-size block, shared by sequential writes and ancestor backpatches.
 /// No drop-time writes: parse errors may discard the pending block safely.
-#[derive(Default)]
 struct NodeBuffer {
+    width: usize,
     bytes: Vec<u8>,
     base: Option<u64>,
     valid: usize,
     dirty: bool,
 }
 impl NodeBuffer {
+    fn new(width: usize) -> Self {
+        assert!(matches!(width, 4 | 8));
+        Self {
+            width,
+            bytes: Vec::new(),
+            base: None,
+            valid: 0,
+            dirty: false,
+        }
+    }
+    fn record(&self) -> u64 {
+        (self.width * 6) as u64
+    }
     fn flush(&mut self, file: &mut File) -> Result<()> {
         if self.dirty {
             file.seek(SeekFrom::Start(self.base.unwrap()))
@@ -63,8 +85,9 @@ impl NodeBuffer {
         Ok(())
     }
     fn load(&mut self, file: &mut File, id: u64) -> Result<usize> {
-        let pos = id.checked_mul(RECORD).ok_or("索引位置溢出")?;
-        let base = pos / INDEX_BLOCK as u64 * INDEX_BLOCK as u64;
+        let pos = id.checked_mul(self.record()).ok_or("索引位置溢出")?;
+        let offset = (id & if self.width == 4 { 8191 } else { 4095 }) * self.record();
+        let base = pos - offset;
         if self.base != Some(base) {
             self.flush(file)?;
             self.bytes.resize(INDEX_BLOCK, 0);
@@ -86,44 +109,102 @@ impl NodeBuffer {
 impl Node {
     fn write(self, file: &mut File, buffer: &mut NodeBuffer, id: u64) -> Result<()> {
         let offset = buffer.load(file, id)?;
-        let bytes = &mut buffer.bytes[offset..offset + RECORD as usize];
-        for (chunk, n) in bytes.chunks_exact_mut(8).zip([
-            self.start,
-            self.end,
-            self.next,
-            self.count,
-            self.ks,
-            self.ke,
-            self.kind,
-            self.children,
-        ]) {
-            chunk.copy_from_slice(&n.to_le_bytes());
+        let record = buffer.record() as usize;
+        let bytes = &mut buffer.bytes[offset..offset + record];
+        let key_len = self
+            .ke
+            .checked_sub(self.ks)
+            .filter(|n| *n <= 64 * 1024)
+            .ok_or("字段名索引无效")?;
+        if !(1..=6).contains(&self.kind) {
+            return Err("节点类型无效".into());
         }
-        buffer.valid = buffer.valid.max(offset + RECORD as usize);
+        let words = [
+            self.start,
+            self.end.checked_sub(self.start).ok_or("值范围无效")?,
+            self.next.checked_sub(id).ok_or("子树范围无效")?,
+            self.count,
+            self.start.checked_sub(self.ks).ok_or("字段名位置无效")?,
+            (key_len << 3) | self.kind,
+        ];
+        if buffer.width == 4 {
+            for (chunk, n) in bytes.chunks_exact_mut(4).zip(words) {
+                write_word(chunk, n)?;
+            }
+        } else {
+            for (chunk, n) in bytes.chunks_exact_mut(8).zip(words) {
+                write_word(chunk, n)?;
+            }
+        }
+        buffer.valid = buffer.valid.max(offset + record);
         buffer.dirty = true;
         Ok(())
     }
     fn read(file: &mut File, buffer: &mut NodeBuffer, id: u64) -> Result<Self> {
         let offset = buffer.load(file, id)?;
-        if offset + RECORD as usize > buffer.valid {
+        let record = buffer.record() as usize;
+        if offset + record > buffer.valid {
             return Err("索引文件不完整".into());
         }
-        let bytes = &buffer.bytes[offset..offset + RECORD as usize];
-        let mut v = [0; 8];
-        for (i, chunk) in bytes.chunks_exact(8).enumerate() {
-            v[i] = u64::from_le_bytes(chunk.try_into().unwrap());
+        let bytes = &buffer.bytes[offset..offset + record];
+        let mut v = [0; 6];
+        if buffer.width == 4 {
+            for (i, chunk) in bytes.chunks_exact(4).enumerate() {
+                v[i] = read_word(chunk);
+            }
+        } else {
+            for (i, chunk) in bytes.chunks_exact(8).enumerate() {
+                v[i] = read_word(chunk);
+            }
+        }
+        let ks = v[0].checked_sub(v[4]).ok_or("字段名位置无效")?;
+        let kind = v[5] & 7;
+        if !(1..=6).contains(&kind) || v[5] >> 3 > 64 * 1024 {
+            return Err("节点索引无效".into());
         }
         Ok(Self {
             start: v[0],
-            end: v[1],
-            next: v[2],
+            end: v[0].checked_add(v[1]).ok_or("值范围溢出")?,
+            next: id.checked_add(v[2]).ok_or("子树范围溢出")?,
             count: v[3],
-            ks: v[4],
-            ke: v[5],
-            kind: v[6],
-            children: v[7],
+            ks,
+            ke: ks.checked_add(v[5] >> 3).ok_or("字段名范围溢出")?,
+            kind,
+            children: 0,
         })
     }
+}
+fn index_width(source_size: u64) -> usize {
+    // A valid JSON has fewer nodes than bytes, including the one-past sentinel.
+    if source_size < u32::MAX as u64 {
+        4
+    } else {
+        8
+    }
+}
+fn read_word(bytes: &[u8]) -> u64 {
+    if bytes.len() == 4 {
+        u32::from_le_bytes(bytes.try_into().unwrap()) as u64
+    } else {
+        u64::from_le_bytes(bytes.try_into().unwrap())
+    }
+}
+fn write_word(bytes: &mut [u8], n: u64) -> Result<()> {
+    if bytes.len() == 4 {
+        bytes.copy_from_slice(
+            &u32::try_from(n)
+                .map_err(|_| "32 位索引位置溢出")?
+                .to_le_bytes(),
+        );
+    } else {
+        bytes.copy_from_slice(&n.to_le_bytes());
+    }
+    Ok(())
+}
+fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
 }
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -177,8 +258,16 @@ impl Scanner<'_> {
         if self.line_mode && b == b'\n' {
             return Err("JSONL 记录不能跨行".into());
         }
-        self.input.consume(1);
-        self.pos += 1;
+        self.advance(1)?;
+        Ok(b)
+    }
+    #[inline]
+    fn advance(&mut self, count: usize) -> Result<()> {
+        self.input.consume(count);
+        self.pos += count as u64;
+        if count > 1 && self.cancel.load(Ordering::Relaxed) {
+            return Err("已取消".into());
+        }
         if self.pos >= self.next_progress {
             if self.cancel.load(Ordering::Relaxed) {
                 return Err("已取消".into());
@@ -186,7 +275,7 @@ impl Scanner<'_> {
             (self.progress)(self.pos);
             self.next_progress = self.pos + 256 * 1024;
         }
-        Ok(b)
+        Ok(())
     }
     fn space(&mut self) -> Result<()> {
         while let Some(b) = self.peek()? {
@@ -220,6 +309,81 @@ impl Scanner<'_> {
     }
     fn string(&mut self) -> Result<()> {
         self.expect(b'"')?;
+        #[cfg(test)]
+        if benchmarks::scalar_baseline() {
+            return self.string_tail();
+        }
+        // Short ASCII keys can be validated and consumed in a single operation.
+        // Escape-dense tails retain the scalar loop unchanged.
+        let bytes = self.input.fill_buf().map_err(|e| {
+            self.io_failed = true;
+            err(e)
+        })?;
+        if let Some(end) = bytes[..bytes.len().min(32)]
+            .iter()
+            .position(|b| matches!(*b,b'"'|b'\\'|0..=31|128..=255))
+        {
+            match bytes[end] {
+                b'"' => {
+                    self.advance(end + 1)?;
+                    return Ok(());
+                }
+                b'\\' => {
+                    self.advance(end)?;
+                    return self.string_tail();
+                }
+                0..=31 => return Err("字符串包含未转义控制字符".into()),
+                _ => {}
+            }
+        }
+        loop {
+            // Validate a buffered run without allocating or invoking byte() for
+            // every character. Partial UTF-8 at a buffer edge uses the slow path.
+            let count = {
+                let bytes = self.input.fill_buf().map_err(|e| {
+                    self.io_failed = true;
+                    err(e)
+                })?;
+                let end = memchr::memchr2(b'"', b'\\', bytes).unwrap_or(bytes.len());
+                let plain = &bytes[..end];
+                if plain.iter().any(|b| *b < 32) {
+                    return Err("字符串包含未转义控制字符".into());
+                }
+                match std::str::from_utf8(plain) {
+                    Ok(_) => plain.len(),
+                    Err(e) if e.error_len().is_none() => e.valid_up_to(),
+                    Err(_) => return Err("文件不是有效 UTF-8".into()),
+                }
+            };
+            if count > 0 {
+                self.advance(count)?;
+                continue;
+            }
+            if self.peek()?.is_some_and(|b| b >= 128) {
+                let b = self.byte()?;
+                self.utf8(b)?;
+            } else {
+                return self.string_tail();
+            }
+        }
+    }
+    #[inline]
+    fn utf8(&mut self, b: u8) -> Result<()> {
+        let len = match b {
+            0xC2..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF4 => 4,
+            _ => return Err("文件不是有效 UTF-8".into()),
+        };
+        let mut bytes = [0; 4];
+        bytes[0] = b;
+        for c in bytes.iter_mut().take(len).skip(1) {
+            *c = self.byte()?;
+        }
+        std::str::from_utf8(&bytes[..len]).map_err(|_| "文件不是有效 UTF-8")?;
+        Ok(())
+    }
+    fn string_tail(&mut self) -> Result<()> {
         loop {
             if self.line_mode && self.peek()? == Some(b'\n') {
                 return Err("字符串包含未转义换行".into());
@@ -249,20 +413,7 @@ impl Scanner<'_> {
                     }
                     _ => return Err("无效的字符串转义".into()),
                 },
-                128..=255 => {
-                    let len = match b {
-                        0xC2..=0xDF => 2,
-                        0xE0..=0xEF => 3,
-                        0xF0..=0xF4 => 4,
-                        _ => return Err("文件不是有效 UTF-8".into()),
-                    };
-                    let mut bytes = [0; 4];
-                    bytes[0] = b;
-                    for c in bytes.iter_mut().take(len).skip(1) {
-                        *c = self.byte()?;
-                    }
-                    std::str::from_utf8(&bytes[..len]).map_err(|_| "文件不是有效 UTF-8")?;
-                }
+                128..=255 => self.utf8(b)?,
                 _ => {}
             }
         }
@@ -357,6 +508,14 @@ pub struct Indexed {
     node_buffer: NodeBuffer,
     children: Option<File>,
     children_path: PathBuf,
+    branches: Option<File>,
+    branches_path: PathBuf,
+    branch_count: u64,
+    branch_cache: HashMap<u64, Branch>,
+    keys: Option<File>,
+    keys_path: PathBuf,
+    key_state: RandomState,
+    width: usize,
     index_path: PathBuf,
     size: u64,
     modified: Option<SystemTime>,
@@ -373,6 +532,12 @@ impl Drop for Indexed {
         self.index.take();
         if self.children.take().is_some() {
             let _ = std::fs::remove_file(&self.children_path);
+        }
+        if self.branches.take().is_some() {
+            let _ = std::fs::remove_file(&self.branches_path);
+        }
+        if self.keys.take().is_some() {
+            let _ = std::fs::remove_file(&self.keys_path);
         }
         let _ = std::fs::remove_file(&self.index_path);
     }
@@ -417,13 +582,17 @@ impl Indexed {
             jsonl: None,
             source,
             index: Some(index),
-            node_buffer: NodeBuffer::default(),
+            node_buffer: NodeBuffer::new(index_width(meta.len())),
             children: None,
-            children_path: {
-                let mut name = index_path.as_os_str().to_os_string();
-                name.push(".children");
-                PathBuf::from(name)
-            },
+            children_path: sidecar(&index_path, ".children"),
+            branches: None,
+            branches_path: sidecar(&index_path, ".branches"),
+            branch_count: 0,
+            branch_cache: HashMap::new(),
+            keys: None,
+            keys_path: sidecar(&index_path, ".keys"),
+            key_state: RandomState::new(),
+            width: index_width(meta.len()),
             index_path,
             size: meta.len(),
             modified: meta.modified().ok(),
@@ -456,7 +625,7 @@ impl Indexed {
         let mut s = Scanner {
             input: BufReader::with_capacity(256 * 1024, source),
             index: self.index.as_mut().unwrap(),
-            buffer: NodeBuffer::default(),
+            buffer: NodeBuffer::new(self.width),
             pos: 0,
             nodes: 0,
             cancel,
@@ -495,17 +664,53 @@ impl Indexed {
         Ok(())
     }
     fn node(&mut self, id: u64) -> Result<Node> {
-        Node::read(self.index.as_mut().unwrap(), &mut self.node_buffer, id)
+        let mut node = Node::read(self.index.as_mut().unwrap(), &mut self.node_buffer, id)?;
+        if node.count > 100 {
+            node.children = self.branch(id)?.children + 1;
+        }
+        Ok(node)
+    }
+    fn branch(&mut self, id: u64) -> Result<Branch> {
+        if let Some(offset) = self.branch_cache.get(&id) {
+            return Ok(*offset);
+        }
+        // Directory records are appended in preorder, including JSONL long rows.
+        let file = self.branches.as_mut().ok_or("宽容器索引缺失")?;
+        let (mut left, mut right) = (0, self.branch_count);
+        let mut bytes = [0; 24];
+        while left < right {
+            let mid = left + (right - left) / 2;
+            file.seek(SeekFrom::Start(mid * 24)).map_err(err)?;
+            file.read_exact(&mut bytes).map_err(err)?;
+            let node_id = read_word(&bytes[..8]);
+            if node_id < id {
+                left = mid + 1;
+            } else if node_id > id {
+                right = mid;
+            } else {
+                let branch = Branch {
+                    children: read_word(&bytes[8..16]),
+                    keys: read_word(&bytes[16..]),
+                };
+                if self.branch_cache.len() >= 64 {
+                    self.branch_cache.clear();
+                }
+                self.branch_cache.insert(id, branch);
+                return Ok(branch);
+            }
+        }
+        Err("宽容器索引缺失".into())
     }
     /// A bounded-memory second pass writes contiguous IDs only for wide containers.
     fn build_children(&mut self, start: u64, end: u64, cancel: &AtomicBool) -> Result<()> {
         let file = self.index.as_mut().unwrap();
-        let mut buffer = NodeBuffer::default();
+        let mut buffer = NodeBuffer::new(self.width);
+        let mut key_reader = None;
         for id in start..end {
             if id % 4096 == 0 && cancel.load(Ordering::Relaxed) {
                 return Err("已取消".into());
             }
-            let mut node = Node::read(file, &mut buffer, id)?;
+            let node = Node::read(file, &mut buffer, id)?;
             if node.count <= 100 {
                 continue;
             }
@@ -519,22 +724,73 @@ impl Indexed {
                         .map_err(err)?,
                 );
             }
+            if self.branches.is_none() {
+                self.branches = Some(
+                    OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create_new(true)
+                        .open(&self.branches_path)
+                        .map_err(err)?,
+                );
+            }
             let table = self.children.as_mut().unwrap();
-            node.children = table.seek(SeekFrom::End(0)).map_err(err)? + 1;
+            let offset = table.seek(SeekFrom::End(0)).map_err(err)?;
             let mut writer = BufWriter::with_capacity(256 * 1024, table);
+            let mut key_builder = if node.kind == 1 {
+                Some(key_index::Builder::new(&self.index_path))
+            } else {
+                None
+            };
+            if key_builder.is_some() && key_reader.is_none() {
+                key_reader = Some(key_index::KeyReader::new(&self.source_path)?);
+            }
             let mut child = id + 1;
             for i in 0..node.count {
                 if i % 4096 == 0 && cancel.load(Ordering::Relaxed) {
                     return Err("已取消".into());
                 }
-                writer.write_all(&child.to_le_bytes()).map_err(err)?;
-                child = Node::read(file, &mut buffer, child)?.next;
+                let mut bytes = [0; 8];
+                write_word(&mut bytes[..self.width], child)?;
+                writer.write_all(&bytes[..self.width]).map_err(err)?;
+                let n = Node::read(file, &mut buffer, child)?;
+                if let Some(builder) = key_builder.as_mut() {
+                    let hash = key_reader
+                        .as_mut()
+                        .unwrap()
+                        .hash(n.ks, n.ke, &self.key_state)?;
+                    builder.push(hash, i, cancel)?;
+                }
+                child = n.next;
             }
             writer.flush().map_err(err)?;
-            node.write(file, &mut buffer, id)?;
+            let keys = if let Some(builder) = key_builder {
+                if self.keys.is_none() {
+                    self.keys = Some(
+                        OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .create_new(true)
+                            .open(&self.keys_path)
+                            .map_err(err)?,
+                    );
+                }
+                builder.finish(self.keys.as_mut().unwrap(), self.width, cancel)?
+            } else {
+                0
+            };
+            let directory = self.branches.as_mut().unwrap();
+            let mut bytes = [0; 24];
+            bytes[..8].copy_from_slice(&id.to_le_bytes());
+            bytes[8..16].copy_from_slice(&offset.to_le_bytes());
+            bytes[16..].copy_from_slice(&keys.to_le_bytes());
+            directory.seek(SeekFrom::End(0)).map_err(err)?;
+            directory.write_all(&bytes).map_err(err)?;
+            self.branch_count += 1;
         }
         buffer.flush(file)?;
-        self.node_buffer = NodeBuffer::default();
+        self.node_buffer = NodeBuffer::new(self.width);
+        self.branch_cache.clear();
         if cancel.load(Ordering::Relaxed) {
             return Err("已取消".into());
         }
@@ -547,14 +803,13 @@ impl Indexed {
         if parent.children != 0 {
             let table = self.children.as_mut().ok_or("子节点索引缺失")?;
             table
-                .seek(SeekFrom::Start(parent.children - 1 + start * 8))
+                .seek(SeekFrom::Start(
+                    parent.children - 1 + start * self.width as u64,
+                ))
                 .map_err(err)?;
-            let mut bytes = vec![0; count as usize * 8];
+            let mut bytes = vec![0; count as usize * self.width];
             table.read_exact(&mut bytes).map_err(err)?;
-            return Ok(bytes
-                .chunks_exact(8)
-                .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
-                .collect());
+            return Ok(bytes.chunks_exact(self.width).map(read_word).collect());
         }
         let mut child = id + 1;
         for _ in 0..start {
@@ -586,6 +841,75 @@ impl Indexed {
             self.root
         }
     }
+    fn key_pair(&mut self, base: u64, ordinal: u64) -> Result<(u64, u64)> {
+        let file = self.keys.as_mut().ok_or("键名索引缺失")?;
+        file.seek(SeekFrom::Start(base + ordinal * (8 + self.width) as u64))
+            .map_err(err)?;
+        let mut bytes = [0; 16];
+        file.read_exact(&mut bytes[..8 + self.width]).map_err(err)?;
+        Ok((read_word(&bytes[..8]), read_word(&bytes[8..8 + self.width])))
+    }
+    fn object_field(
+        &mut self,
+        id: u64,
+        parent: Node,
+        key: &Value,
+        unique: bool,
+    ) -> Result<(u64, u64)> {
+        let text = key
+            .as_str()
+            .filter(|_| parent.kind == 1)
+            .ok_or("节点不存在")?;
+        let mut position = 0;
+        let mut base = None;
+        let mut hash = 0;
+        let mut small = Vec::new();
+        if parent.children != 0 {
+            let offset = self.branch(id)?.keys.checked_sub(1).ok_or("键名索引缺失")?;
+            hash = self.key_state.hash_one(text);
+            let (mut left, mut right) = (0, parent.count);
+            while left < right {
+                let mid = left + (right - left) / 2;
+                if self.key_pair(offset, mid)?.0 < hash {
+                    left = mid + 1;
+                } else {
+                    right = mid;
+                }
+            }
+            position = left;
+            base = Some(offset);
+        } else {
+            small = self.child_ids(id, parent, 0, parent.count)?;
+        }
+        let mut found = None;
+        while position < parent.count {
+            let (ordinal, child) = if let Some(offset) = base {
+                let (candidate, ordinal) = self.key_pair(offset, position)?;
+                if candidate != hash {
+                    break;
+                }
+                if ordinal >= parent.count {
+                    return Err("键名索引无效".into());
+                }
+                (ordinal, self.child_ids(id, parent, ordinal, 1)?[0])
+            } else {
+                (position, small[position as usize])
+            };
+            let node = self.node(child)?;
+            // Hashes narrow candidates only. Decoded key equality is authoritative.
+            if self.key(node)? == *key {
+                if found.is_some() {
+                    return Err("对象包含重复字段，索引模式无法唯一定位该路径".into());
+                }
+                found = Some((ordinal, child));
+                if !unique {
+                    break;
+                }
+            }
+            position += 1;
+        }
+        found.ok_or_else(|| "节点不存在".into())
+    }
     fn resolve(&mut self, path: &[Value], wrap: bool) -> Result<u64> {
         let mut id = self.root_id(wrap);
         for key in path {
@@ -598,19 +922,7 @@ impl Indexed {
                 id = self.child_ids(id, parent, offset, 1)?[0];
                 continue;
             }
-            let mut found = None;
-            for start in (0..parent.count).step_by(100) {
-                for child in self.child_ids(id, parent, start, (parent.count - start).min(100))? {
-                    let n = self.node(child)?;
-                    if parent.kind == 1 && self.key(n)? == *key {
-                        if found.is_some() {
-                            return Err("对象包含重复字段，索引模式无法唯一定位该路径".into());
-                        }
-                        found = Some(child);
-                    }
-                }
-            }
-            id = found.ok_or("节点不存在")?;
+            id = self.object_field(id, parent, key, true)?.1;
         }
         Ok(id)
     }
@@ -668,8 +980,30 @@ impl Indexed {
             self.describe(self.root_id(wrap), &[])?
         };
         Ok(
-            json!({"root":root,"kind":self.kind,"records":self.records,"badCount":self.bad,"commentCount":self.comments}),
+            json!({"root":root,"kind":self.kind,"records":self.records,"badCount":self.bad,"commentCount":self.comments,"searchBatch":true}),
         )
+    }
+    pub fn search_pages(&mut self, paths: &[Vec<Value>], wrap: bool) -> Result<Value> {
+        if paths.is_empty() || paths.len() > 8 {
+            return Err("无效的搜索批次".into());
+        }
+        self.check()?;
+        let mut pages = Vec::with_capacity(paths.len());
+        let (mut items, mut bytes) = (0, 0);
+        for path in paths {
+            let page = self.page(path, 0, None, 16, false, wrap)?;
+            if page["total"].as_u64().unwrap_or(0) > 16 {
+                return Err("搜索批次只支持小分支".into());
+            }
+            items += page["items"].as_array().ok_or("搜索分页无效")?.len();
+            bytes += serde_json::to_vec(&page).map_err(err)?.len();
+            if items > 64 || bytes > 1024 * 1024 {
+                return Err("搜索批次过大".into());
+            }
+            pages.push(page);
+        }
+        self.check()?;
+        Ok(json!(pages))
     }
     pub fn page(
         &mut self,
@@ -701,24 +1035,7 @@ impl Indexed {
             if parent.kind == 2 {
                 selected = key.as_u64().filter(|i| *i < total).ok_or("节点不存在")?;
             } else {
-                let mut found = false;
-                'search: for start in (0..total).step_by(100) {
-                    for (j, child) in self
-                        .child_ids(id, parent, start, (total - start).min(100))?
-                        .into_iter()
-                        .enumerate()
-                    {
-                        let n = self.node(child)?;
-                        if parent.kind == 1 && self.key(n)? == *key {
-                            selected = start + j as u64;
-                            found = true;
-                            break 'search;
-                        }
-                    }
-                }
-                if !found {
-                    return Err("节点不存在".into());
-                }
+                selected = self.object_field(id, parent, key, false)?.0;
             }
         }
         let start = selected.min(total.saturating_sub(1)) / limit * limit;
@@ -843,6 +1160,227 @@ mod tests {
         });
     }
     #[test]
+    fn string_scanner_matches_json_validation_across_small_buffers() {
+        let mut cases = [
+            "".into(),
+            "short".into(),
+            "abcdef".repeat(50),
+            "中文😀".repeat(50),
+            "\\\n\"".repeat(50),
+        ]
+        .into_iter()
+        .map(|s: String| serde_json::to_vec(&s).unwrap())
+        .collect::<Vec<_>>();
+        cases.push(br#""\uD83D\uDE00\u4e2d""#.to_vec());
+        for bad in [
+            b"\"abc\n\"".as_slice(),
+            b"\"\xF0\x80\x80\x80\"",
+            b"\"\xED\xA0\x80\"",
+            b"\"\xE4\xB8\"",
+            b"\"\x80\"",
+            br#""\uD800""#,
+            br#""\uDC00""#,
+            br#""\q""#,
+            b"\"abc\\",
+        ] {
+            cases.push(bad.to_vec());
+            let mut bulk = vec![b'"'];
+            bulk.extend_from_slice(&[b'a'; 64]);
+            bulk.extend_from_slice(&bad[1..]);
+            cases.push(bulk);
+        }
+        for bytes in cases {
+            let valid = serde_json::from_slice::<String>(&bytes).is_ok();
+            let (p, index) = fixture(&bytes, "json");
+            let mut file = File::create(&index).unwrap();
+            for capacity in [1, 2, 3, 7, 16, 31, 32, 33, 127] {
+                let mut scanner = Scanner {
+                    input: BufReader::with_capacity(capacity, File::open(&p).unwrap()),
+                    index: &mut file,
+                    buffer: NodeBuffer::new(4),
+                    pos: 0,
+                    nodes: 0,
+                    cancel: &AtomicBool::new(false),
+                    progress: &|_| {},
+                    next_progress: 0,
+                    line_mode: false,
+                    io_failed: false,
+                };
+                let parsed = scanner.string().and_then(|_| {
+                    if scanner.peek()?.is_none() {
+                        Ok(())
+                    } else {
+                        Err("trailing".into())
+                    }
+                });
+                assert_eq!(parsed.is_ok(), valid, "capacity={capacity} bytes={bytes:?}");
+            }
+            drop(file);
+            std::fs::remove_file(index).unwrap();
+            std::fs::remove_file(p).unwrap();
+        }
+    }
+    #[test]
+    fn bulk_strings_preserve_utf8_escapes_and_cancellation_at_real_buffer_edges() {
+        for offset in 0..5 {
+            let value = format!("{}😀中文\\\n\"tail", "a".repeat(256 * 1024 - 4 + offset));
+            run(&serde_json::to_vec(&value).unwrap(), "json", |doc| {
+                assert_eq!(doc.text(&[], true).unwrap(), value)
+            });
+        }
+        let text = serde_json::to_vec(&"a".repeat(2 * 1024 * 1024)).unwrap();
+        let (p, index) = fixture(&text, "json");
+        let cancel = AtomicBool::new(false);
+        assert!(Indexed::open(
+            p.to_str().unwrap(),
+            index.clone(),
+            &cancel,
+            &|bytes| if bytes >= 256 * 1024 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        )
+        .is_err());
+        assert!(!index.exists());
+        std::fs::remove_file(p).unwrap();
+    }
+    #[test]
+    fn search_batches_enforce_page_item_and_byte_limits() {
+        let value = (0..8)
+            .map(|_| (0..16).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        run(&serde_json::to_vec(&value).unwrap(), "json", |doc| {
+            assert_eq!(doc.info(true, false).unwrap()["searchBatch"], true);
+            let paths = (0..4).map(|i| vec![json!(i)]).collect::<Vec<_>>();
+            assert_eq!(
+                doc.search_pages(&paths, true).unwrap()[3]["items"][15]["value"],
+                15
+            );
+            assert!(doc.search_pages(&[], true).is_err());
+            assert!(doc.search_pages(&vec![vec![json!(0)]; 9], true).is_err());
+            assert!(doc
+                .search_pages(&(0..5).map(|i| vec![json!(i)]).collect::<Vec<_>>(), true)
+                .is_err());
+        });
+        run(
+            &serde_json::to_vec(&(0..17).collect::<Vec<_>>()).unwrap(),
+            "json",
+            |doc| assert!(doc.search_pages(&[vec![]], true).is_err()),
+        );
+        let object = (0..8)
+            .map(|i| (format!("{i}{}", "x".repeat(16384)), json!(i)))
+            .collect::<serde_json::Map<_, _>>();
+        let text = serde_json::to_vec(&vec![Value::Object(object); 8]).unwrap();
+        run(&text, "json", |doc| {
+            assert!(doc
+                .search_pages(&(0..8).map(|i| vec![json!(i)]).collect::<Vec<_>>(), true)
+                .is_err())
+        });
+        run(b"{\"text\":1}\n{\"text\":2}", "jsonl", |doc| {
+            assert_eq!(
+                doc.search_pages(&[vec![json!(0)], vec![json!(1)]], true)
+                    .unwrap()[1]["items"][0]["value"],
+                2
+            );
+            assert_eq!(
+                doc.search_pages(&[vec![]], false).unwrap()[0]["items"][0]["value"],
+                1
+            );
+        });
+    }
+    #[test]
+    fn compact_and_wide_node_codecs_round_trip_and_reject_truncation() {
+        assert_eq!(index_width(u32::MAX as u64 - 1), 4);
+        assert_eq!(index_width(u32::MAX as u64), 8);
+        for (width, start, next) in [(4, u32::MAX as u64 - 64, 9000), (8, 1u64 << 40, 1u64 << 33)] {
+            let (p, index) = fixture(b"0", "json");
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .open(&index)
+                .unwrap();
+            let node = Node {
+                start,
+                end: start + if width == 4 { 32 } else { 1u64 << 34 },
+                next,
+                count: next - 1,
+                ks: if width == 4 { start - 65536 } else { 4096 },
+                ke: if width == 4 { start } else { 4096 + 65536 },
+                kind: 1,
+                children: 0,
+            };
+            let mut buffer = NodeBuffer::new(width);
+            node.write(&mut file, &mut buffer, 0).unwrap();
+            buffer.flush(&mut file).unwrap();
+            assert_eq!(file.metadata().unwrap().len(), (6 * width) as u64);
+            assert_eq!(
+                Node::read(&mut file, &mut NodeBuffer::new(width), 0).unwrap(),
+                node
+            );
+            assert!(Node::read(&mut file, &mut NodeBuffer::new(width), 1).is_err());
+            if width == 4 {
+                let too_large = Node {
+                    start: 1u64 << 32,
+                    end: (1u64 << 32) + 1,
+                    ..node
+                };
+                assert!(too_large
+                    .write(&mut file, &mut NodeBuffer::new(width), 1)
+                    .is_err());
+            }
+            drop(file);
+            std::fs::remove_file(index).unwrap();
+            std::fs::remove_file(p).unwrap();
+        }
+    }
+    #[test]
+    fn sparse_branch_directory_pages_both_formats_and_bounds_its_cache() {
+        let value = (0..150u64)
+            .map(|i| (0..120).map(|j| i * 1000 + j).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let text = serde_json::to_vec(&value).unwrap();
+        for width in [4, 8] {
+            let (p, index) = fixture(&text, "json");
+            let mut doc = Indexed::empty(p.to_str().unwrap(), index.clone()).unwrap();
+            // Exercise the 64-bit path without creating a 4 GiB source fixture.
+            doc.width = width;
+            doc.node_buffer = NodeBuffer::new(width);
+            doc.scan(false, &AtomicBool::new(false), &|_| {}).unwrap();
+            assert_eq!(doc.branch_count, 151);
+            assert_eq!(
+                doc.branches.as_ref().unwrap().metadata().unwrap().len(),
+                151 * 24
+            );
+            assert_eq!(
+                doc.children.as_ref().unwrap().metadata().unwrap().len(),
+                (150 + 150 * 120) * width as u64
+            );
+            for i in (0..150usize).rev() {
+                let page = doc.page(&[json!(i)], 100, None, 100, false, true).unwrap();
+                assert_eq!(page["items"][19]["value"], value[i][119]);
+                assert_eq!(
+                    doc.text(&[json!(i), json!(119)], true).unwrap(),
+                    value[i][119].to_string()
+                );
+                assert!(doc.branch_cache.len() <= 64);
+            }
+            assert_eq!(
+                doc.page(&[], 100, None, 100, false, true).unwrap()["items"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                50
+            );
+            let children = doc.children_path.clone();
+            let branches = doc.branches_path.clone();
+            drop(doc);
+            assert!(!index.exists());
+            assert!(!children.exists());
+            assert!(!branches.exists());
+            std::fs::remove_file(p).unwrap();
+        }
+    }
+    #[test]
     fn wide_containers_survive_block_backpatches_and_keep_field_order() {
         let mut fields = (0..5005)
             .map(|i| format!(r#""字段.{i}":{{"v":[{i},null]}}"#))
@@ -905,6 +1443,189 @@ mod tests {
         });
     }
     #[test]
+    fn wide_key_lookup_preserves_escaped_keys_duplicates_and_both_formats() {
+        let mut fields = (0..220)
+            .map(|i| format!(r#""k{i}":{i}"#))
+            .collect::<Vec<_>>();
+        fields.extend([
+            r#""a":1"#.into(),
+            r#""\u0061":2"#.into(),
+            r#""\uD83D\uDE00":3"#.into(),
+            r#""":4"#.into(),
+            r#""a.b[0]":5"#.into(),
+            r#""123":6"#.into(),
+        ]);
+        let long_key = "x".repeat(65534);
+        fields.push(format!("{}:7", serde_json::to_string(&long_key).unwrap()));
+        let nested = (0..150)
+            .map(|i| format!(r#""n{i}":{i}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        fields.push(format!(r#""nested":{{{nested}}}"#));
+        let count = fields.len() as u64;
+        let text = format!("{{{}}}", fields.join(","));
+        for width in [4, 8] {
+            let (p, index) = fixture(text.as_bytes(), "json");
+            let mut doc = Indexed::empty(p.to_str().unwrap(), index.clone()).unwrap();
+            doc.width = width;
+            doc.node_buffer = NodeBuffer::new(width);
+            doc.scan(false, &AtomicBool::new(false), &|_| {}).unwrap();
+            assert_eq!(
+                doc.keys.as_ref().unwrap().metadata().unwrap().len(),
+                (count + 150) * (8 + width) as u64
+            );
+            assert!(doc
+                .text(&[json!("a")], true)
+                .unwrap_err()
+                .contains("重复字段"));
+            let selected = doc
+                .page(&[], 0, Some(&json!("a")), 100, false, true)
+                .unwrap();
+            assert_eq!(selected["items"][20]["value"], 1);
+            for (key, value) in [
+                ("😀", 3),
+                ("", 4),
+                ("a.b[0]", 5),
+                ("123", 6),
+                (long_key.as_str(), 7),
+            ] {
+                assert_eq!(doc.text(&[json!(key)], true).unwrap(), value.to_string());
+            }
+            assert_eq!(
+                doc.text(&[json!("nested"), json!("n149")], true).unwrap(),
+                "149"
+            );
+            assert!(doc.text(&[json!(123)], true).is_err());
+            assert!(doc.text(&[json!("K219")], true).is_err());
+            let keys = doc.keys_path.clone();
+            let children = doc.children_path.clone();
+            let branches = doc.branches_path.clone();
+            drop(doc);
+            for path in [index, keys, children, branches] {
+                assert!(!path.exists());
+            }
+            std::fs::remove_file(p).unwrap();
+        }
+    }
+    #[test]
+    fn key_hash_collisions_always_verify_the_decoded_key() {
+        let text = format!(
+            "{{{}}}",
+            (0..205)
+                .map(|i| format!(r#""k{i}":{i}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        run(text.as_bytes(), "json", |doc| {
+            for key in ["missing", "k204"] {
+                let hash = doc.key_state.hash_one(key);
+                let file = doc.keys.as_mut().unwrap();
+                file.rewind().unwrap();
+                for i in 0..205u64 {
+                    file.write_all(&hash.to_le_bytes()).unwrap();
+                    let mut bytes = [0; 8];
+                    write_word(&mut bytes[..doc.width], i).unwrap();
+                    file.write_all(&bytes[..doc.width]).unwrap();
+                }
+                if key == "missing" {
+                    assert!(doc
+                        .text(&[json!(key)], true)
+                        .unwrap_err()
+                        .contains("节点不存在"));
+                } else {
+                    assert_eq!(doc.text(&[json!(key)], true).unwrap(), "204");
+                    assert_eq!(
+                        doc.page(&[], 0, Some(&json!(key)), 100, false, true)
+                            .unwrap()["start"],
+                        200
+                    );
+                }
+            }
+        });
+    }
+    #[test]
+    fn existing_key_index_is_preserved_when_open_fails() {
+        let text = format!(
+            "{{{}}}",
+            (0..101)
+                .map(|i| format!(r#""k{i}":{i}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let (p, index) = fixture(text.as_bytes(), "json");
+        let keys = sidecar(&index, ".keys");
+        std::fs::write(&keys, b"existing").unwrap();
+        assert!(Indexed::open(
+            p.to_str().unwrap(),
+            index.clone(),
+            &AtomicBool::new(false),
+            &|_| {}
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&keys).unwrap(), b"existing");
+        for path in [
+            &index,
+            &sidecar(&index, ".children"),
+            &sidecar(&index, ".branches"),
+        ] {
+            assert!(!path.exists());
+        }
+        std::fs::remove_file(keys).unwrap();
+        std::fs::remove_file(p).unwrap();
+    }
+    #[test]
+    fn jsonl_long_wide_objects_keep_key_indexes_across_bad_row_rollback() {
+        let fields = (0..5005)
+            .map(|i| format!(r#""k{i}":{{"v":{i}}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let row = format!("{{{fields}}}");
+        assert!(row.len() > 64 * 1024);
+        let text = format!("{row}\n{{{fields},\"broken\":\n{row}");
+        let mut paths = Vec::new();
+        run(text.as_bytes(), "jsonl", |doc| {
+            assert_eq!(doc.info(true, false).unwrap()["records"], 2);
+            assert_eq!(doc.info(true, false).unwrap()["badCount"], 1);
+            for row in 0..2 {
+                assert_eq!(
+                    doc.text(&[json!(row), json!("k5004"), json!("v")], true)
+                        .unwrap(),
+                    "5004"
+                );
+                assert_eq!(
+                    doc.page(&[json!(row)], 0, Some(&json!("k5004")), 100, false, true)
+                        .unwrap()["start"],
+                    5000
+                );
+            }
+            let nodes = doc.index_path.with_extension("nodes");
+            for suffix in [".keys", ".branches", ".children"] {
+                paths.push(sidecar(&nodes, suffix));
+            }
+            assert_eq!(paths[0].metadata().unwrap().len(), 2 * 5005 * 12);
+            assert!(!sidecar(&nodes, ".keysort-a").exists());
+            assert!(!sidecar(&nodes, ".keysort-b").exists());
+        });
+        for path in paths {
+            assert!(!path.exists());
+        }
+    }
+    #[test]
+    fn small_objects_do_not_create_key_index_files() {
+        let text = format!(
+            "{{{}}}",
+            (0..100)
+                .map(|i| format!(r#""k{i}":{i}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        run(text.as_bytes(), "json", |doc| {
+            assert!(doc.keys.is_none());
+            assert!(!doc.keys_path.exists());
+            assert_eq!(doc.text(&[json!("k99")], true).unwrap(), "99");
+        });
+    }
+    #[test]
     fn child_table_failures_are_fatal_and_existing_files_are_preserved() {
         let text = format!(
             "[{}]",
@@ -913,22 +1634,25 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        let (p, i) = fixture(text.as_bytes(), "json");
-        let mut name = i.as_os_str().to_os_string();
-        name.push(".children");
-        let children = PathBuf::from(name);
-        std::fs::write(&children, b"existing").unwrap();
-        assert!(Indexed::open(
-            p.to_str().unwrap(),
-            i.clone(),
-            &AtomicBool::new(false),
-            &|_| {}
-        )
-        .is_err());
-        assert!(!i.exists());
-        assert_eq!(std::fs::read(&children).unwrap(), b"existing");
-        std::fs::remove_file(children).unwrap();
-        std::fs::remove_file(p).unwrap();
+        for suffix in [".children", ".branches"] {
+            let (p, i) = fixture(text.as_bytes(), "json");
+            let existing = sidecar(&i, suffix);
+            std::fs::write(&existing, b"existing").unwrap();
+            assert!(Indexed::open(
+                p.to_str().unwrap(),
+                i.clone(),
+                &AtomicBool::new(false),
+                &|_| {}
+            )
+            .is_err());
+            assert!(!i.exists());
+            assert_eq!(std::fs::read(&existing).unwrap(), b"existing");
+            if suffix == ".branches" {
+                assert!(!sidecar(&i, ".children").exists());
+            }
+            std::fs::remove_file(existing).unwrap();
+            std::fs::remove_file(p).unwrap();
+        }
     }
     #[test]
     fn jsonl_long_wide_rows_keep_tables_after_bad_row_rollback() {
@@ -942,6 +1666,7 @@ mod tests {
         assert!(row.len() > 64 * 1024);
         let text = format!("{row}\n{}\n{row}", format!("[{}", "0,".repeat(40000)));
         let mut children = None;
+        let mut branches = None;
         run(text.as_bytes(), "jsonl", |d| {
             assert_eq!(d.info(true, false).unwrap()["records"], 2);
             assert_eq!(d.info(true, false).unwrap()["badCount"], 1);
@@ -957,11 +1682,12 @@ mod tests {
                     6999
                 );
             }
-            let mut name = d.index_path.with_extension("nodes").into_os_string();
-            name.push(".children");
-            children = Some(PathBuf::from(name));
+            let nodes = d.index_path.with_extension("nodes");
+            children = Some(sidecar(&nodes, ".children"));
+            branches = Some(sidecar(&nodes, ".branches"));
         });
         assert!(!children.unwrap().exists());
+        assert!(!branches.unwrap().exists());
     }
     #[test]
     fn duplicate_object_keys_never_silently_read_another_value() {

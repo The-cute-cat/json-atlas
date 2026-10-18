@@ -13,12 +13,14 @@ test('threshold accepts exactly four sizes and routes only strictly larger files
   for (const n of [undefined, null, NaN, Infinity, -1, 0, 31, 33, 95, 128.5, 255, 257, 'oops']) assert.equal(normalizeThreshold(n), 64);
 });
 
-function fixture(value, cache = new PageCache()) {
+function fixture(value, cache = new PageCache(), searchBatch = false) {
   const memory = new MemoryDataSource(value), calls = [];
   const info = { root: memory.getRoot(), kind: 'json', records: 0, badCount: 0, commentCount: 0 };
+  if (searchBatch) info.searchBatch = true;
   const request = async (op, id, args) => {
     calls.push({ op, id, args });
     if (op === 'page') return memory.getChildren(args.path, args);
+    if (op === 'searchPages') return Promise.all(args.paths.map(path => memory.getChildren(path, { limit: 16 })));
     if (op === 'text') return memory.getText(args.path);
     if (op === 'info') return info;
   };
@@ -57,6 +59,102 @@ test('latest JSONL configuration wins and uses the requested wrap option', async
   pending[1].resolve({ root: { type: 'array', childCount: 2 } }); await newer;
   pending[0].resolve({ root: { type: 'object', childCount: 1 } }); await older;
   assert.equal(source.getRoot().type, 'array'); assert.equal(source.wrap, true);
+});
+
+test('search batches preserve DFS hits and reduce requests without caching reading pages', async () => {
+  const value = Array.from({ length: 205 }, (_, i) => ({ i, text: `row-${i}`, n: i, active: true, empty: null, secret: 'row-204' }));
+  const old = fixture(value), batched = fixture(value, new PageCache(), true);
+  const options = { hidden: new Set(['$[].secret']), indexBase: 1 };
+  assert.deepEqual(await batched.source.search('row-204', options), await old.source.search('row-204', options));
+  assert.deepEqual((await batched.source.search('205', options)).hits, [[204]]);
+  // Measure one complete traversal independently of the second index-label query.
+  const counted = fixture(value, new PageCache(), true);
+  await counted.source.search('row-204', options);
+  assert.equal(old.calls.length, 208);
+  assert.equal(counted.calls.length, 31);
+  for (const call of counted.calls.filter(call => call.op === 'searchPages')) {
+    assert(call.args.paths.length <= 8);
+    assert(call.args.paths.every(path => path.length === 1));
+  }
+  assert.equal(counted.cache.stats.entries, 0);
+  for (const item of [old, batched, counted]) item.source.dispose();
+});
+
+test('batch search cancellation and fallback do not read later branches after an early match', async () => {
+  const value = [{ text: 'target' }, { text: 'later' }], memory = new MemoryDataSource(value);
+  for (const cancel of [true, false]) {
+    const calls = []; let cancelled = false;
+    const source = new IndexedDataSource(async (op, id, args) => {
+      calls.push({ op, args });
+      if (op === 'page') return memory.getChildren(args.path, args);
+      if (op === 'searchPages') { cancelled = cancel; throw new Error('later branch cannot be resolved'); }
+    }, 'batch-fallback', { root: memory.getRoot(), searchBatch: true });
+    const result = await source.search('target', { limit: 1, cancelled: () => cancelled });
+    if (cancel) assert.equal(result, null);
+    else assert.deepEqual(result, { hits: [[0, 'text']], truncated: true });
+    assert(!calls.some(c => c.op === 'page' && c.args.path[0] === 1));
+    source.dispose();
+  }
+});
+
+test('batch search rejects late responses after view changes and file changes', async () => {
+  const memory = new MemoryDataSource([{ text: 'target' }, { text: 'target' }]);
+  let release, began;
+  const started = new Promise(resolve => { began = resolve; });
+  const info = { root: memory.getRoot(), searchBatch: true };
+  const source = new IndexedDataSource(async (op, id, args) => {
+    if (op === 'page') return memory.getChildren(args.path, args);
+    if (op === 'searchPages') { began(); return new Promise(resolve => { release = resolve; }); }
+    if (op === 'info') return info;
+  }, 'batch-change', info);
+  const pending = source.search('target');
+  await started; await source.configure(false, false);
+  release(await Promise.all([[0], [1]].map(path => memory.getChildren(path))));
+  await assert.rejects(pending, { name: 'AbortError' });
+  source.dispose();
+
+  const staleCache = new PageCache();
+  const changed = new IndexedDataSource(async (op, id, args) => {
+    if (op === 'page') return memory.getChildren(args.path, args);
+    if (op === 'searchPages') return Promise.all(args.paths.map(path => memory.getChildren(path)));
+    if (op === 'check') throw new Error('文件已发生变化');
+  }, 'batch-file-change', info, true, { cache: staleCache });
+  await changed.getChildren([]);
+  assert.equal(staleCache.stats.entries, 1);
+  await assert.rejects(changed.search('target'), /文件已发生变化/);
+  assert.equal(staleCache.stats.entries, 0);
+  changed.dispose();
+});
+
+test('batch search skips hidden subtrees and keeps JavaScript Unicode matching', async () => {
+  const value = { a: { text: 'ΟΣ İ' }, hidden: { text: 'ΟΣ İ' }, b: { text: 'ΟΣ İ' } };
+  const old = fixture(value), batched = fixture(value, new PageCache(), true);
+  const options = { hidden: new Set(['$.hidden']) };
+  for (const query of ['ος', 'i\u0307']) {
+    assert.deepEqual(await batched.source.search(query, options), await old.source.search(query, options));
+  }
+  assert(batched.calls.filter(call => call.op === 'searchPages').every(call => call.args.paths.every(path => path[0] !== 'hidden')));
+  old.source.dispose(); batched.source.dispose();
+});
+
+test('abort or close during a successful batch rejects without another page request', async () => {
+  const memory = new MemoryDataSource([{ text: 'target' }, { text: 'target' }]);
+  for (const close of [false, true]) {
+    const controller = new AbortController(), calls = [];
+    let source;
+    source = new IndexedDataSource(async (op, id, args) => {
+      calls.push(op);
+      if (op === 'page') return memory.getChildren(args.path, args);
+      if (op === 'searchPages') {
+        const pages = await Promise.all(args.paths.map(path => memory.getChildren(path)));
+        if (close) source.dispose(); else controller.abort();
+        return pages;
+      }
+    }, 'batch-abort', { root: memory.getRoot(), searchBatch: true });
+    await assert.rejects(source.search('target', { signal: controller.signal }), close ? /文档已关闭/ : { name: 'AbortError' });
+    assert.equal(calls.filter(op => op === 'page').length, 1);
+    source.dispose();
+  }
 });
 
 test('revisiting a page and locating a key reuse its data after a file-change check', async () => {

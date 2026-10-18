@@ -97,8 +97,59 @@ export class IndexedDataSource {
   getText(path, { signal } = {}) { return this.#call('text', { path }, signal); }
   async search(query, { rootLabel = 'root', indexBase = 0, hidden = new Set(), cancelled = () => false, signal, limit = 1000 } = {}) {
     const hits = [], stack = [{ node: this.getRoot(), key: rootLabel }];
+    const version = this.#version, batches = new Map();
+    const finish = async truncated => {
+      this.#checkVersion(version, signal);
+      if (cancelled()) return null;
+      if (this.info.searchBatch) {
+        try { await this.#call('check', {}, signal); }
+        catch (error) {
+          if (error.name !== 'AbortError' && version === this.#version) this.#cache.deleteOwner(this.#owner);
+          throw error;
+        }
+      }
+      this.#checkVersion(version, signal);
+      return cancelled() ? null : { hits, truncated };
+    };
+    const visible = node => !hidden.has(normalizeDataPath(encodeDataPath(node.path)));
+    const small = node => (node.type === 'array' || node.type === 'object') && node.childCount > 0 && node.childCount <= 16;
+    const pageFor = async frame => {
+      this.#checkVersion(version, signal);
+      const pathKey = JSON.stringify(frame.node.path), saved = batches.get(pathKey);
+      if (saved) { batches.delete(pathKey); return saved; }
+      const parent = stack.at(-2);
+      if (this.info.searchBatch && frame.cursor === 0 && small(frame.node) && parent?.page) {
+        const candidates = [frame.node];
+        let items = frame.node.childCount;
+        for (const node of parent.page.items.slice(parent.cursor - parent.page.start)) {
+          if (candidates.length >= 8) break;
+          if (!small(node) || !visible(node) || items + node.childCount > 64) continue;
+          candidates.push(node); items += node.childCount;
+        }
+        if (candidates.length > 1) {
+          try {
+            const pages = await this.#call('searchPages', { paths: candidates.map(node => node.path) }, signal);
+            this.#checkVersion(version, signal);
+            if (cancelled()) return null;
+            if (!Array.isArray(pages) || pages.length !== candidates.length) throw new Error('搜索批次无效');
+            // Replace speculative results: nested trees cannot grow this cache.
+            batches.clear();
+            for (let i = 1; i < pages.length; i++) batches.set(JSON.stringify(candidates[i].path), pages[i]);
+            return pages[0];
+          } catch (error) {
+            this.#checkVersion(version, signal);
+            if (cancelled()) return null;
+            // A future branch may be ambiguous or too large. Defer that error
+            // until DFS actually reaches it, preserving result/limit semantics.
+          }
+        }
+      }
+      const page = await this.getChildren(frame.node.path, { offset: frame.cursor, signal, cache: false });
+      this.#checkVersion(version, signal);
+      return page;
+    };
     while (stack.length) {
-      this.#check(signal); if (cancelled()) return null;
+      this.#checkVersion(version, signal); if (cancelled()) return null;
       const frame = stack.at(-1), node = frame.node;
       if (!frame.visited) {
         frame.visited = true;
@@ -107,20 +158,20 @@ export class IndexedDataSource {
         const value = branch ? node.type : node.truncated ? await this.getText(node.path, { signal }) : String(node.value);
         if (cancelled()) return null;
         if (`${frame.key} ${value}`.toLowerCase().includes(query)) {
-          hits.push(node.path); if (hits.length >= limit) return { hits, truncated: true };
+          hits.push(node.path); if (hits.length >= limit) return finish(true);
         }
         if (!branch) { stack.pop(); continue; }
         frame.cursor = 0; frame.page = null;
       }
       if (frame.cursor >= node.childCount) { stack.pop(); continue; }
       if (!frame.page || frame.cursor >= frame.page.end) {
-        frame.page = await this.getChildren(node.path, { offset: frame.cursor, signal, cache: false });
+        frame.page = await pageFor(frame);
         if (cancelled()) return null;
       }
       const child = frame.page.items[frame.cursor++ - frame.page.start];
       stack.push({ node: child, key: child.arrayItem ? String(child.key + indexBase) : child.key });
     }
-    return cancelled() ? null : { hits, truncated: false };
+    return finish(false);
   }
   dispose() {
     if (this.#closed) return;
