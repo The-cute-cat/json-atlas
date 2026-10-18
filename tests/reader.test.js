@@ -79,7 +79,7 @@ function reader(storage = new Map(), native = {}) {
     console, Blob, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
-    ;({ buildDoc, resolveDoc, activateDoc, collectSession, expandByPaths, expandLevels,
+    ;({ buildDoc, resolveDoc, activateDoc, collectSession, expandByPaths, expandLevels, expandOne,
       openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile,
       add: doc => docs.push(doc), configure: value => Object.assign(settings, value),
       setTemplate: value => { template = value; }, template: () => template,
@@ -110,6 +110,97 @@ test('a collapsed root preserves its saved pan and zoom instead of applying defa
   assert.equal(view.x, 123);
   assert.equal(view.y, -45);
   assert.equal(view.scale, 1.5);
+});
+
+test('switching files restores the second array object and its nested arrays exactly', async () => {
+  for(const indexBase of [0, 1]) {
+    const { api, elements, flush } = reader();
+    api.configure({ indexBase });
+    const text = JSON.stringify({ records: [
+      { nested: [{ detail: {} }, { detail: {} }] },
+      { nested: [{ detail: {} }, { detail: {} }] },
+      { nested: [{ detail: {} }, { detail: {} }] }
+    ] });
+    const first = api.buildDoc(text, 'first.json', text.length);
+    const second = api.buildDoc('{}', 'second.json', 2);
+    api.add(first); api.add(second); api.activateDoc(first.id); await flush();
+    const tree = elements.get('tree');
+    const find = path => tree.querySelectorAll('.tree-node').find(n => n.dataset.path === path);
+    const wanted = ['$', '$.records', '$.records[1]', '$.records[1].nested', '$.records[1].nested[1]'];
+    for(const path of wanted) await api.expandOne(find(path));
+    for(let round = 0; round < 2; round++) {
+      api.activateDoc(second.id); await flush();
+      assert.equal(JSON.stringify(first.openPaths), JSON.stringify(wanted));
+      api.activateDoc(first.id); await flush();
+      assert.equal(JSON.stringify(tree.querySelectorAll('.tree-node.open').map(n => n.dataset.path)), JSON.stringify(wanted));
+      assert.equal(find('$.records[0]').classList.contains('open'), false);
+      assert.equal(find('$.records[2]').classList.contains('open'), false);
+      assert.equal(find('$.records[1].nested[0]').classList.contains('open'), false);
+    }
+  }
+});
+
+test('switching files restores an expanded object on a later page', async () => {
+  const { api, elements, flush } = reader();
+  const value = Array.from({ length: 202 }, (_, i) => ({ detail: { id: i } }));
+  const text = JSON.stringify(value);
+  const first = api.buildDoc(text, 'paged.json', text.length);
+  first.source = Object.assign(new MemoryDataSource(first.parsed), { paged: true });
+  const second = api.buildDoc('{}', 'second.json', 2);
+  api.add(first); api.add(second); api.activateDoc(first.id); await flush();
+  const tree = elements.get('tree');
+  const find = path => tree.querySelectorAll('.tree-node').find(n => n.dataset.path === path);
+  await api.expandOne(find('$'), 101);
+  await api.expandOne(find('$[101]'));
+  await api.expandOne(find('$[101].detail'));
+  api.activateDoc(second.id); await flush();
+  api.activateDoc(first.id); await flush();
+  assert.equal(!!find('$[0]'), false);
+  assert.equal(find('$[101]').classList.contains('open'), true);
+  assert.equal(find('$[101].detail').classList.contains('open'), true);
+  assert.equal(find('$[100]').classList.contains('open'), false);
+});
+
+test('saved sessions retain exact indices and literal object keys across restart', async () => {
+  const storage = new Map([['json-atlas_settings_v1', JSON.stringify({ reopenLast: true, restoreSession: true })]]);
+  const { api, elements, flush } = reader(storage);
+  api.configure({ reopenLast: true, restoreSession: true });
+  const text = JSON.stringify({ 'a[12]."': [{ '0': {} }, { '0': {} }] });
+  const doc = api.buildDoc(text, 'keys.json', text.length);
+  api.add(doc); api.activateDoc(doc.id); await flush();
+  const wanted = [[], ['a[12]."'], ['a[12]."', 1], ['a[12]."', 1, '0']].map(encodeDataPath);
+  for(const path of wanted) {
+    await api.expandOne(elements.get('tree').querySelectorAll('.tree-node').find(n => n.dataset.path === path));
+  }
+  const session = api.collectSession();
+  assert.equal(session.version, 3);
+  assert.equal(JSON.stringify(session.docs[`keys.json::${text.length}`].paths), JSON.stringify(wanted));
+  storage.set('json-atlas_session_v1', JSON.stringify(session));
+  const restarted = reader(storage); await restarted.flush();
+  assert.equal(JSON.stringify(restarted.elements.get('tree').querySelectorAll('.tree-node.open').map(n => n.dataset.path)), JSON.stringify(wanted));
+});
+
+test('structure templates still normalize array items and expand only the first object', async () => {
+  const { api, elements, flush } = reader();
+  api.setTemplate({ paths: ['$', '$[0]', '$[0].detail'], hidden: [], savedAt: 1 });
+  const doc = api.buildDoc('[{"detail":{}},{"detail":{}}]', 'template.json', 29);
+  api.add(doc); api.activateDoc(doc.id); await flush();
+  const expanded = elements.get('tree').querySelectorAll('.tree-node.open').map(n => n.dataset.path);
+  assert.equal(JSON.stringify(expanded), JSON.stringify(['$', '$[0]', '$[0].detail']));
+});
+
+test('JSONL file switching preserves the second record expansion', async () => {
+  const { api, elements, flush } = reader();
+  const text = '{"detail":{}}\n{"detail":{}}\n';
+  const first = api.buildDoc(text, 'records.jsonl', text.length);
+  const other = api.buildDoc('{}', 'other.json', 2);
+  api.add(first); api.add(other); api.activateDoc(first.id); await flush();
+  const tree = elements.get('tree');
+  const wanted = ['$', '$[1]', '$[1].detail'];
+  for(const path of wanted) await api.expandOne(tree.querySelectorAll('.tree-node').find(n => n.dataset.path === path));
+  api.activateDoc(other.id); await flush();
+  api.activateDoc(first.id); await flush();
+  assert.equal(JSON.stringify(tree.querySelectorAll('.tree-node.open').map(n => n.dataset.path)), JSON.stringify(wanted));
 });
 
 test('JSON roots do not inherit a stale JSONL record-count label', () => {

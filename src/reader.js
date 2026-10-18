@@ -111,7 +111,7 @@ function makeDoc(name, size, text, kind){
     sub: '',             /* 条纹信息 / 顶部副标题用的一行摘要 */
     error: null,         /* 非空表示当前设置下无法渲染 */
     view: null,          /* {x, y, scale}，切走时快照 */
-    openPaths: null,     /* 展开的节点路径（归一化），切走时快照 */
+    openPaths: null,     /* 展开的节点精确路径，保留数组真实下标 */
     searchQuery: ''      /* 这份文件上次的搜索词 */
   };
 }
@@ -187,7 +187,7 @@ function snapshotDoc(){
   if(!doc || doc.error) return;
 
   doc.openPaths = [...tree.querySelectorAll('.tree-node.open')]
-    .map(n => normalizePath(n.dataset.path));
+    .map(n => n.dataset.path);
   if(lastViewState) doc.view = { x: lastViewState.x, y: lastViewState.y, scale: lastViewState.scale };
   doc.searchQuery = searchInput.value || '';
   doc.data = parsedData;
@@ -247,7 +247,7 @@ function activateDoc(id){
     if(activation !== expansionGeneration) return;
     if(activeDocId !== doc.id) return;
     if(Array.isArray(doc.openPaths)){
-      await expandByPaths(doc.openPaths);
+      await expandByPaths(doc.openPaths, { exact: true });
       if(activeDocId !== doc.id || activation !== expansionGeneration) return;
       if(doc.view) applySessionView(doc.view); else resetView();
     }else{
@@ -669,7 +669,7 @@ function saveReopenCopy(){
 /* 只收集体积很小的会话数据；文件原文在副本里，不跟着一起重写 */
 function collectSession(){
   if(!settings.reopenLast || !settings.restoreSession) return null;
-  if(!docs.length) return { version: 2, docs: {}, savedAt: Date.now() };
+  if(!docs.length) return { version: 3, docs: {}, savedAt: Date.now() };
 
   /* 当前文档的展开 / 平移状态先落到文档对象上，再整体收集 */
   snapshotDoc();
@@ -679,7 +679,7 @@ function collectSession(){
     if(!d.openPaths && !d.view) return;
     map[docKey(d)] = { paths: d.openPaths || [], view: d.view || null };
   });
-  return { version: 2, docs: map, savedAt: Date.now() };
+  return { version: 3, docs: map, savedAt: Date.now() };
 }
 
 /* 展开 / 平移后延迟落盘：拖动过程中不会每一帧都写 localStorage */
@@ -1177,10 +1177,10 @@ const ctxCollapseBtn = document.getElementById('ctxCollapse');
 let ctxTarget = null;
 
 /* 展开该节点的一级子节点 */
-async function expandOne(node){
+async function expandOne(node, key){
   if(!node.classList.contains('branch')) return;
   node.classList.add('open');
-  await node._ensureChildren?.();
+  await node._ensureChildren?.(key);
   if(node.isConnected === false) return;
   updateVirtualization();
   scheduleOverflowSweep();
@@ -1405,8 +1405,8 @@ function saveTemplate(){
 }
 
 /* prefix 按 JSONPath 段边界判断是否为 path 的严格前缀（避免 $.a 误配 $.ab） */
-function isPathPrefix(prefix, path){
-  const p = normalizePath(prefix);
+function isPathPrefix(prefix, path, normalize = true){
+  const p = normalize ? normalizePath(prefix) : prefix;
   if(!path.startsWith(p) || path.length <= p.length) return false;
 
   const next = path[p.length];
@@ -1441,23 +1441,41 @@ function recordTemplate(){
 }
 
 /* 展开节点：数组只走第一项，对象走全部子节点 */
-function childNodesToVisit(node){
+function childNodesToVisit(node, firstArrayOnly = true){
   const c = directChildrenContainer(node);
   if(!c) return [];
   const kids = [...c.children].filter(n => n.classList.contains('tree-node'));
   /* 字符串型 JSON 节点：按解析出来的值判断是否为数组 */
-  return node._childrenType === 'array' ? kids.slice(0, 1) : kids;
+  return firstArrayOnly && node._childrenType === 'array' ? kids.slice(0, 1) : kids;
 }
 
-/* 按归一化路径集合展开（结构模板与刷新恢复共用）：
-   数组只走第一项；返回最深的命中节点，由调用方决定是否居中 */
-async function expandByPaths(paths){
+/* 精确会话路径还记录父节点应加载的子项，以便恢复非首页的数组项。
+   按路径段匹配，避免把带点号、括号或数字的对象键误当作数组下标。 */
+function sessionChildKeys(paths){
+  const result = new Map();
+  for(const path of paths){
+    if(typeof path !== 'string' || !path.startsWith('$')) continue;
+    let prefix = '$';
+    for(const match of path.matchAll(/\.[A-Za-z_$][\w$]*|\[(?:\d+|"(?:\\.|[^"\\])*")\]/g)){
+      if(match.index !== prefix.length) break;
+      const segment = match[0];
+      const key = segment[0] === '.' ? segment.slice(1) : JSON.parse(segment.slice(1, -1));
+      if(!result.has(prefix)) result.set(prefix, key);
+      prefix += segment;
+    }
+  }
+  return result;
+}
+
+/* 模板按归一化路径、数组首项恢复；会话按精确路径恢复实际展开项。 */
+async function expandByPaths(paths, { exact = false } = {}){
   const generation = expansionGeneration;
   const root = tree.firstElementChild;
   const set = new Set(paths || []);
   if(!root || !set.size) return null;
 
   const pathList = [...set];
+  const childKeys = exact ? sessionChildKeys(pathList) : null;
   let deepest = null;
   let deepestLen = -1;
 
@@ -1472,21 +1490,21 @@ async function expandByPaths(paths){
       /* 字符串型 JSON 字段：命中它下级的路径时先按 JSON 展开，
          否则记录在它内部的结构会整体落空 */
       if(node._jsonSource &&
-         pathList.some(p => isPathPrefix(node.dataset.path, p))){
+         pathList.some(p => isPathPrefix(node.dataset.path, p, !exact))){
         buildJsonChildren(node);
       }else{
         continue;
       }
     }
-    if(!set.has(normalizePath(node.dataset.path))) continue;
+    if(!set.has(exact ? node.dataset.path : normalizePath(node.dataset.path))) continue;
 
-    await expandOne(node);
+    await expandOne(node, childKeys?.get(node.dataset.path));
     if(generation !== expansionGeneration) return null;
 
     const p = node.dataset.path;
     if(p.length > deepestLen){ deepestLen = p.length; deepest = node; }
 
-    pending.push(...childNodesToVisit(node).reverse());
+    pending.push(...childNodesToVisit(node, !exact).reverse());
   }
 
   return deepest;
