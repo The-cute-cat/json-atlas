@@ -69,6 +69,30 @@ test('a very wide memory branch keeps the display guard and search can reach lat
   assert.equal(container.children.some(n => n.className === 'page-navigation'), false);
 });
 
+test('trimmed wide roots preserve nearby nodes and restore removed ranges with bounded paging', async () => {
+  const { node, container, items } = mount(new MemoryDataSource(Array.from({ length: 5005 }, (_, i) => i)));
+  await node._ensureChildren();
+  const first = container.children[0];
+  let disposed = 0;
+  for (const child of container.children.slice(3900, 5000)) child._disposeBudget = () => disposed++;
+  node._trimChildren(new Set(container.children.slice(3900, 5000)));
+  assert.equal(items().length, 3900); assert.equal(container.children[0], first); assert.equal(disposed, 1100);
+  const hint = container.children.find(child => child.className === 'trimmed-range');
+  hint.children[1].onclick(event); await settle();
+  assert.equal(items().length, 100); assert.equal(items()[0].key, 3900);
+  assert.equal(container.children.at(-1).className, 'page-navigation');
+  await node._ensureChildren(5004);
+  assert.equal(items().at(-1).key, 5004); assert.equal(items().length, 5);
+});
+
+test('trimmed object keys on the same original page are recreated rather than skipped', async () => {
+  const { node, container, items } = mount(new MemoryDataSource(Object.fromEntries(Array.from({ length: 205 }, (_, i) => [`key.${i}`, i]))));
+  await node._ensureChildren();
+  node._trimChildren(new Set(container.children.slice(50)));
+  await node._ensureChildren('key.75');
+  assert.equal(items().length, 100); assert(items().some(item => item.key === 'key.75'));
+});
+
 test('late responses cannot repopulate a collapsed branch, even if the source ignores abort', async () => {
   let resolve;
   const { node, container } = mount({ getChildren: () => new Promise(r => { resolve = r; }) });

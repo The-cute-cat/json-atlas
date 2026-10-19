@@ -6,6 +6,7 @@ import { MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, encodeDataPath, n
 import { MemoryDataSource } from '../src/data-source.js';
 import { normalizeThreshold, needsIndex, IndexedDataSource } from '../src/large-files.js';
 import { ViewportWindow } from '../src/viewport-window.js';
+import { NodeBudget } from '../src/node-budget.js';
 
 // A small DOM harness for reader state transitions; this does not test layout/WebView2.
 class Element {
@@ -33,6 +34,7 @@ class Element {
   addEventListener(name, handler) { this.listeners.set(name, handler); }
   setAttribute() {}
   removeAttribute() {}
+  focus() {}
   querySelectorAll(selector) {
     const result = [];
     const groups = selector.split(',').map(s => s.trim().split('.').filter(Boolean));
@@ -74,13 +76,13 @@ function reader(storage = new Map(), native = {}) {
     requestAnimationFrame: callback => frames.push(callback),
     setTimeout: (callback, delay) => delay === 0 ? setTimeout(callback, 0) : 1, clearTimeout() {},
     desktop: false, connectDesktop: async () => {}, updateWindowTitle() {},
-    MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow,
+    MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
     encodePath: encodeDataPath, normalizePath: normalizeDataPath,
     console, Blob, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
     ;({ buildDoc, resolveDoc, activateDoc, collectSession, expandByPaths, expandLevels, expandOne,
-      openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile,
+      openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile, showNodeLimit, collapseAll, updateVirtualization,
       add: doc => docs.push(doc), configure: value => Object.assign(settings, value),
       setTemplate: value => { template = value; }, template: () => template,
       state: () => ({ activeDocId, currentRootLabel, doc: activeDoc(), view: { ...mainView.state } }) });`, context);
@@ -96,6 +98,50 @@ test('switching files persists the selected document even with session restorati
   api.activateDoc(second.id);
   api.activateDoc(first.id);
   assert.equal(JSON.parse(storage.get('json-atlas_lastfile_v1')).activeKey, 'first.json::7');
+});
+
+test('node cleanup appears on limit, releases old content, and hides after manual collapse or file switch', async () => {
+  const { api, elements } = reader();
+  const doc = api.buildDoc(JSON.stringify(Array.from({ length: 5000 }, (_, i) => i)), 'wide.json', 1);
+  api.add(doc); api.activateDoc(doc.id);
+  const root = elements.get('tree').firstElementChild;
+  await api.expandOne(root);
+  assert.equal(elements.get('nodeBudgetNotice').hidden, false);
+  const cleanup = elements.get('reclaimNodesBtn').listeners.get('click');
+  cleanup();
+  assert.equal(elements.get('tree').querySelectorAll('.tree-node').length, 4000);
+  assert(root.classList.contains('open'));
+  assert.equal(elements.get('nodeBudgetNotice').hidden, true);
+  await api.expandOne(root);
+  api.collapseAll();
+  assert.equal(elements.get('nodeBudgetNotice').hidden, true);
+  await api.expandOne(root);
+  const other = api.buildDoc('{"ok":1}', 'small.json', 1); api.add(other); api.activateDoc(other.id);
+  assert.equal(elements.get('nodeBudgetNotice').hidden, true);
+});
+
+test('error panel orders compact secondary and primary actions without the full-width primary class', () => {
+  const { api, elements } = reader(); api.configure({ strictJsonl: true });
+  const doc = api.buildDoc('{"ok":1}\nbad\n', 'bad.jsonl', 1); api.add(doc); api.activateDoc(doc.id);
+  const actions = elements.get('docError').querySelectorAll('.doc-error-actions')[0];
+  assert.equal(actions.children[0].textContent, '关闭这份文件');
+  assert.equal(actions.children[1].textContent, '关闭严格模式并重试');
+  assert.equal(actions.children[1].className, 'doc-error-primary');
+});
+
+test('inactive errors and skipped JSONL rows remain marked, including empty files', () => {
+  const { api, elements } = reader(); api.configure({ strictJsonl: false });
+  const empty = api.buildDoc('', 'empty.jsonl', 0), partial = api.buildDoc('{"ok":1}\nbad\n', 'partial.jsonl', 10), good = api.buildDoc('{}', 'good.json', 2);
+  for (const doc of [empty, partial, good]) api.add(doc);
+  api.activateDoc(good.id);
+  const slots = elements.get('fileRail').querySelectorAll('.file-slot');
+  assert(slots[0].classList.contains('error')); assert(!slots[0].classList.contains('active'));
+  assert(slots[1].classList.contains('warning'));
+  assert.match(slots[1].children[0].title, /已跳过 1 行/);
+  api.configure({ strictJsonl: true }); api.activateDoc(good.id);
+  assert(elements.get('fileRail').querySelectorAll('.file-slot')[1].classList.contains('error'));
+  api.activateDoc(empty.id);
+  assert.equal(elements.get('docError').querySelectorAll('.doc-error-actions')[0].children.length, 1);
 });
 
 test('a collapsed root preserves its saved pan and zoom instead of applying default expansion', async () => {

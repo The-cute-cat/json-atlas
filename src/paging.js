@@ -14,7 +14,7 @@ export function discardPagedTree(root) {
     mounted.push(node);
     pending.push(...node.children);
   }
-  for (const node of mounted) { node._cancelPage?.(); node._disposeViewport?.(); }
+  for (const node of mounted) { node._cancelPage?.(); node._disposeViewport?.(); node._disposeBudget?.(); }
 }
 
 // Commit only the latest request; cancelled/replaced branches cannot reappear.
@@ -24,6 +24,7 @@ export function pagedChildren(node, container, source, path, render, changed, fi
   let releasePage = null;
   let pageRef = null;
   let retainedWanted = true;
+  let compact = false, trimmed = false;
   const navButton = (text, disabled, offset) => {
     const button = document.createElement('button'); button.textContent = text; button.disabled = disabled;
     button.onclick = e => { e.stopPropagation(); show(undefined, offset); }; return button;
@@ -46,17 +47,18 @@ export function pagedChildren(node, container, source, path, render, changed, fi
     pending = Promise.resolve().then(async () => {
       try {
         if (signal.aborted || request !== generation) return false;
-        const page = await source.getChildren(path, { offset, key, firstArrayOnly, signal, all: source.paged === false });
+        const page = await source.getChildren(path, { offset, key, firstArrayOnly, signal, all: source.paged === false && !compact });
         if (signal.aborted || request !== generation) return false;
-        if (mountedStart === page.start) return true;
+        if (mountedStart === page.start && !trimmed) return true;
         const children = [];
         for (const [index, item] of page.items.entries()) {
           if(signal.aborted || request !== generation) return false;
           const child = render(item);
+          if (child) child._pageKey = item.key;
           if (child) children.push(child);
           if(source.paged === false && page.items.length > 500 && index % 100 === 99) await new Promise(resolve => setTimeout(resolve, 0));
         }
-        if (source.paged !== false && page.total > PAGE_SIZE) {
+        if ((source.paged !== false || compact) && page.total > PAGE_SIZE) {
           const {start, end, total} = page;
           const navigation = document.createElement('div');
           navigation.className = 'page-navigation';
@@ -78,6 +80,7 @@ export function pagedChildren(node, container, source, path, render, changed, fi
         for (const child of [...container.children]) discardPagedTree(child);
         container.replaceChildren(...children);
         mountedStart = page.start;
+        trimmed = false;
         node._pageError = null;
         changed();
         source.prefetchChildren?.(path, page, { firstArrayOnly, signal });
@@ -112,6 +115,29 @@ export function pagedChildren(node, container, source, path, render, changed, fi
     return pending;
   };
   node._ensureChildren = show;
+  node._trimChildren = selected => {
+    generation++; controller?.abort(); pending = null;
+    releasePage?.(); releasePage = null; pageRef = null;
+    compact = true; trimmed = true;
+    node.setAttribute('aria-busy', 'false');
+    const kept = []; let run = [];
+    const flush = () => {
+      if (!run.length) return;
+      const key = run[0]._pageKey;
+      const hint = document.createElement('div'); hint.className = 'trimmed-range';
+      const label = document.createElement('span'); label.textContent = `已精简 ${run.length} 项远处内容`;
+      const restore = document.createElement('button'); restore.type = 'button'; restore.textContent = '查看此处';
+      restore.onclick = e => { e.stopPropagation(); show(key); };
+      hint.append(label, restore); kept.push(hint);
+      for (const child of run) discardPagedTree(child);
+      run = [];
+    };
+    for (const child of [...container.children]) {
+      if (selected.has(child)) run.push(child);
+      else { flush(); if (child.className !== 'node-limit') kept.push(child); }
+    }
+    flush(); container.replaceChildren(...kept);
+  };
   node._setPageRetained = keep => {
     retainedWanted = keep;
     if(!keep){ releasePage?.(); releasePage = null; }
@@ -135,6 +161,7 @@ export function pagedChildren(node, container, source, path, render, changed, fi
     node._cancelPage();
     for (const child of [...container.children]) discardPagedTree(child);
     container.replaceChildren();
+    compact = false; trimmed = false;
   };
   return show;
 }

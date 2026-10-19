@@ -296,7 +296,21 @@
   </div>
 </div>
 
-<div id="toast"></div>
+<div class="notice-stack" aria-label="任务进度和提示">
+<div id="toast" role="status"></div>
+<div id="nodeBudgetNotice" class="node-budget-notice" hidden>
+  <span role="status">显示节点较多，可精简远处未阅读的内容。</span>
+  <button id="reclaimNodesBtn" type="button">精简远处节点</button>
+</div>
+<div id="loadingStatus" class="loading-status" role="status" hidden>
+  <span class="loading-spinner" aria-hidden="true"></span>
+  <div class="loading-details">
+    <span id="loadingLabel">正在打开文件…</span>
+    <progress id="loadingProgress" max="100" aria-label="文件处理进度"></progress>
+  </div>
+  <button id="cancelLoadBtn">取消</button>
+</div>
+</div>
 
 <div id="editorMask">
   <div class="modal-box editor-box">
@@ -361,13 +375,5 @@
 </dialog>
 
 <script type="module" src="/src/main.js"></script>
-<div id="loadingStatus" class="loading-status" role="status" hidden>
-  <span class="loading-spinner" aria-hidden="true"></span>
-  <div class="loading-details">
-    <span id="loadingLabel">正在打开文件…</span>
-    <progress id="loadingProgress" max="100" aria-label="文件处理进度"></progress>
-  </div>
-  <button id="cancelLoadBtn">取消</button>
-</div>
 </body>
 </html>
