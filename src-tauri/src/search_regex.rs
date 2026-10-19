@@ -72,7 +72,7 @@ impl<'a> Matcher<'a> {
         }
         self.active.clear();
         self.stack.clear();
-        self.stack.extend(self.pending.drain(..));
+        self.stack.append(&mut self.pending);
         if boundary {
             self.stack.push(self.pattern.nfa.start_anchored());
         }

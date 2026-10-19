@@ -42,6 +42,16 @@ pub(super) struct Search<'a> {
     pattern: Pattern,
     visited: u64,
 }
+
+/// One descent's position context: the label shown for this node, how much of
+/// the path already belongs to its ancestors, and whether the parent is an object.
+#[derive(Clone, Copy)]
+struct NodeContext<'a> {
+    label: &'a str,
+    prefix: usize,
+    object_child: bool,
+}
+
 impl Search<'_> {
     pub(super) fn check(&self) -> Result<()> {
         if self.cancel.load(Ordering::Relaxed) {
@@ -145,8 +155,19 @@ impl Search<'_> {
         label: &str,
     ) -> Result<bool> {
         let mut input = Input::new(&doc.source_path)?;
-        self.node(doc, &mut input, doc.root, path, label, path.len(), false)
-            .map(|v| v.1)
+        let prefix = path.len();
+        self.node(
+            doc,
+            &mut input,
+            doc.root,
+            path,
+            NodeContext {
+                label,
+                prefix,
+                object_child: false,
+            },
+        )
+        .map(|v| v.1)
     }
     fn node(
         &mut self,
@@ -154,9 +175,7 @@ impl Search<'_> {
         input: &mut Input,
         id: u64,
         path: &mut Vec<Value>,
-        label: &str,
-        prefix: usize,
-        object_child: bool,
+        context: NodeContext<'_>,
     ) -> Result<(u64, bool)> {
         let node = Node::read(
             doc.index.as_mut().ok_or("索引已关闭")?,
@@ -166,15 +185,21 @@ impl Search<'_> {
         if !self.visible(path)? {
             return Ok((node.next, false));
         }
-        if self.visited % 4096 == 0 {
+        if self.visited.is_multiple_of(4096) {
             doc.check()?;
         }
         let matched = if node.kind == 3 {
             // Preserve ambiguity errors for long duplicate-key values.
-            if object_child && node.end - node.start > PREVIEW {
-                doc.resolve(&path[prefix..], true)?;
+            if context.object_child && node.end - node.start > PREVIEW {
+                doc.resolve(&path[context.prefix..], true)?;
             }
-            input.string(node.start, node.end, label, &mut self.pattern, self.cancel)?
+            input.string(
+                node.start,
+                node.end,
+                context.label,
+                &mut self.pattern,
+                self.cancel,
+            )?
         } else {
             let text = match node.kind {
                 1 => "object".into(),
@@ -187,14 +212,14 @@ impl Search<'_> {
                 }
                 _ => return Err("节点类型无效".into()),
             };
-            self.matches(label, &text)?
+            self.matches(context.label, &text)?
         };
         if self.accept(path, matched) {
             return Ok((node.next, true));
         }
         if node.kind == 1 || node.kind == 2 {
-            if object_child && node.count > 0 {
-                doc.resolve(&path[prefix..], true)?;
+            if context.object_child && node.count > 0 {
+                doc.resolve(&path[context.prefix..], true)?;
             }
             let mut child = id + 1;
             for i in 0..node.count {
@@ -206,8 +231,12 @@ impl Search<'_> {
                     (json!(key), key)
                 };
                 path.push(key);
-                let (next, stop) =
-                    self.node(doc, input, child, path, &label, prefix, node.kind == 1)?;
+                let child_context = NodeContext {
+                    label: label.as_str(),
+                    prefix: context.prefix,
+                    object_child: node.kind == 1,
+                };
+                let (next, stop) = self.node(doc, input, child, path, child_context)?;
                 path.pop();
                 child = next;
                 if stop {
@@ -364,7 +393,7 @@ fn decimal_tie(value: f64, significand: u64, scale: i32) -> bool {
         }
     } else {
         for _ in scale..0 {
-            if midpoint % 5 != 0 {
+            if !midpoint.is_multiple_of(5) {
                 return false;
             }
             midpoint /= 5;
@@ -613,6 +642,11 @@ enum Matcher<'a> {
     Advanced(super::search_regex::Matcher<'a>),
 }
 impl<'a> Matcher<'a> {
+    // `pattern.advanced.as_ref()` borrows for the whole `'a`, so an `if let`
+    // would keep that borrow alive across the else arm and block the `&mut
+    // pattern` that `LiteralMatcher::new` needs. The `is_some()` guard ends its
+    // borrow immediately, which is why this shape is required.
+    #[allow(clippy::unnecessary_unwrap)]
     fn new(pattern: &'a mut Pattern) -> Self {
         if pattern.advanced.is_some() {
             Self::Advanced(super::search_regex::Matcher::new(

@@ -37,15 +37,18 @@ struct Branch {
     keys: u64,
 }
 
+/// (document id, search id) → cancel flag, shared by search jobs and leases.
+type CancelMap = Arc<Mutex<HashMap<(String, String), Arc<AtomicBool>>>>;
+
 #[derive(Default)]
 pub struct IndexState {
     pub jobs: Mutex<HashMap<String, Arc<AtomicBool>>>,
     pub sessions: Mutex<HashMap<String, Arc<Mutex<Indexed>>>>,
-    searches: Arc<Mutex<HashMap<(String, String), Arc<AtomicBool>>>>,
+    searches: CancelMap,
 }
 
 pub struct SearchLease {
-    jobs: Arc<Mutex<HashMap<(String, String), Arc<AtomicBool>>>>,
+    jobs: CancelMap,
     key: (String, String),
     pub doc: Arc<Mutex<Indexed>>,
     pub cancel: Arc<AtomicBool>,
@@ -205,11 +208,11 @@ impl Node {
             (key_len << 3) | self.kind,
         ];
         if buffer.width == 4 {
-            for (chunk, n) in bytes.chunks_exact_mut(4).zip(words) {
+            for (chunk, n) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
                 write_word(chunk, n)?;
             }
         } else {
-            for (chunk, n) in bytes.chunks_exact_mut(8).zip(words) {
+            for (chunk, n) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(words) {
                 write_word(chunk, n)?;
             }
         }
@@ -226,11 +229,11 @@ impl Node {
         let bytes = &buffer.bytes[offset..offset + record];
         let mut v = [0; 6];
         if buffer.width == 4 {
-            for (i, chunk) in bytes.chunks_exact(4).enumerate() {
+            for (i, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
                 v[i] = read_word(chunk);
             }
         } else {
-            for (i, chunk) in bytes.chunks_exact(8).enumerate() {
+            for (i, chunk) in bytes.as_chunks::<8>().0.iter().enumerate() {
                 v[i] = read_word(chunk);
             }
         }
@@ -384,6 +387,13 @@ impl Scanner<'_> {
         }
         Ok(n)
     }
+    /// Reads the byte after a backslash, rejecting a raw line break inside JSONL.
+    fn escape(&mut self) -> Result<u8> {
+        if self.line_mode && self.peek()? == Some(b'\n') {
+            return Err("无效的字符串转义".into());
+        }
+        self.byte()
+    }
     fn string(&mut self) -> Result<()> {
         self.expect(b'"')?;
         #[cfg(test)]
@@ -469,12 +479,7 @@ impl Scanner<'_> {
             match b {
                 b'"' => return Ok(()),
                 0..=31 => return Err("字符串包含未转义控制字符".into()),
-                b'\\' => match {
-                    if self.line_mode && self.peek()? == Some(b'\n') {
-                        return Err("无效的字符串转义".into());
-                    }
-                    self.byte()?
-                } {
+                b'\\' => match self.escape()? {
                     b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
                     b'u' => {
                         let n = self.hex()?;
@@ -569,10 +574,10 @@ impl Scanner<'_> {
         }
         node.end = self.pos;
         node.next = self.nodes;
-        node.write(self.index, &mut self.buffer, id).map_err(|e| {
+        if let Err(error) = node.write(self.index, &mut self.buffer, id) {
             self.io_failed = true;
-            e
-        })?;
+            return Err(error);
+        }
         Ok(id)
     }
 }
