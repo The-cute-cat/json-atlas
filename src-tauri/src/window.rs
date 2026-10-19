@@ -41,8 +41,9 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     let separator = PredefinedMenuItem::separator(app)?;
     let file = Submenu::with_items(app, "文件(&F)", true, &[&open, &close, &separator, &quit])?;
     let reset = MenuItem::with_id(app, "reset", "重置视图(&R)", true, None::<&str>)?;
+    let find = MenuItem::with_id(app, "find", "查找(&F)…", true, Some("CmdOrCtrl+F"))?;
     let settings = MenuItem::with_id(app, "settings", "设置(&S)…", true, None::<&str>)?;
-    let view = Submenu::with_items(app, "查看(&V)", true, &[&reset, &settings])?;
+    let view = Submenu::with_items(app, "查看(&V)", true, &[&find, &reset, &settings])?;
     let about = MenuItem::with_id(app, "about", "关于 JSON Atlas(&A)", true, None::<&str>)?;
     let help = Submenu::with_items(app, "帮助(&H)", true, &[&about])?;
     let menu = Menu::with_items(app, &[&file, &view, &help])?;

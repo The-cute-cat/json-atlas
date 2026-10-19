@@ -66,6 +66,29 @@ export class MemoryDataSource {
   async search(query, options = {}) {
     this.#check(options.signal);
     const cancelled = options.cancelled || (() => false);
+    if (cancelled()) return null;
+    if (options.regex && typeof Worker === 'function') {
+      return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./search.worker.js', import.meta.url), { type: 'module' });
+        let interval, timeout, done = false;
+        const finish = (error, result) => {
+          if (done) return; done = true;
+          clearInterval(interval); clearTimeout(timeout); options.signal?.removeEventListener('abort', abort);
+          worker.terminate(); error ? reject(error) : resolve(result);
+        };
+        const abort = () => finish(null, null);
+        const armTimeout = () => { clearTimeout(timeout); timeout = setTimeout(() => finish(new Error('正则匹配耗时过长，请简化表达式后重试')), 5000); };
+        options.signal?.addEventListener('abort', abort, { once: true });
+        interval = setInterval(() => { if (this.#closed || cancelled() || options.signal?.aborted) abort(); }, 40);
+        armTimeout();
+        worker.onmessage = ({ data }) => this.#closed || cancelled() || options.signal?.aborted
+          ? finish(null, null) : data.progress ? armTimeout() : finish(data.error ? new Error(data.error) : null, data.result);
+        worker.onerror = event => finish(new Error(event.message || '后台搜索失败'));
+        const { rootLabel, indexBase, hidden, caseSensitive, wholeWord, regex, limit, scopePath } = options;
+        try { worker.postMessage({ value: this.#value, query, options: { rootLabel, indexBase, hidden, caseSensitive, wholeWord, regex, limit, scopePath } }); }
+        catch (error) { finish(error); }
+      });
+    }
     return searchData(this.#value, query, { ...options,
       cancelled: () => this.#closed || options.signal?.aborted || cancelled() });
   }

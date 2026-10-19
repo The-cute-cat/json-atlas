@@ -1,5 +1,6 @@
 import { PAGE_SIZE, encodeDataPath, normalizeDataPath } from './data.js';
 import { sharedPageCache } from './page-cache.js';
+import { compileSearch, pathInside } from './search-pattern.js';
 
 export const DEFAULT_LARGE_FILE_MIB = 64;
 export function normalizeThreshold(value) {
@@ -97,7 +98,7 @@ export class IndexedDataSource {
     finally { this.#prefetching = false; }
   }
   getText(path, { signal } = {}) { return this.#call('text', { path }, signal); }
-  async #nativeSearch(query, { rootLabel, indexBase, hidden, cancelled, signal, limit }) {
+  async #nativeSearch(query, { rootLabel, indexBase, hidden, cancelled, signal, limit, nativePattern, caseSensitive, scopePath }) {
     this.#check(signal);
     if (cancelled()) return null;
     for (const cancel of this.#searchJobs.values()) cancel();
@@ -115,7 +116,8 @@ export class IndexedDataSource {
     }, 40);
     signal?.addEventListener('abort', cancel, { once: true });
     try {
-      const result = await this.#call('search', { searchId, query, rootLabel, indexBase, hidden: [...hidden], limit }, signal);
+      const advanced = { ...(nativePattern == null ? {} : { nativePattern, caseSensitive }), ...(scopePath ? { scopePath } : {}) };
+      const result = await this.#call('search', { searchId, query, rootLabel, indexBase, hidden: [...hidden], limit, ...advanced }, signal);
       this.#checkVersion(version, signal);
       return stopped || cancelled() ? null : result;
     } catch (error) {
@@ -127,11 +129,12 @@ export class IndexedDataSource {
       clearInterval(timer); signal?.removeEventListener('abort', cancel); this.#searchJobs.delete(searchId);
     }
   }
-  async search(query, { rootLabel = 'root', indexBase = 0, hidden = new Set(), cancelled = () => false, signal, limit = 1000 } = {}) {
+  async search(query, { rootLabel = 'root', indexBase = 0, hidden = new Set(), cancelled = () => false, signal, limit = 1000, caseSensitive = false, wholeWord = false, regex = false, scopePath = null } = {}) {
+    const matcher = compileSearch(query, { caseSensitive, wholeWord, regex });
     // JSON IPC cannot represent lone UTF-16 surrogates. Keep the old local
     // matcher for those unusual queries rather than changing their meaning.
     if (this.info.nativeSearch && query && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(query)) {
-      return this.#nativeSearch(query, { rootLabel, indexBase, hidden, cancelled, signal, limit });
+      return this.#nativeSearch(matcher.nativePattern == null ? query.toLowerCase() : query, { rootLabel, indexBase, hidden, cancelled, signal, limit, scopePath, ...matcher });
     }
     const hits = [], stack = [{ node: this.getRoot(), key: rootLabel }];
     const version = this.#version, batches = new Map();
@@ -148,7 +151,7 @@ export class IndexedDataSource {
       this.#checkVersion(version, signal);
       return cancelled() ? null : { hits, truncated };
     };
-    const visible = node => !hidden.has(normalizeDataPath(encodeDataPath(node.path)));
+    const visible = node => !hidden.has(normalizeDataPath(encodeDataPath(node.path))) && (pathInside(node.path, scopePath) || pathInside(scopePath || [], node.path));
     const small = node => (node.type === 'array' || node.type === 'object') && node.childCount > 0 && node.childCount <= 16;
     const pageFor = async frame => {
       this.#checkVersion(version, signal);
@@ -190,11 +193,11 @@ export class IndexedDataSource {
       const frame = stack.at(-1), node = frame.node;
       if (!frame.visited) {
         frame.visited = true;
-        if (hidden.has(normalizeDataPath(encodeDataPath(node.path)))) { stack.pop(); continue; }
+        if (!visible(node)) { stack.pop(); continue; }
         const branch = node.type === 'array' || node.type === 'object';
         const value = branch ? node.type : node.truncated ? await this.getText(node.path, { signal }) : String(node.value);
         if (cancelled()) return null;
-        if (`${frame.key} ${value}`.toLowerCase().includes(query)) {
+        if (pathInside(node.path, scopePath) && matcher.test(`${frame.key} ${value}`)) {
           hits.push(node.path); if (hits.length >= limit) return finish(true);
         }
         if (!branch) { stack.pop(); continue; }

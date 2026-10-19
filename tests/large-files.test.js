@@ -27,6 +27,18 @@ test('native search sends one bounded result request and preserves all matching 
   assert.equal(cache.stats.entries, 0); source.dispose();
 });
 
+test('advanced indexed queries send compiled patterns and options in one request', async () => {
+  const { source, calls, pending } = nativeFixture();
+  const result = source.search('cat|dog', { regex: true, wholeWord: true, caseSensitive: true });
+  assert.equal(calls.length, 1); assert.equal(calls[0].op, 'search');
+  assert.equal(calls[0].args.caseSensitive, true);
+  assert.match(calls[0].args.nativePattern, /cat\|dog/);
+  pending[0].resolve({ hits: [], truncated: false }); await result;
+  const count = calls.length;
+  await assert.rejects(source.search('[', { regex: true }), /正则/);
+  assert.equal(calls.length, count); source.dispose();
+});
+
 test('native search cancellation retries independently of the pending document request', async () => {
   const { source, calls, pending } = nativeFixture(); let cancelled = false;
   const search = source.search('target', { cancelled: () => cancelled });

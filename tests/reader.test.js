@@ -7,6 +7,7 @@ import { MemoryDataSource } from '../src/data-source.js';
 import { normalizeThreshold, needsIndex, IndexedDataSource } from '../src/large-files.js';
 import { ViewportWindow } from '../src/viewport-window.js';
 import { NodeBudget } from '../src/node-budget.js';
+import { compileSearch } from '../src/search-pattern.js';
 
 // A small DOM harness for reader state transitions; this does not test layout/WebView2.
 class Element {
@@ -35,6 +36,9 @@ class Element {
   setAttribute() {}
   removeAttribute() {}
   focus() {}
+  select() {}
+  setPointerCapture() {}
+  getBoundingClientRect() { return { width: 610, height: 102, bottom: 54 }; }
   querySelectorAll(selector) {
     const result = [];
     const groups = selector.split(',').map(s => s.trim().split('.').filter(Boolean));
@@ -58,16 +62,21 @@ const pagingSource = readFileSync(new URL('../src/paging.js', import.meta.url), 
 function reader(storage = new Map(), native = {}) {
   const elements = new Map();
   const frames = [];
+  const keyListeners = new Map();
   const document = {
     getElementById(id) {
-      if (!elements.has(id)) elements.set(id, new Element());
+      if (!elements.has(id)) {
+        elements.set(id, new Element());
+        if(id === 'findPanel') elements.get(id).hidden = true;
+      }
       return elements.get(id);
     },
     createElement: () => new Element(),
-    addEventListener() {}
+    addEventListener(name, listener) { keyListeners.set(name, listener); },
+    querySelector: () => ({ getBoundingClientRect: () => ({ bottom: 54 }) })
   };
   const context = {
-    document, window: { addEventListener() {} }, navigator: { platform: 'Win32' },
+    document, window: { innerWidth: 1440, innerHeight: 900, addEventListener() {} }, navigator: { platform: 'Win32' },
     localStorage: {
       getItem: key => storage.get(key) ?? null,
       setItem: (key, value) => storage.set(key, value),
@@ -77,7 +86,7 @@ function reader(storage = new Map(), native = {}) {
     setTimeout: (callback, delay) => delay === 0 ? setTimeout(callback, 0) : 1, clearTimeout() {},
     desktop: false, connectDesktop: async () => {}, updateWindowTitle() {},
     MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
-    encodePath: encodeDataPath, normalizePath: normalizeDataPath,
+    encodePath: encodeDataPath, normalizePath: normalizeDataPath, compileSearch,
     console, Blob, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
@@ -86,8 +95,50 @@ function reader(storage = new Map(), native = {}) {
       add: doc => docs.push(doc), configure: value => Object.assign(settings, value),
       setTemplate: value => { template = value; }, template: () => template,
       state: () => ({ activeDocId, currentRootLabel, doc: activeDoc(), view: { ...mainView.state } }) });`, context);
-  return { api, elements, storage, flush: async () => { while (frames.length) await frames.shift()(); } };
+  return { api, elements, storage, keyListeners, flush: async () => { while (frames.length) await frames.shift()(); } };
 }
+
+test('find shortcut opens a modeless window; dragging, pinning and remembered placement cooperate', () => {
+  const { api, elements, storage, keyListeners } = reader();
+  const doc = api.buildDoc('{"a":1}', 'find.json', 7); api.add(doc); api.activateDoc(doc.id);
+  const panel = elements.get('findPanel'), handle = elements.get('findDragHandle');
+  assert.equal(panel.hidden, true);
+  keyListeners.get('keydown')({ key:'f', ctrlKey:true, preventDefault(){} });
+  assert.equal(panel.hidden, false);
+  assert.equal(panel.style.left, '814px');
+  handle.listeners.get('pointerdown')({button:0,pointerId:1,clientX:820,clientY:70,target:{closest:()=>null},preventDefault(){}});
+  handle.listeners.get('pointermove')({pointerId:1,clientX:520,clientY:170});
+  handle.listeners.get('pointerup')();
+  assert.equal(panel.style.left, '514px'); assert.equal(panel.style.top, '166px');
+  elements.get('pinFindBtn').listeners.get('click')();
+  handle.listeners.get('pointerdown')({button:0,pointerId:2,clientX:520,clientY:170,target:{closest:()=>null},preventDefault(){}});
+  handle.listeners.get('pointermove')({pointerId:2,clientX:0,clientY:0});
+  assert.equal(panel.style.left, '514px');
+  elements.get('closeFindBtn').listeners.get('click')(); assert.equal(panel.hidden, true);
+  const reopened = reader(storage), next = reopened.api.buildDoc('{}', 'other.json', 2);
+  reopened.api.add(next); reopened.api.activateDoc(next.id);
+  assert.equal(reopened.elements.get('findPanel').hidden, true);
+  reopened.elements.get('findBtn').listeners.get('click')();
+  assert.equal(reopened.elements.get('findPanel').style.left, '514px');
+  assert.equal(reopened.elements.get('findPanel').dataset.pinned, 'true');
+});
+
+test('new toolbar queries restore plain matching and synchronize both search fields and counts', async () => {
+  const { api, elements } = reader();
+  const doc = api.buildDoc('{"a":"Cat","b":"cat","c":"catalog"}', 'search.json', 35);
+  api.add(doc); api.activateDoc(doc.id);
+  const input = elements.get('searchInput'), quick = elements.get('quickSearchInput');
+  input.value = 'cat'; await api.searchTree('cat');
+  assert.equal(quick.value, 'cat'); assert.equal(elements.get('quickSearchCount').textContent, '1 / 3');
+  elements.get('searchCaseBtn').listeners.get('click')();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(elements.get('quickSearchCount').textContent, '1 / 2');
+  quick.value = 'CAT'; quick.listeners.get('input')({});
+  await quick.listeners.get('keydown')({key:'Enter',preventDefault(){},stopPropagation(){}});
+  assert.equal(input.value, 'CAT'); assert.equal(elements.get('quickSearchCount').textContent, '1 / 3');
+  elements.get('clearSearchBtn').listeners.get('click')();
+  assert.equal(quick.value, ''); assert.equal(elements.get('quickNextMatchBtn').disabled, true);
+});
 
 test('switching files persists the selected document even with session restoration disabled', () => {
   const { api, storage } = reader();
@@ -127,6 +178,27 @@ test('error panel orders compact secondary and primary actions without the full-
   assert.equal(actions.children[0].textContent, '关闭这份文件');
   assert.equal(actions.children[1].textContent, '关闭严格模式并重试');
   assert.equal(actions.children[1].className, 'doc-error-primary');
+});
+
+test('find options rerun matching, both navigation buttons work, and clear removes results', async () => {
+  const { api, elements } = reader();
+  const doc = api.buildDoc('{"a":"Cat","b":"cat","c":"catalog"}', 'find.json', 30); api.add(doc); api.activateDoc(doc.id);
+  await api.searchTree('cat'); assert.equal(elements.get('searchCount').textContent, '1 / 3');
+  elements.get('nextMatchBtn').listeners.get('click')(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(elements.get('searchCount').textContent, '2 / 3');
+  elements.get('prevMatchBtn').listeners.get('click')(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(elements.get('searchCount').textContent, '1 / 3');
+  elements.get('searchInput').value = 'cat';
+  elements.get('searchCaseBtn').listeners.get('click')(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(elements.get('searchCount').textContent, '1 / 2');
+  elements.get('searchWordBtn').listeners.get('click')(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(elements.get('searchCount').textContent, '1 / 1');
+  elements.get('searchRegexBtn').listeners.get('click')(); await new Promise(resolve => setImmediate(resolve));
+  elements.get('searchInput').value = '['; await api.searchTree('[');
+  assert.equal(elements.get('searchError').hidden, false); assert.equal(elements.get('prevMatchBtn').disabled, true);
+  elements.get('clearSearchBtn').listeners.get('click')();
+  assert.equal(elements.get('searchInput').value, ''); assert.equal(elements.get('searchError').hidden, true);
+  assert.equal(elements.get('nextMatchBtn').disabled, true);
 });
 
 test('inactive errors and skipped JSONL rows remain marked, including empty files', () => {

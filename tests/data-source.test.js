@@ -2,6 +2,29 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MemoryDataSource } from '../src/data-source.js';
 
+test('regex worker receives only cloneable search options and stops on cancellation or dispose', async () => {
+  const original = globalThis.Worker, workers = [];
+  globalThis.Worker = class {
+    constructor() { workers.push(this); }
+    postMessage(data) { this.payload = structuredClone(data); }
+    terminate() { this.stopped = true; }
+  };
+  try {
+    const source = new MemoryDataSource({ text: 'Cat' });
+    const result = source.search('cat', { regex: true, hidden: new Set(['$.hidden']), cancelled: () => false });
+    assert.equal(workers[0].payload.options.regex, true);
+    workers[0].onmessage({ data: { progress: true } }); assert.equal(workers[0].stopped, undefined);
+    workers[0].onmessage({ data: { result: { hits: [['text']], truncated: false } } });
+    assert.deepEqual(await result, { hits: [['text']], truncated: false }); assert(workers[0].stopped);
+    let cancel = false;
+    const cancelled = source.search('cat', { regex: true, cancelled: () => cancel }); cancel = true;
+    assert.equal(await cancelled, null); assert(workers[1].stopped);
+    const closed = source.search('cat', { regex: true }); source.dispose();
+    workers[2].onmessage({ data: { result: { hits: [[]], truncated: false } } });
+    assert.equal(await closed, null); assert(workers[2].stopped);
+  } finally { if (original) globalThis.Worker = original; else delete globalThis.Worker; }
+});
+
 test('source supplies metadata and only one requested page, without recursive branch values', async () => {
   const source = new MemoryDataSource(Array.from({ length: 10001 }, (_, id) => ({ id })));
   assert.deepEqual(source.getRoot(), { path: [], type: 'array', childCount: 10001 });

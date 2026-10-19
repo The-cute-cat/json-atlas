@@ -1,4 +1,5 @@
 // Pure data operations shared by the reader, worker and regression tests.
+import { compileSearch } from './search-pattern.js';
 export const MAX_FILE_BYTES = 256 * 1024 * 1024;
 export const PAGE_SIZE = 100;
 
@@ -38,9 +39,9 @@ export function parseDocument(text, name) {
   return { kind, ...result, error: result.records.length ? null : 'JSONL 内没有可解析的记录' };
 }
 
-export function* walkData(value, rootLabel = 'root', indexBase = 0, hidden = new Set()) {
+export function* walkData(value, rootLabel = 'root', indexBase = 0, hidden = new Set(), initialPath = [], lowercase = true) {
   // Frames carry a cursor rather than pushing every array item onto a stack.
-  const stack = [{ value, path: [], key: rootLabel, visited: false }];
+  const stack = [{ value, path: initialPath, key: rootLabel, visited: false }];
   while (stack.length) {
     const frame = stack[stack.length - 1];
     if (!frame.visited) {
@@ -49,7 +50,8 @@ export function* walkData(value, rootLabel = 'root', indexBase = 0, hidden = new
       if (hidden.has(norm)) { stack.pop(); continue; }
       const v = frame.value;
       const type = v !== null && typeof v === 'object' ? (Array.isArray(v) ? 'array' : 'object') : String(v);
-      yield { path: frame.path, text: (frame.key + ' ' + type).toLowerCase() };
+      const rawText = frame.key + ' ' + type;
+      yield { path: frame.path, text: lowercase ? rawText.toLowerCase() : rawText };
       if (v === null || typeof v !== 'object') { stack.pop(); continue; }
       frame.keys = Array.isArray(v) ? null : Object.keys(v);
       frame.length = frame.keys ? frame.keys.length : v.length;
@@ -73,13 +75,22 @@ export function normalizeDataPath(path) {
     segment => segment.startsWith('["') ? segment : '[0]');
 }
 
-export async function searchData(value, query, { rootLabel, indexBase, hidden, cancelled = () => false,
+export async function searchData(value, query, { rootLabel, indexBase, hidden, scopePath, caseSensitive = false, wholeWord = false, regex = false, cancelled = () => false,
   yieldTask = () => new Promise(resolve => setTimeout(resolve, 0)), limit = 1000 } = {}) {
   const hits = [];
+  const matcher = compileSearch(query, { caseSensitive, wholeWord, regex });
+  if (scopePath?.length) {
+    for (const key of scopePath) {
+      if (value === null || typeof value !== 'object' || !Object.hasOwn(value, key)) return { hits: [], truncated: false };
+      value = value[key];
+    }
+    const key = scopePath.at(-1); rootLabel = typeof key === 'number' ? String(key + (indexBase || 0)) : key;
+    for (let i = 0; i <= scopePath.length; i++) if (hidden?.has(normalizeDataPath(encodeDataPath(scopePath.slice(0, i))))) return { hits: [], truncated: false };
+  }
   let count = 0;
-  for (const item of walkData(value, rootLabel, indexBase, hidden)) {
+  for (const item of walkData(value, rootLabel, indexBase, hidden, scopePath || [], false)) {
     if (cancelled()) return null;
-    if (item.text.includes(query)) {
+    if (matcher.test(item.text)) {
       hits.push(item.path);
       if (hits.length === limit) return { hits, truncated: true };
     }

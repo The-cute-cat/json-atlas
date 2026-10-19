@@ -1,7 +1,7 @@
 //! Search uses independent read handles and bounded buffers, never the UI page cache.
 use super::*;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +18,12 @@ pub struct Options {
     limit: usize,
     #[serde(default = "yes")]
     pub wrap: bool,
+    #[serde(default)]
+    native_pattern: Option<String>,
+    #[serde(default)]
+    case_sensitive: bool,
+    #[serde(default)]
+    scope_path: Option<Vec<Value>>,
 }
 fn root_label() -> String {
     "root".into()
@@ -47,10 +53,24 @@ impl Search<'_> {
     pub(super) fn visible(&mut self, path: &[Value]) -> Result<bool> {
         self.check()?;
         self.visited += 1;
-        Ok(!self.options.hidden.contains(&normalized(path)))
+        let relevant = self
+            .options
+            .scope_path
+            .as_ref()
+            .is_none_or(|scope| path.starts_with(scope) || scope.starts_with(path));
+        // Path formatting is only needed when something can actually be hidden.
+        let hidden =
+            !self.options.hidden.is_empty() && self.options.hidden.contains(&normalized(path));
+        Ok(relevant && !hidden)
     }
     fn accept(&mut self, path: &[Value], matched: bool) -> bool {
-        if matched {
+        if matched
+            && self
+                .options
+                .scope_path
+                .as_ref()
+                .is_none_or(|scope| path.starts_with(scope))
+        {
             self.hits.push(path.to_vec());
         }
         self.hits.len() >= self.options.limit
@@ -62,15 +82,15 @@ impl Search<'_> {
         (index + self.options.index_base).to_string()
     }
     pub(super) fn array_root(&mut self, label: &str) -> Result<bool> {
-        let matched = self.matches(label, "array");
+        let matched = self.matches(label, "array")?;
         Ok(self.accept(&[], matched))
     }
-    fn matches(&mut self, label: &str, text: &str) -> bool {
+    fn matches(&mut self, label: &str, text: &str) -> Result<bool> {
         let mut matcher = Matcher::new(&mut self.pattern);
-        matcher.feed_str(label);
+        matcher.feed_checked(label, self.cancel)?;
         matcher.feed(' ');
-        matcher.feed_str(text);
-        matcher.finish()
+        matcher.feed_checked(text, self.cancel)?;
+        Ok(matcher.finish())
     }
     pub(super) fn value(
         &mut self,
@@ -81,14 +101,15 @@ impl Search<'_> {
         if !self.visible(path)? {
             return Ok(false);
         }
-        let text = match value {
-            Value::Object(_) => "object".into(),
-            Value::Array(_) => "array".into(),
-            Value::String(s) => s.clone(),
-            Value::Number(n) => number(n.as_f64().ok_or("无效数字")?),
-            _ => value.to_string(),
+        // Borrow scalar text where possible: this runs once per visited node.
+        let text: Cow<'_, str> = match value {
+            Value::Object(_) => Cow::Borrowed("object"),
+            Value::Array(_) => Cow::Borrowed("array"),
+            Value::String(s) => Cow::Borrowed(s.as_str()),
+            Value::Number(n) => Cow::Owned(number(n.as_f64().ok_or("无效数字")?)),
+            _ => Cow::Owned(value.to_string()),
         };
-        let matched = self.matches(label, &text);
+        let matched = self.matches(label, text.as_ref())?;
         if self.accept(path, matched) {
             return Ok(true);
         }
@@ -166,7 +187,7 @@ impl Search<'_> {
                 }
                 _ => return Err("节点类型无效".into()),
             };
-            self.matches(label, &text)
+            self.matches(label, &text)?
         };
         if self.accept(path, matched) {
             return Ok((node.next, true));
@@ -203,6 +224,10 @@ impl Indexed {
             || options.index_base > 1
             || options.query.is_empty()
             || options.query.len() > 64 * 1024
+            || options
+                .scope_path
+                .as_ref()
+                .is_some_and(|path| path.len() > 128)
         {
             return Err("无效的搜索参数".into());
         }
@@ -211,7 +236,7 @@ impl Indexed {
             options,
             cancel,
             hits: Vec::new(),
-            pattern: Pattern::new(&options.query),
+            pattern: Pattern::configured(options)?,
             visited: 0,
         };
         search.check()?;
@@ -433,10 +458,14 @@ impl Input {
         pattern: &mut Pattern,
         cancel: &AtomicBool,
     ) -> Result<bool> {
+        // Validate the indexed range first: a stale index must not wrap `end - 1`.
+        let end = end
+            .checked_sub(1)
+            .filter(|end| *end > start)
+            .ok_or("字符串索引不完整")?;
         self.seek(start + 1)?;
-        let end = end - 1;
         let mut matcher = Matcher::new(pattern);
-        matcher.feed_str(label);
+        matcher.feed_checked(label, cancel)?;
         matcher.feed(' ');
         while self.pos < end && !matcher.matched() {
             if cancel.load(Ordering::Relaxed) {
@@ -457,7 +486,7 @@ impl Input {
                     Err(e) => return Err(err(e)),
                 };
                 let consumed = text.len();
-                matcher.feed_str(text);
+                matcher.feed_checked(text, cancel)?;
                 self.reader.consume(consumed);
                 self.pos += consumed as u64;
                 if consumed > 0 {
@@ -498,8 +527,19 @@ struct Pattern {
     failure: Vec<usize>,
     greek: bool,
     classes: Vec<u8>,
+    advanced: Option<super::search_regex::Pattern>,
 }
 impl Pattern {
+    fn configured(options: &Options) -> Result<Self> {
+        let mut pattern = Self::new(&options.query);
+        if let Some(source) = &options.native_pattern {
+            pattern.advanced = Some(super::search_regex::Pattern::new(
+                source,
+                options.case_sensitive,
+            )?);
+        }
+        Ok(pattern)
+    }
     fn new(query: &str) -> Self {
         let units: Vec<_> = query.encode_utf16().collect();
         let mut failure = vec![0; units.len()];
@@ -518,6 +558,7 @@ impl Pattern {
             failure,
             greek: query.contains(['σ', 'ς']),
             classes: Vec::new(),
+            advanced: None,
         }
     }
     fn class(&mut self, c: char) -> u8 {
@@ -549,7 +590,8 @@ struct State {
 }
 impl State {
     fn feed(&mut self, c: char, p: &Pattern) {
-        if self.hit {
+        // An empty pattern has no table entries and can never match.
+        if self.hit || p.units.is_empty() {
             return;
         }
         for unit in c.encode_utf16(&mut [0; 2]).iter() {
@@ -566,13 +608,68 @@ impl State {
         }
     }
 }
-struct Matcher<'a> {
+enum Matcher<'a> {
+    Literal(LiteralMatcher<'a>),
+    Advanced(super::search_regex::Matcher<'a>),
+}
+impl<'a> Matcher<'a> {
+    fn new(pattern: &'a mut Pattern) -> Self {
+        if pattern.advanced.is_some() {
+            Self::Advanced(super::search_regex::Matcher::new(
+                pattern.advanced.as_ref().unwrap(),
+            ))
+        } else {
+            Self::Literal(LiteralMatcher::new(pattern))
+        }
+    }
+    fn matched(&self) -> bool {
+        match self {
+            Self::Literal(m) => m.matched(),
+            Self::Advanced(m) => m.matched(),
+        }
+    }
+    fn feed_str(&mut self, text: &str) {
+        match self {
+            Self::Literal(m) => m.feed_str(text),
+            Self::Advanced(m) => m.feed_str(text),
+        }
+    }
+    fn feed_checked(&mut self, text: &str, cancel: &AtomicBool) -> Result<()> {
+        if let Self::Advanced(m) = self {
+            for (i, c) in text.chars().enumerate() {
+                if i % 32 == 0 && cancel.load(Ordering::Relaxed) {
+                    return Err("已取消".into());
+                }
+                m.feed(c);
+                if m.matched() {
+                    break;
+                }
+            }
+        } else {
+            self.feed_str(text);
+        }
+        Ok(())
+    }
+    fn feed(&mut self, c: char) {
+        match self {
+            Self::Literal(m) => m.feed(c),
+            Self::Advanced(m) => m.feed(c),
+        }
+    }
+    fn finish(self) -> bool {
+        match self {
+            Self::Literal(m) => m.finish(),
+            Self::Advanced(m) => m.finish(),
+        }
+    }
+}
+struct LiteralMatcher<'a> {
     pattern: &'a mut Pattern,
     state: State,
     pending: Option<(State, State)>,
     previous: bool,
 }
-impl<'a> Matcher<'a> {
+impl<'a> LiteralMatcher<'a> {
     fn new(pattern: &'a mut Pattern) -> Self {
         Self {
             pattern,
@@ -669,15 +766,17 @@ mod tests {
             serde_json::from_str(include_str!("../../tests/native-search-fixtures.json")).unwrap();
         for case in cases {
             let options: Options = serde_json::from_value(case["options"].clone()).unwrap();
-            run(case["text"].as_str().unwrap(), "json", |doc| {
-                assert_eq!(
-                    doc.native_search(&options, &AtomicBool::new(false))
-                        .unwrap(),
-                    case["expected"],
-                    "options={}",
-                    case["options"]
-                );
-            });
+            for ext in ["json", "jsonl"] {
+                run(case["text"].as_str().unwrap(), ext, |doc| {
+                    assert_eq!(
+                        doc.native_search(&options, &AtomicBool::new(false))
+                            .unwrap(),
+                        case["expected"],
+                        "options={}",
+                        case["options"]
+                    );
+                });
+            }
         }
     }
     #[test]
@@ -705,6 +804,13 @@ mod tests {
                 |doc| {
                     let mut copy = doc.search_copy().unwrap();
                     assert_eq!(search(&mut copy, "中文😀tail")["hits"], json!([["long"]]));
+                    let mut regex = options("TAIL$");
+                    regex.native_pattern = Some("TAIL$".into());
+                    regex.case_sensitive = true;
+                    assert_eq!(
+                        copy.native_search(&regex, &AtomicBool::new(false)).unwrap()["hits"],
+                        json!([["long"]])
+                    );
                     assert!(doc.text(&[json!("long")], true).is_err());
                     assert_eq!(
                         doc.page(&[], 0, None, 100, false, true).unwrap()["total"],

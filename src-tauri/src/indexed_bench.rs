@@ -133,9 +133,10 @@ fn native_search_benchmark() {
             )
             .unwrap(),
         ));
-        for query in ["no-such-value", "199999"] {
-            let options =
-                serde_json::from_value(json!({"searchId":"bench","query":query})).unwrap();
+        for query in ["no-such-value", "199999", "^id 199999$"] {
+            let options = serde_json::from_value(json!({"searchId":"bench","query":query,
+                "nativePattern": if query.starts_with('^') {Some(query)}else{None}}))
+            .unwrap();
             let start = Instant::now();
             let result = doc
                 .lock()
@@ -146,7 +147,13 @@ fn native_search_benchmark() {
                 .unwrap();
             assert_eq!(
                 result["hits"].as_array().unwrap().len(),
-                if query == "199999" { 2 } else { 0 }
+                if query == "199999" {
+                    2
+                } else if query.starts_with('^') {
+                    1
+                } else {
+                    0
+                }
             );
             eprintln!(
                 "NATIVE_SEARCH kind={ext} source_bytes={} query={query} elapsed_ms={:.3}",

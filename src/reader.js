@@ -3,6 +3,7 @@ import { MemoryDataSource } from './data-source.js';
 import { normalizeThreshold, needsIndex } from './large-files.js';
 import { ViewportWindow } from './viewport-window.js';
 import { NodeBudget } from './node-budget.js';
+import { compileSearch } from './search-pattern.js';
 import { openAbout } from './about.js';
 import { MAX_FILE_BYTES, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath } from './data.js';
 import { desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
@@ -30,8 +31,28 @@ const openAnotherBtn = document.getElementById('openAnotherBtn');
 const expandAllBtn = document.getElementById('expandAllBtn');
 const collapseAllBtn = document.getElementById('collapseAllBtn');
 const nextMatchBtn = document.getElementById('nextMatchBtn');
+const prevMatchBtn = document.getElementById('prevMatchBtn');
+const clearSearchBtn = document.getElementById('clearSearchBtn');
+const searchError = document.getElementById('searchError');
 const searchInput = document.getElementById('searchInput');
 const searchCount = document.getElementById('searchCount');
+const quickSearchInput = document.getElementById('quickSearchInput');
+const quickSearchCount = document.getElementById('quickSearchCount');
+const quickNextMatchBtn = document.getElementById('quickNextMatchBtn');
+const findPanel = document.getElementById('findPanel');
+const findDragHandle = document.getElementById('findDragHandle');
+const pinFindBtn = document.getElementById('pinFindBtn');
+let findPlacement = { x: null, y: null, pinned: false };
+try {
+  const saved = JSON.parse(localStorage.getItem('json-atlas_find-window_v1'));
+  if(saved && Number.isFinite(saved.x) && Number.isFinite(saved.y))
+    findPlacement = { x: saved.x, y: saved.y, pinned: saved.pinned === true };
+} catch { /* Ignore unavailable storage or obsolete placement. */ }
+let findDrag = null;
+const searchOptions = { caseSensitive: false, wholeWord: false, regex: false, scopePath: null };
+const searchScopeBtn = document.getElementById('searchScopeBtn');
+let selectedSearchPath = null;
+let lastSearchSignature = null;
 
 const viewport = document.getElementById('viewport');
 const world = document.getElementById('world');
@@ -259,6 +280,7 @@ function activateDoc(id){
     }
     if(doc.searchQuery){
       searchInput.value = doc.searchQuery;
+      quickSearchInput.value = doc.searchQuery;
       searchTree(doc.searchQuery);
     }
   });
@@ -308,8 +330,17 @@ function resetSearchState(){
   matches = [];
   currentMatchIndex = -1;
   searchInput.value = '';
-  searchCount.textContent = '';
+  quickSearchInput.value = '';
+  setSearchCount('');
   nextMatchBtn.disabled = true;
+  prevMatchBtn.disabled = true;
+  lastSearchSignature = null;
+  searchOptions.scopePath = null; selectedSearchPath = null;
+  searchScopeBtn.setAttribute('aria-pressed', 'false');
+  searchScopeBtn.title = '仅在选中节点内查找：先点击一个节点';
+  tree.querySelectorAll('.search-scope-node').forEach(n => n.classList.remove('search-scope-node'));
+  setSearchError('');
+  tree.querySelectorAll('.match,.current-match').forEach(n => n.classList.remove('match','current-match'));
   pathText.textContent = '路径：$';
 }
 
@@ -760,6 +791,7 @@ function withdrawView(){
   renderRail();
   hideDocError();
   resetSearchState();
+  closeFindPanel(false);
   viewer.style.display = 'none';
   landing.style.display = 'grid';
 }
@@ -818,7 +850,10 @@ reclaimNodesBtn.addEventListener('click', () => {
   if(nodeBudgetNotice.hidden) expandAllBtn.focus();
   showToast(removed ? `已精简 ${removed} 个远处节点，可通过“查看此处”或搜索重新访问` : '当前没有可精简的远处未阅读节点，可手动收起部分分支');
 });
-tree.addEventListener('pointerdown', e => nodeBudget.touch(e.target.closest('.tree-node')));
+tree.addEventListener('pointerdown', e => {
+  const node = e.target.closest('.tree-node'); nodeBudget.touch(node);
+  if(node && node._source === activeDoc()?.source) selectedSearchPath = [...node._path];
+});
 tree.addEventListener('focusin', e => nodeBudget.touch(e.target.closest('.tree-node')));
 
 function updateVirtualization(){
@@ -1112,6 +1147,7 @@ function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, sour
     + (isBranch ? ' branch' : '')
     + (isRoot ? ' root-node' : '');
   node.dataset.path = encodePath(path);
+  if(searchOptions.scopePath && node.dataset.path === encodePath(searchOptions.scopePath)) node.classList.add('search-scope-node');
   node.dataset.searchText =
     `${String(key)} ${isBranch ? descriptor.type : String(value)}`.toLowerCase();
   /* 保留原始值，供弹窗/复制使用；路径供 JSON 展开时拼接子节点用 */
@@ -2307,7 +2343,7 @@ document.addEventListener('keydown', e => {
   const modifier = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
   if(modifier && key === 'o'){ e.preventDefault(); chooseFiles(); return; }
-  if(modifier && key === 'f' && activeDoc()){ e.preventDefault(); searchInput.focus(); searchInput.select(); return; }
+  if(modifier && key === 'f' && activeDoc()){ e.preventDefault(); openFindPanel(); return; }
   if(modifier && key === 'w' && activeDoc() && !e.target.closest('input,textarea,[contenteditable]')){
     e.preventDefault(); closeDoc(activeDocId); return;
   }
@@ -2315,10 +2351,11 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); focusMatch((currentMatchIndex + (e.shiftKey ? -1 : 1) + matches.length) % matches.length); return;
   }
   if(e.key === 'Escape'){
+    if(!findPanel.hidden){ e.preventDefault(); closeFindPanel(); return; }
     clearTimeout(searchTimer);
     expansionGeneration++;
     searchGeneration++;
-    if(searchCount.textContent === '搜索中…') searchCount.textContent = '已取消';
+    if(searchCount.textContent === '搜索中…') setSearchCount('已取消');
     if(activeLoad) activeLoad.abort();
     closeMenu();
     closeModal();
@@ -2328,36 +2365,186 @@ document.addEventListener('keydown', e => {
 });
 
 /* ---------- 搜索 ---------- */
-searchInput.addEventListener('input', () => {
-  searchGeneration++;
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => searchTree(searchInput.value), 160);
+function saveFindPlacement(){
+  try { localStorage.setItem('json-atlas_find-window_v1', JSON.stringify(findPlacement)); } catch { /* Optional preference. */ }
+}
+function positionFindPanel(x = findPlacement.x, y = findPlacement.y){
+  if(findPanel.hidden) return;
+  const rect = findPanel.getBoundingClientRect();
+  const width = window.innerWidth, height = window.innerHeight;
+  const toolbarBottom = document.querySelector('.toolbar').getBoundingClientRect().bottom;
+  findPlacement.x = clamp(x ?? width - rect.width - 16, 12, Math.max(12, width - rect.width - 12));
+  findPlacement.y = clamp(y ?? toolbarBottom + 12, 12, Math.max(12, height - rect.height - 12));
+  findPanel.style.left = `${findPlacement.x}px`;
+  findPanel.style.top = `${findPlacement.y}px`;
+}
+function updateFindPin(){
+  findPanel.dataset.pinned = String(findPlacement.pinned);
+  pinFindBtn.setAttribute('aria-pressed', String(findPlacement.pinned));
+  pinFindBtn.title = findPlacement.pinned ? '取消固定后可拖动窗口' : '锁定窗口当前位置';
+  pinFindBtn.setAttribute('aria-label', findPlacement.pinned ? '取消固定' : '固定位置');
+}
+function openFindPanel(){
+  if(!activeDoc()) return;
+  closeMoreMenu();
+  findPanel.hidden = false;
+  updateFindPin();
+  positionFindPanel();
+  searchInput.focus(); searchInput.select();
+}
+function closeFindPanel(restoreFocus = true){
+  findPanel.hidden = true;
+  findDrag = null;
+  saveFindPlacement();
+  if(restoreFocus) quickSearchInput.focus();
+}
+document.getElementById('findBtn').addEventListener('click', openFindPanel);
+document.getElementById('closeFindBtn').addEventListener('click', () => closeFindPanel());
+pinFindBtn.addEventListener('click', () => {
+  findDrag = null;
+  findPlacement.pinned = !findPlacement.pinned;
+  updateFindPin(); saveFindPlacement();
 });
+findDragHandle.addEventListener('pointerdown', e => {
+  if(e.button !== 0 || findPlacement.pinned || e.target.closest('button')) return;
+  positionFindPanel();
+  findDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, left: findPlacement.x, top: findPlacement.y };
+  findDragHandle.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+findDragHandle.addEventListener('pointermove', e => {
+  if(!findDrag || e.pointerId !== findDrag.id) return;
+  positionFindPanel(findDrag.left + e.clientX - findDrag.x, findDrag.top + e.clientY - findDrag.y);
+});
+function endFindDrag(){ if(findDrag){ findDrag = null; saveFindPlacement(); } }
+findDragHandle.addEventListener('pointerup', endFindDrag);
+findDragHandle.addEventListener('pointercancel', endFindDrag);
+findDragHandle.addEventListener('lostpointercapture', endFindDrag);
+findDragHandle.addEventListener('keydown', e => {
+  if(e.target !== findDragHandle || findPlacement.pinned) return;
+  const delta = { ArrowLeft: [-10,0], ArrowRight: [10,0], ArrowUp: [0,-10], ArrowDown: [0,10] }[e.key];
+  if(!delta) return;
+  e.preventDefault(); positionFindPanel(findPlacement.x + delta[0], findPlacement.y + delta[1]); saveFindPlacement();
+});
+window.addEventListener('resize', () => { positionFindPanel(); saveFindPlacement(); });
+if(typeof ResizeObserver !== 'undefined') new ResizeObserver(() => positionFindPanel()).observe(findPanel);
+findPanel.addEventListener('keydown', e => {
+  if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeFindPanel(); }
+});
+function setSearchCount(value){
+  searchCount.textContent = value;
+  quickSearchCount.textContent = value;
+  quickNextMatchBtn.disabled = !matches.length;
+}
+function useQuickSearch(){
+  searchInput.value = quickSearchInput.value;
+  // A new toolbar query uses plain matching, even after an advanced search.
+  for(const [id, option] of [['searchCaseBtn','caseSensitive'],['searchWordBtn','wholeWord'],['searchRegexBtn','regex']]){
+    searchOptions[option] = false; document.getElementById(id).setAttribute('aria-pressed', 'false');
+  }
+  searchOptions.scopePath = null;
+  searchScopeBtn.setAttribute('aria-pressed', 'false');
+  searchScopeBtn.title = '仅在选中节点内查找：先点击一个节点';
+  tree.querySelectorAll('.search-scope-node').forEach(n => n.classList.remove('search-scope-node'));
+}
+quickSearchInput.addEventListener('input', e => { useQuickSearch(); queueSearch(e); });
+quickSearchInput.addEventListener('compositionend', () => { useQuickSearch(); queueSearch(); });
+quickSearchInput.addEventListener('keydown', async e => {
+  if(e.isComposing) return;
+  if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); clearSearch(); quickSearchInput.focus(); }
+  if(e.key === 'Enter'){
+    e.preventDefault(); e.stopPropagation(); clearTimeout(searchTimer);
+    if(lastSearchSignature !== searchSignature()) await searchTree(searchInput.value);
+    else if(matches.length) focusMatch((currentMatchIndex + (e.shiftKey ? -1 : 1) + matches.length) % matches.length);
+  }
+});
+quickNextMatchBtn.addEventListener('click', () => {
+  if(matches.length) focusMatch((currentMatchIndex + 1) % matches.length);
+});
+function setSearchError(message){
+  searchError.hidden = !message; searchError.textContent = message;
+  searchInput.setAttribute('aria-invalid', message ? 'true' : 'false');
+  quickSearchInput.title = message ? `${message}；按 Ctrl/⌘+F 调整查找选项` :
+    Object.values(searchOptions).some(Boolean) ? '高级查找选项正在生效；按 Ctrl/⌘+F 调整，输入新内容恢复普通搜索' : '';
+}
+function searchSignature(){ return JSON.stringify([searchInput.value, searchOptions]); }
+function clearSearch(){
+  resetSearchState();
+  if(activeDoc()) activeDoc().searchQuery = '';
+  searchInput.focus();
+}
+for(const [id, option] of [['searchCaseBtn','caseSensitive'],['searchWordBtn','wholeWord'],['searchRegexBtn','regex']]){
+  const button = document.getElementById(id);
+  button.addEventListener('click', () => {
+    searchOptions[option] = !searchOptions[option];
+    button.setAttribute('aria-pressed', String(searchOptions[option]));
+    clearTimeout(searchTimer); searchTree(searchInput.value); searchInput.focus();
+  });
+}
+clearSearchBtn.addEventListener('click', clearSearch);
+searchScopeBtn.addEventListener('click', () => {
+  const scope = selectedSearchPath || matches[currentMatchIndex];
+  if(searchOptions.scopePath === null && !scope){ showToast('请先点击要查找的节点'); return; }
+  searchOptions.scopePath = searchOptions.scopePath === null ? [...scope] : null;
+  searchScopeBtn.setAttribute('aria-pressed', String(searchOptions.scopePath !== null));
+  searchScopeBtn.title = searchOptions.scopePath ? `查找范围：${encodePath(searchOptions.scopePath)}` : '仅在选中节点内查找：先点击一个节点';
+  tree.querySelectorAll('.search-scope-node').forEach(n => n.classList.remove('search-scope-node'));
+  if(searchOptions.scopePath) for(const node of tree.querySelectorAll('.tree-node')) if(node.dataset.path === encodePath(searchOptions.scopePath)) node.classList.add('search-scope-node');
+  clearTimeout(searchTimer); searchTree(searchInput.value); searchInput.focus();
+});
+searchInput.addEventListener('keydown', async e => {
+  if(e.isComposing) return;
+  if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeFindPanel(); }
+  if(e.key === 'Enter'){
+    e.preventDefault(); e.stopPropagation(); clearTimeout(searchTimer);
+    if(lastSearchSignature !== searchSignature()) await searchTree(searchInput.value);
+    else if(matches.length) focusMatch((currentMatchIndex + (e.shiftKey ? -1 : 1) + matches.length) % matches.length);
+  }
+});
+function queueSearch(e){
+  quickSearchInput.value = searchInput.value;
+  searchGeneration++; focusGeneration++;
+  matches = []; nextMatchBtn.disabled = true; prevMatchBtn.disabled = true; setSearchError('');
+  quickNextMatchBtn.disabled = true;
+  clearTimeout(searchTimer);
+  if(e?.isComposing) return;
+  searchTimer = setTimeout(() => searchTree(searchInput.value), 160);
+}
+searchInput.addEventListener('input', queueSearch);
+searchInput.addEventListener('compositionend', () => queueSearch());
 
 async function searchTree(query){
+  quickSearchInput.value = query;
   const generation = ++searchGeneration;
   tree.querySelectorAll('.match,.current-match').forEach(n => n.classList.remove('match','current-match'));
   matches = [];
   currentMatchIndex = -1;
   nextMatchBtn.disabled = true;
-  const q = query.trim().toLowerCase();
-  if(!q){ searchCount.textContent = ''; return; }
-  searchCount.textContent = '搜索中…';
+  prevMatchBtn.disabled = true;
+  setSearchError('');
+  const q = query;
+  if(!q){ setSearchCount(''); return; }
+  try { compileSearch(q, searchOptions); }
+  catch(error){ setSearchCount('表达式无效'); setSearchError(error.message); return; }
+  setSearchCount('搜索中…');
   const source = activeDoc()?.source;
-  if(!source || activeDoc().error){ searchCount.textContent = '0'; return; }
+  if(!source || activeDoc().error){ setSearchCount('0'); return; }
   let result;
   try{ result = await source.search(q, {
     rootLabel: currentRootLabel, indexBase: settings.indexBase, hidden: getHiddenSet(),
+    ...searchOptions,
     cancelled: () => generation !== searchGeneration
   }); }catch(error){
-    if(generation === searchGeneration){ searchCount.textContent = '搜索失败'; showToast(error.message); }
+    if(generation === searchGeneration){ setSearchCount('搜索失败'); setSearchError(error.message); }
     return;
   }
   if(!result || generation !== searchGeneration) return;
   matches = result.hits;
   searchTruncated = result.truncated;
-  if(!matches.length){ searchCount.textContent = '0'; return; }
+  lastSearchSignature = JSON.stringify([query, searchOptions]);
+  if(!matches.length){ setSearchCount('无结果'); return; }
   nextMatchBtn.disabled = false;
+  prevMatchBtn.disabled = false;
   await focusMatch(0);
 }
 
@@ -2397,7 +2584,7 @@ async function focusMatch(index){
     openAncestors(node);
     requestAnimationFrame(() => { if(node.isConnected) centerNode(node); });
   }
-  searchCount.textContent = `${index + 1} / ${matches.length}${searchTruncated ? '+' : ''}`;
+  setSearchCount(`${index + 1} / ${matches.length}${searchTruncated ? '+' : ''}`);
   searchCount.title = searchTruncated ? '仅列出前 1000 项匹配，请缩小搜索范围' : '';
   scheduleOverflowSweep();
 }
@@ -2406,6 +2593,9 @@ nextMatchBtn.addEventListener('click', () => {
   if(!matches.length) return;
   currentMatchIndex = (currentMatchIndex + 1) % matches.length;
   focusMatch(currentMatchIndex);
+});
+prevMatchBtn.addEventListener('click', () => {
+  if(matches.length) focusMatch((currentMatchIndex - 1 + matches.length) % matches.length);
 });
 
 expandAllBtn.addEventListener('click', expandAll);
@@ -2584,6 +2774,7 @@ document.getElementById('cancelLoadBtn').addEventListener('click', () => activeL
   await connectDesktop(openPaths, error => showToast('桌面文件入口失败：' + error), action => {
     if(action === 'open') chooseFiles();
     else if(action === 'close' && activeDocId) closeDoc(activeDocId);
+    else if(action === 'find') openFindPanel();
     else if(action === 'reset' && activeDocId) resetView();
     else if(action === 'settings') openSettings();
     else if(action === 'about') openAbout();

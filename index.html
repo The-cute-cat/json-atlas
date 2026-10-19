@@ -50,12 +50,10 @@
     <button id="collapseAllBtn">全部收起</button>
     <button id="resetViewBtn">重置视图</button>
 
-    <div class="search-wrap">
-      <input id="searchInput" type="search" placeholder="搜索键名或值…" />
-      <div class="search-nav">
-        <span id="searchCount"></span>
-        <button id="nextMatchBtn" disabled title="下一个匹配">›</button>
-      </div>
+    <div class="quick-search" role="search" aria-label="快速搜索当前文件">
+      <input id="quickSearchInput" type="search" placeholder="搜索键名或值…" aria-label="快速搜索键名或值" autocomplete="off" spellcheck="false" />
+      <span id="quickSearchCount"></span>
+      <button id="quickNextMatchBtn" type="button" disabled title="下一个匹配" aria-label="快速搜索的下一个匹配">›</button>
     </div>
 
     <button id="moreBtn" class="icon-btn" title="更多">⋯</button>
@@ -64,6 +62,7 @@
       <button id="recordTemplateBtn" title="以当前展开状态为模板">记录当前展开为模板</button>
       <button id="editorBtn" title="编辑模板：显示/隐藏字段">模板编辑…</button>
       <div class="ctx-sep"></div>
+      <button id="findBtn">高级查找… <span class="shortcut">Ctrl/⌘+F</span></button>
       <button id="settingsBtn" title="设置">设置…</button>
       <button id="aboutBtn">关于 JSON Atlas…</button>
     </div>
@@ -91,6 +90,33 @@
     <span id="pathText">路径：$</span>
     <span class="help">空白处拖动 · 滚轮平移 · Ctrl/⌘ + 滚轮缩放 · 右键节点展开/收起子树</span>
   </footer>
+</section>
+
+<section id="findPanel" class="find-panel" role="dialog" aria-modal="false" aria-labelledby="findPanelTitle" hidden>
+  <div id="findDragHandle" class="find-panel-grip" tabindex="0" role="button" aria-label="移动查找栏" title="拖动以移动查找栏；也可使用方向键">
+    <span id="findPanelTitle" class="find-panel-label">查找</span>
+    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5h.01M13 5h.01M7 10h.01M13 10h.01M7 15h.01M13 15h.01"/></svg>
+  </div>
+    <div class="search-wrap" role="search" aria-label="查找当前文件">
+      <div class="search-field">
+      <input id="searchInput" type="search" placeholder="搜索键名或值…" aria-label="查找内容" aria-describedby="searchError" autocomplete="off" spellcheck="false" />
+      <div class="search-options" aria-label="查找选项">
+        <button id="searchCaseBtn" type="button" aria-label="区分大小写" aria-pressed="false" title="区分大小写">Aa</button>
+        <button id="searchWordBtn" type="button" aria-label="全词匹配" aria-pressed="false" title="全词匹配">ab</button>
+        <button id="searchRegexBtn" type="button" aria-label="使用正则表达式" aria-pressed="false" title="使用正则表达式：支持分组、字符组、重复和锚点；暂不支持环视及反向引用">.*</button>
+      </div>
+      </div>
+      <div class="search-nav">
+        <span id="searchCount" role="status" aria-live="polite"></span>
+        <button id="prevMatchBtn" type="button" disabled title="上一个匹配（Shift+Enter）" aria-label="上一个匹配"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16V4m-5 5 5-5 5 5"/></svg></button>
+        <button id="nextMatchBtn" type="button" disabled title="下一个匹配（Enter）" aria-label="下一个匹配"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12m-5-5 5 5 5-5"/></svg></button>
+        <button id="searchScopeBtn" type="button" aria-pressed="false" title="仅在选中节点内查找：先点击一个节点" aria-label="仅在选中节点内查找"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h8M4 15h12"/></svg></button>
+        <button id="clearSearchBtn" type="button" title="清除搜索" aria-label="清除搜索" hidden>×</button>
+        <button id="pinFindBtn" type="button" aria-label="固定位置" aria-pressed="false" title="固定位置"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 3 6 0-1 5 3 3v2H5v-2l3-3-1-5ZM10 13v4"/></svg></button>
+        <button id="closeFindBtn" type="button" aria-label="关闭查找" title="关闭查找（Esc）"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button>
+      </div>
+      <div id="searchError" class="search-error" role="status" hidden></div>
+    </div>
 </section>
 
 <div id="ctxMenu">

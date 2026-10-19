@@ -27,6 +27,8 @@ mod jsonl;
 mod key_index;
 #[path = "native_search.rs"]
 pub(super) mod native_search;
+#[path = "search_regex.rs"]
+mod search_regex;
 type Result<T> = std::result::Result<T, String>;
 
 #[derive(Clone, Copy)]
