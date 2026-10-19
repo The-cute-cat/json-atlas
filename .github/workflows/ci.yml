@@ -77,6 +77,11 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked
 
+      # 与 release 工作流保持一致：clippy 警告即失败，避免只在打标签时暴露。
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --release --locked -- -D warnings
+
       - name: cargo fmt
         working-directory: src-tauri
         run: cargo fmt --check

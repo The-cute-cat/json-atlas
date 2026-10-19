@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "JSON Atlas",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "io.hopecat.jsonatlas",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -31,8 +31,12 @@
   "bundle": {
     "active": true,
     "publisher": "The_cute_cat",
+    "copyright": "Copyright © 2026 The_cute_cat and contributors",
+    "shortDescription": "Local JSON and JSONL reader with an interactive tree canvas",
+    "longDescription": "JSON Atlas reads JSON and JSONL files locally on an interactive tree canvas. Large files are indexed on disk and loaded by page; nothing is uploaded.",
     "targets": [
-      "nsis"
+      "nsis",
+      "msi"
     ],
     "icon": [
       "icons/app.ico",
@@ -55,6 +59,12 @@
       "icons/document.ico": "document.ico"
     },
     "windows": {
+      "wix": {
+        "upgradeCode": "1d36a936-5fd6-5061-9069-87611655a266",
+        "language": "zh-CN",
+        "fragmentPaths": ["windows/file-associations.wxs"],
+        "componentRefs": ["DocumentAssociations"]
+      },
       "nsis": {
         "installerHooks": "windows/installer-hooks.nsh"
       }

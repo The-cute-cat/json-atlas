@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <!-- Keep the NSIS ProgID working when an existing user switches to MSI.
+           Do not write Explorer\FileExts\...\UserChoice: Windows owns that choice. -->
+      <Component Id="DocumentAssociations" Guid="F8D3823F-58B4-4B46-B68D-A23238B7058A" Win64="yes">
+        <RegistryKey Root="HKLM" Key="Software\Classes\JSONAtlas.Document">
+          <RegistryValue Type="string" Value="JSON Atlas structured data document" KeyPath="yes" />
+          <RegistryValue Name="FriendlyTypeName" Type="string" Value="JSON Atlas structured data document" />
+          <RegistryKey Key="DefaultIcon">
+            <RegistryValue Type="string" Value="&quot;[INSTALLDIR]document.ico&quot;,0" />
+          </RegistryKey>
+          <RegistryKey Key="shell\open\command">
+            <RegistryValue Type="string" Value="&quot;[INSTALLDIR]json-atlas.exe&quot; &quot;%1&quot;" />
+          </RegistryKey>
+        </RegistryKey>
+
+        <RegistryKey Root="HKLM" Key="Software\Classes\.json\OpenWithProgids">
+          <RegistryValue Name="JSONAtlas.Document" Type="string" Value="" />
+        </RegistryKey>
+        <RegistryKey Root="HKLM" Key="Software\Classes\.jsonl\OpenWithProgids">
+          <RegistryValue Name="JSONAtlas.Document" Type="string" Value="" />
+        </RegistryKey>
+        <RegistryKey Root="HKLM" Key="Software\Classes\.ndjson\OpenWithProgids">
+          <RegistryValue Name="JSONAtlas.Document" Type="string" Value="" />
+        </RegistryKey>
+        <RegistryKey Root="HKLM" Key="Software\Classes\.jsonlines\OpenWithProgids">
+          <RegistryValue Name="JSONAtlas.Document" Type="string" Value="" />
+        </RegistryKey>
+
+        <RegistryKey Root="HKLM" Key="Software\Classes\Applications\json-atlas.exe">
+          <RegistryValue Name="FriendlyAppName" Type="string" Value="JSON Atlas" />
+          <RegistryKey Key="shell\open\command">
+            <RegistryValue Type="string" Value="&quot;[INSTALLDIR]json-atlas.exe&quot; &quot;%1&quot;" />
+          </RegistryKey>
+          <RegistryKey Key="SupportedTypes">
+            <RegistryValue Name=".json" Type="string" Value="" />
+            <RegistryValue Name=".jsonl" Type="string" Value="" />
+            <RegistryValue Name=".ndjson" Type="string" Value="" />
+            <RegistryValue Name=".jsonlines" Type="string" Value="" />
+          </RegistryKey>
+        </RegistryKey>
+
+        <RegistryKey Root="HKLM" Key="Software\The_cute_cat\JSON Atlas\Capabilities">
+          <RegistryValue Name="ApplicationName" Type="string" Value="JSON Atlas" />
+          <RegistryValue Name="ApplicationDescription" Type="string" Value="Local JSON and JSONL reader" />
+          <RegistryValue Name="ApplicationIcon" Type="string" Value="&quot;[INSTALLDIR]json-atlas.exe&quot;,0" />
+          <RegistryKey Key="FileAssociations">
+            <RegistryValue Name=".json" Type="string" Value="JSONAtlas.Document" />
+            <RegistryValue Name=".jsonl" Type="string" Value="JSONAtlas.Document" />
+            <RegistryValue Name=".ndjson" Type="string" Value="JSONAtlas.Document" />
+            <RegistryValue Name=".jsonlines" Type="string" Value="JSONAtlas.Document" />
+          </RegistryKey>
+        </RegistryKey>
+        <RegistryKey Root="HKLM" Key="Software\RegisteredApplications">
+          <RegistryValue Name="JSON Atlas" Type="string" Value="Software\The_cute_cat\JSON Atlas\Capabilities" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

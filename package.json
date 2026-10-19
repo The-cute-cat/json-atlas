@@ -1,15 +1,24 @@
 {
   "name": "json-atlas",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Explore, search, and read JSON / JSONL files on an interactive tree canvas.",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
+  "author": "The_cute_cat and contributors",
+  "homepage": "https://github.com/The-cute-cat/json-atlas#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/The-cute-cat/json-atlas.git"
+  },
+  "bugs": {
+    "url": "https://github.com/The-cute-cat/json-atlas/issues"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "node --check src/reader.js && node --check src/main.js && node --check src/data.js && node --check src/data-source.js && node --check src/large-files.js && node --check src/page-cache.js && node --check src/viewport-window.js && node --check src/paging.js && node --check src/desktop.js && node --check src/parser.worker.js && node --check src/about.js",
+    "check": "node --check src/reader.js && node --check src/main.js && node --check src/data.js && node --check src/data-source.js && node --check src/large-files.js && node --check src/page-cache.js && node --check src/node-budget.js && node --check src/search-pattern.js && node --check src/viewport-window.js && node --check src/paging.js && node --check src/desktop.js && node --check src/parser.worker.js && node --check src/search.worker.js && node --check src/about.js",
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",

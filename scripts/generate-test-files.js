@@ -1,7 +1,7 @@
 // 生成手工验收用的大文件样本。输出目录默认 local-data/test-files（已被 .gitignore 忽略）。
 //
 //   node scripts/generate-test-files.js              # 全集，约 1.2 GB
-//   node scripts/generate-test-files.js --quick      # 只生成 < 70 MB 的样本，约 600 MB
+//   node scripts/generate-test-files.js --quick      # 跳过两个 256 MiB 主样本，仍会生成数百 MB 数据
 //   node scripts/generate-test-files.js --only jsonl-256mib,json-256mib
 //   node scripts/generate-test-files.js --force      # 覆盖已存在文件
 //
@@ -80,7 +80,7 @@ const row = (i, idWidth = 7) => {
 // 128 字节定长行，用于精确控制总字节数。
 const FIXED_LINE = 128;
 const fixedLine = i => {
-  const head = `{"id":${String(i).padStart(6, '0')},"name":"row-${String(i).padStart(6, '0')}","pad":"`;
+  const head = `{"id":${i},"name":"row-${String(i).padStart(6, '0')}","pad":"`;
   const tail = '","ok":true}\n';
   return head + 'x'.repeat(FIXED_LINE - head.length - tail.length) + tail;
 };
