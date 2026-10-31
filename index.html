@@ -49,6 +49,9 @@
     <button id="expandAllBtn" title="展开全部节点，最多显示约 5000 个节点">展开全部</button>
     <button id="collapseAllBtn">全部收起</button>
     <button id="resetViewBtn">重置视图</button>
+    <button id="editModeBtn" aria-pressed="false">编辑模式</button>
+    <button id="undoEditBtn" disabled>撤销修改</button>
+    <button id="saveCopyBtn" disabled>另存为…</button>
 
     <div class="quick-search" role="search" aria-label="快速搜索当前文件">
       <input id="quickSearchInput" type="search" placeholder="搜索键名或值…" aria-label="快速搜索键名或值" autocomplete="off" spellcheck="false" />
@@ -72,7 +75,7 @@
     <aside id="fileRail" class="file-rail" aria-label="已打开的文件"></aside>
 
     <div class="canvas-area">
-      <main id="viewport" class="viewport">
+      <main id="viewport" class="viewport" tabindex="0" aria-label="树形画布">
         <div id="world" class="world">
           <div id="tree" class="tree"></div>
         </div>
@@ -119,12 +122,21 @@
     </div>
 </section>
 
+<dialog id="valueEditDialog" class="value-edit-dialog" aria-labelledby="valueEditTitle">
+  <form id="valueEditForm"><h2 id="valueEditTitle">编辑节点</h2><p id="valueEditPath"></p>
+  <label>值类型 <select id="valueEditType"><option value="string">字符串</option><option value="number">数字</option><option value="boolean">布尔值</option><option value="null">null</option><option value="object">对象</option><option value="array">数组</option></select></label>
+  <textarea id="valueEditText" aria-label="节点内容" spellcheck="false"></textarea>
+  <p id="valueEditError" role="alert"></p><p class="s-hint">字符串直接输入文本；其他类型使用合法 JSON。修改只作用于工作副本，原文件不被覆盖。JSONL 另存为只包含有效记录，不保留注释和坏行。</p>
+  <div class="edit-actions"><button id="valueEditCancel" type="button">取消</button><button type="submit">应用修改</button></div></form>
+</dialog>
+<dialog id="discardEditDialog" class="value-edit-dialog"><h2>有尚未另存的修改</h2><p>关闭后会丢弃工作副本中的修改。可先取消并另存为。</p><div class="edit-actions"><button id="discardEditCancel">取消</button><button id="discardEditConfirm">丢弃修改并关闭</button></div></dialog>
 <div id="ctxMenu">
   <button id="ctxExpandOne">展开一级</button>
   <button id="ctxExpandSubtree">展开全部下级</button>
   <div class="ctx-sep"></div>
   <button id="ctxCollapse">收起该节点（含下级）</button>
   <div class="ctx-sep"></div>
+  <button id="ctxEditNode">编辑节点…</button>
   <button id="ctxViewFull">查看完整内容</button>
   <button id="ctxCopy">复制节点内容</button>
 </div>
@@ -141,6 +153,7 @@
     <div class="settings-body">
       <div class="settings-group">
       <div class="settings-group-title">阅读与布局</div>
+      <div class="settings-row"><div><label class="s-label" for="optVimEditing">Vim 风格编辑快捷键</label><div class="s-hint">默认关闭。开启后，在画布空白处按 i 进入编辑模式，按 Esc 退出；输入框内不触发。右键编辑节点始终可用。索引大文件暂只读。</div></div><label class="switch"><input type="checkbox" id="optVimEditing" /><span class="slider"></span></label></div>
       <div class="settings-row">
         <div>
           <label class="s-label" for="optLargeFileThreshold">大文件处理阈值</label>

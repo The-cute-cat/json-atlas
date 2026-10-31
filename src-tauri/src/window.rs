@@ -1,6 +1,6 @@
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
-    Emitter, Manager,
+    Emitter,
 };
 
 // Work area coordinates are physical; window configuration uses logical pixels.
@@ -51,7 +51,7 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         .menu(menu)
         .on_menu_event(|window, event| {
             if event.id().as_ref() == "quit" {
-                window.app_handle().exit(0);
+                let _ = window.close();
             } else {
                 let _ = window.emit("desktop-action", event.id().as_ref());
             }

@@ -6,6 +6,14 @@ import { IndexedDataSource } from './large-files.js';
 export const desktop = isTauri();
 export const readNativeFile = path => invoke('read_document', { path });
 export const selectNativeFiles = () => invoke('select_documents');
+export const saveDocumentCopy = (name, text, originalPath) => invoke('save_document_copy', { name, text, originalPath });
+export async function guardEditedClose(hasChanges, confirmDiscard) {
+  await getCurrentWebviewWindow().onCloseRequested(async event => {
+    if (!hasChanges()) return;
+    event.preventDefault();
+    if (await confirmDiscard()) await getCurrentWebviewWindow().destroy();
+  });
+}
 const indexRequest = (op, id, args = {}, path = null) => invoke('indexed_document', { op, id, args, path })
   .catch(error => { throw error instanceof Error ? error : new Error(String(error)); });
 export const statNativeFile = path => indexRequest('stat', crypto.randomUUID(), {}, path);

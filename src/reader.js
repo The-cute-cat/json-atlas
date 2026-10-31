@@ -4,9 +4,10 @@ import { normalizeThreshold, needsIndex } from './large-files.js';
 import { ViewportWindow } from './viewport-window.js';
 import { NodeBudget } from './node-budget.js';
 import { compileSearch } from './search-pattern.js';
+import { valueAt, replaceValue, parseEdit, serializeDocument } from './editing.js';
 import { openAbout } from './about.js';
 import { MAX_FILE_BYTES, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath } from './data.js';
-import { desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
+import { saveDocumentCopy, guardEditedClose, desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
 
 let expansionGeneration = 0;
 let searchTimer;
@@ -15,6 +16,67 @@ let focusGeneration = 0;
 let searchTruncated = false;
 let activeLoad = null;
 let openQueue = Promise.resolve();
+let editMode = false;
+let editingNode = null;
+let discardResolver = null;
+
+function confirmDiscardEdits(){
+  if(discardResolver) return Promise.resolve(false);
+  document.getElementById('discardEditDialog').showModal();
+  return new Promise(resolve => { discardResolver = resolve; });
+}
+function finishDiscardEdits(ok){
+  document.getElementById('discardEditDialog').close();
+  const resolve = discardResolver; discardResolver = null; resolve?.(ok);
+}
+function syncEditing(){
+  const doc = activeDoc();
+  if(!doc || doc.error || doc.source?.indexed) editMode = false;
+  viewer.classList.toggle('editing', editMode);
+  document.getElementById('editModeBtn').setAttribute('aria-pressed', String(editMode));
+  document.getElementById('editModeBtn').textContent = editMode ? '退出编辑' : '编辑模式';
+  document.getElementById('editModeBtn').disabled = !doc || !!doc.error || !!doc.source?.indexed;
+  document.getElementById('undoEditBtn').disabled = !doc?.editHistory?.length;
+  document.getElementById('saveCopyBtn').disabled = !doc?.dirty;
+}
+function setEditMode(on){ editMode = !!on; syncEditing(); }
+function canEditNode(node){
+  const doc = activeDoc();
+  return !!doc && !doc.error && !doc.source?.indexed && node?._source === doc.source;
+}
+function beginNodeEdit(node){
+  if(!canEditNode(node)) return;
+  const doc = activeDoc(), value = valueAt(doc.data, node._sourcePath);
+  editingNode = { doc, path: [...node._sourcePath] };
+  document.getElementById('valueEditPath').textContent = encodePath(node._path);
+  document.getElementById('valueEditType').value = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  document.getElementById('valueEditText').value = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  document.getElementById('valueEditError').textContent = '';
+  closeMenu(); document.getElementById('valueEditDialog').showModal();
+  document.getElementById('valueEditText').focus();
+}
+function applyNodeEdit(){
+  const state = editingNode;
+  if(!state || state.doc !== activeDoc()) throw new Error('当前文件已切换，请重新选择节点');
+  const doc = state.doc;
+  const value = parseEdit(document.getElementById('valueEditText').value, document.getElementById('valueEditType').value);
+  const wrapped = doc.kind === 'jsonl' && doc.records.length > 1 && settings.jsonlWrapArray !== false;
+  if(doc.kind === 'jsonl' && wrapped && !state.path.length && !Array.isArray(value)) throw new Error('JSONL 记录列表必须保留为数组');
+  if(doc.kind === 'jsonl' && wrapped && !state.path.length && !value.length) throw new Error('JSONL 至少需要一条记录');
+  const next = replaceValue(doc.data, state.path, value);
+  snapshotDoc();
+  (doc.editHistory ||= []).push({ parsed: doc.parsed, records: doc.records, dirty: !!doc.dirty, text: doc.text });
+  if(doc.editHistory.length > 10) doc.editHistory.shift();
+  if(doc.kind !== 'jsonl') doc.parsed = next;
+  else if(wrapped) doc.records = next;
+  else { doc.records = doc.records.slice(); doc.records[0] = next; }
+  doc.dirty = true;
+  doc.text = serializeDocument(doc);
+  // Export omits skipped JSONL lines; the loaded document retains its diagnostics.
+  doc.searchQuery = '';
+  editingNode = null; document.getElementById('valueEditDialog').close();
+  activateDoc(doc.id);
+}
 
 
 const landing = document.getElementById('landing');
@@ -230,6 +292,7 @@ function activateDoc(id){
   discardPagedTree(oldEditor);
   document.getElementById('editorMask').classList.remove('open');
   closeModal();
+  editingNode = null; document.getElementById('valueEditDialog').close();
   updateWindowTitle(doc.name);
 
   const r = resolveDoc(doc);
@@ -246,6 +309,7 @@ function activateDoc(id){
   viewer.style.display = 'flex';
 
   updateDocHeader(doc);
+  syncEditing();
   renderRail();
   saveReopenCopy();
 
@@ -295,6 +359,10 @@ function closeDoc(id){
 
   const wasActive = id === activeDocId;
   const closing = docs[idx];
+  if(closing.dirty){
+    confirmDiscardEdits().then(ok => { if(ok){ closing.dirty = false; closeDoc(id); } });
+    return;
+  }
   closing.source?.dispose();
 
   if(wasActive) snapshotDoc();
@@ -314,7 +382,7 @@ function closeDoc(id){
 }
 
 function updateDocHeader(doc){
-  fileName.textContent = doc.name;
+  fileName.textContent = doc.name + (doc.dirty ? ' • 未另存' : '');
   fileName.title = doc.path || doc.name;
 
   const kindTag = doc.kind === 'jsonl' ? ' · JSONL' : '';
@@ -640,6 +708,8 @@ async function loadFile(file, sessions){
     const duplicate = docs.find(d => doc.path ? docKey(d) === docKey(doc)
       : !d.path && d.name === doc.name && d.size === doc.size && d.text === doc.text);
     if(duplicate){
+      if(duplicate.dirty && !await confirmDiscardEdits()) return;
+      duplicate.dirty = false; duplicate.editHistory = [];
       duplicate.source?.dispose();
       Object.assign(duplicate, { parsed: doc.parsed, records: doc.records, bad: doc.bad,
         totalLines: doc.totalLines, text: doc.text, size: doc.size, kind: doc.kind, error: doc.error,
@@ -1302,6 +1372,8 @@ function openMenu(x, y){
   ctxExpandOne.disabled = !branch;
   ctxExpandSubtreeBtn.disabled = !branch;
   ctxCollapseBtn.disabled = !branch || !ctxTarget.classList.contains('open');
+  document.getElementById('ctxEditNode').disabled = !canEditNode(ctxTarget);
+  document.getElementById('ctxEditNode').title = canEditNode(ctxTarget) ? '修改当前工作副本中的节点值' : '索引大文件与字符串内嵌的虚拟节点暂不支持编辑';
 
   /* 防止菜单超出窗口 */
   const mw = ctxMenu.offsetWidth;
@@ -1462,6 +1534,7 @@ const SESSION_KEY = 'json-atlas_session_v1';
 })();
 
 let settings = {
+  vimEditing: false,
   largeFileThresholdMiB: 64,
   legacyTreeLayout: false,
   autoTemplate: true,
@@ -1671,6 +1744,7 @@ function updateTemplateStatus(){
 }
 
 function openSettings(){
+  document.getElementById('optVimEditing').checked = settings.vimEditing === true;
   syncThresholdControl();
   optLegacyTreeLayout.checked = settings.legacyTreeLayout === true;
   optAutoTemplate.checked = settings.autoTemplate;
@@ -1951,6 +2025,7 @@ settingsImportInput.addEventListener('change', () => {
         ? payload.settings : payload;
 
       settings = {
+        vimEditing: s.vimEditing === true,
         largeFileThresholdMiB: normalizeThreshold(s.largeFileThresholdMiB),
         legacyTreeLayout: s.legacyTreeLayout === true,
         autoTemplate: !!s.autoTemplate,
@@ -2314,6 +2389,50 @@ editorSaveBtn.addEventListener('click', async () => {
     : '已应用：全部字段显示');
 });
 
+
+/* Value editing works on an independent document revision. */
+document.getElementById('optVimEditing').addEventListener('change', e => {
+  settings.vimEditing = e.target.checked; saveSettings();
+});
+document.getElementById('editModeBtn').addEventListener('click', () => setEditMode(!editMode));
+document.getElementById('ctxEditNode').addEventListener('click', () => beginNodeEdit(ctxTarget));
+tree.addEventListener('click', e => {
+  if(!editMode || e.target.closest('button,input,select')) return;
+  const card = e.target.closest('.node-card');
+  if(card){ e.stopPropagation(); beginNodeEdit(card.closest('.tree-node')); }
+}, true);
+document.getElementById('valueEditCancel').addEventListener('click', () => { editingNode = null; document.getElementById('valueEditDialog').close(); });
+document.getElementById('valueEditForm').addEventListener('submit', e => {
+  e.preventDefault();
+  try { applyNodeEdit(); } catch(error){ document.getElementById('valueEditError').textContent = error.message; }
+});
+document.getElementById('discardEditCancel').addEventListener('click', () => finishDiscardEdits(false));
+document.getElementById('discardEditConfirm').addEventListener('click', () => finishDiscardEdits(true));
+document.getElementById('discardEditDialog').addEventListener('cancel', e => { e.preventDefault(); finishDiscardEdits(false); });
+document.getElementById('undoEditBtn').addEventListener('click', () => {
+  const doc = activeDoc(), previous = doc?.editHistory?.pop();
+  if(!previous) return;
+  snapshotDoc(); Object.assign(doc, previous); doc.searchQuery = ''; activateDoc(doc.id);
+});
+document.getElementById('saveCopyBtn').addEventListener('click', async () => {
+  const doc = activeDoc(); if(!doc?.dirty) return;
+  const revision = doc.text;
+  const extension = doc.kind === 'jsonl' ? 'jsonl' : 'json';
+  const name = doc.name.replace(/\.[^.]+$/, '') + '-edited.' + extension;
+  try {
+    if(desktop){ if(!await saveDocumentCopy(name, revision, doc.path || null)) return; }
+    else {
+      const url = URL.createObjectURL(new Blob([revision], {type:'application/json;charset=utf-8'}));
+      const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+    if(doc.text === revision){ doc.dirty = false; doc.editHistory = []; }
+    if(doc === activeDoc()){ updateDocHeader(doc); syncEditing(); }
+    showToast('已导出修改副本');
+  } catch(error){ showToast('另存为失败：' + error); }
+});
+window.addEventListener('beforeunload', e => { if(docs.some(d => d.dirty)){ e.preventDefault(); e.returnValue = ''; } });
+if(desktop) guardEditedClose(() => docs.some(d => d.dirty), confirmDiscardEdits).catch(console.error);
+
 /* ---------- 「更多」菜单 ---------- */
 const moreBtn = document.getElementById('moreBtn');
 const moreMenu = document.getElementById('moreMenu');
@@ -2339,7 +2458,13 @@ window.addEventListener('contextmenu', e => {
   closeMenu();
 });
 document.addEventListener('keydown', e => {
+  if(document.getElementById('valueEditDialog').open || document.getElementById('discardEditDialog').open) return;
   if(document.getElementById('aboutDialog').open) return;
+  const canvasFocused = e.target === viewport;
+  if(canvasFocused && !e.isComposing && !e.ctrlKey && !e.metaKey && !e.altKey){
+    if(e.key === 'i' && settings.vimEditing === true){ e.preventDefault(); setEditMode(true); return; }
+    if(e.key === 'Escape' && editMode){ e.preventDefault(); setEditMode(false); return; }
+  }
   const modifier = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
   if(modifier && key === 'o'){ e.preventDefault(); chooseFiles(); return; }
@@ -2638,6 +2763,7 @@ function createCanvasView(viewportEl, worldEl, labelEl, onChange){
   viewportEl.addEventListener('pointerdown', e => {
     /* 节点、按钮、输入控件不触发画布拖动 */
     if(e.target.closest('.node-card,.toggle,button,input,select,label')) return;
+    viewportEl.focus({ preventScroll: true });
 
     state.dragging = true;
     sx = e.clientX; sy = e.clientY;

@@ -1,3 +1,4 @@
+import { valueAt, replaceValue, parseEdit, serializeDocument } from '../src/editing.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -35,6 +36,8 @@ class Element {
   addEventListener(name, handler) { this.listeners.set(name, handler); }
   setAttribute() {}
   removeAttribute() {}
+  close() { this.open = false; }
+  showModal() { this.open = true; }
   focus() {}
   select() {}
   setPointerCapture() {}
@@ -86,12 +89,13 @@ function reader(storage = new Map(), native = {}) {
     setTimeout: (callback, delay) => delay === 0 ? setTimeout(callback, 0) : 1, clearTimeout() {},
     desktop: false, connectDesktop: async () => {}, updateWindowTitle() {},
     MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
+    valueAt, replaceValue, parseEdit, serializeDocument,
     encodePath: encodeDataPath, normalizePath: normalizeDataPath, compileSearch,
     console, Blob, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
     ;({ buildDoc, resolveDoc, activateDoc, collectSession, expandByPaths, expandLevels, expandOne,
-      openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile, showNodeLimit, collapseAll, updateVirtualization,
+      beginNodeEdit, applyNodeEdit, openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile, showNodeLimit, collapseAll, updateVirtualization,
       add: doc => docs.push(doc), configure: value => Object.assign(settings, value),
       setTemplate: value => { template = value; }, template: () => template,
       state: () => ({ activeDocId, currentRootLabel, doc: activeDoc(), view: { ...mainView.state } }) });`, context);
@@ -562,4 +566,32 @@ test('threshold select saves the chosen size and reopens at the persisted value'
   assert.equal(saved.largeFileThresholdMiB, 128);
   const restored = reader(storage); restored.elements.get('settingsBtn').listeners.get('click')();
   assert.equal(restored.elements.get('optLargeFileThreshold').value, '128');
+});
+
+
+test('editing updates search source, undo restores the original and shortcuts stay opt-in', async () => {
+  const {api,elements,keyListeners}=reader();
+  const doc=api.buildDoc('{"old":1}', 'edit.json',9); api.add(doc); api.activateDoc(doc.id);
+  const root=elements.get('tree').firstElementChild;
+  api.beginNodeEdit(root);
+  elements.get('valueEditType').value='object'; elements.get('valueEditText').value='{"new":2}';
+  api.applyNodeEdit(); assert.equal(doc.parsed.new,2); assert.equal(doc.dirty,true);
+  await api.searchTree('new'); assert.equal(elements.get('searchCount').textContent,'1 / 1');
+  elements.get('undoEditBtn').listeners.get('click')(); assert.equal(doc.parsed.old,1); assert.equal(doc.dirty,false);
+  const viewport=elements.get('viewport');
+  const press=key=>keyListeners.get('keydown')({key,target:viewport,preventDefault(){}});
+  press('i'); assert.equal(elements.get('viewer').classList.contains('editing'),false);
+  api.configure({vimEditing:true}); press('i'); assert.equal(elements.get('viewer').classList.contains('editing'),true);
+  press('Escape'); assert.equal(elements.get('viewer').classList.contains('editing'),false);
+});
+
+
+test('JSONL first-record editing preserves later records and undo restores original text', () => {
+  const {api,elements}=reader(); api.configure({jsonlWrapArray:false});
+  const text='{"x":1}\n{"x":2}\n'; const doc=api.buildDoc(text,'rows.jsonl',20); api.add(doc); api.activateDoc(doc.id);
+  api.beginNodeEdit(elements.get('tree').firstElementChild);
+  elements.get('valueEditType').value='object';elements.get('valueEditText').value='{"x":9}';api.applyNodeEdit();
+  assert.equal(doc.records[0].x,9);assert.equal(doc.records[1].x,2);
+  assert.deepEqual(JSON.parse(doc.text.split('\n')[1]),{x:2});
+  elements.get('undoEditBtn').listeners.get('click')();assert.equal(doc.text,text);
 });

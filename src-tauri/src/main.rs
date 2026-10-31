@@ -176,6 +176,42 @@ async fn read_document(path: String) -> Result<documents::Document, String> {
 }
 
 #[tauri::command]
+async fn save_document_copy(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    name: String,
+    text: String,
+    original_path: Option<String>,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = app
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_file_name(&name)
+            .add_filter("JSON / JSONL", &["json", "jsonl", "ndjson", "jsonlines"])
+            .blocking_save_file();
+        let Some(file) = file else { return Ok(false) };
+        let path = file.into_path().map_err(|e| e.to_string())?;
+        if let Some(original) = original_path {
+            if let (Ok(original), Ok(destination)) = (
+                std::fs::canonicalize(original),
+                std::fs::canonicalize(&path),
+            ) {
+                if original == destination {
+                    return Err("请为工作副本选择不同的文件名，原文件不会被覆盖".into());
+                }
+            }
+        }
+        std::fs::write(path, text.as_bytes()).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn select_documents(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -242,6 +278,7 @@ fn main() {
             read_document,
             indexed_document,
             select_documents,
+            save_document_copy,
             set_document_title
         ])
         .run(tauri::generate_context!())
