@@ -7,7 +7,7 @@
 //
 // 所有样本内容由固定规则生成，同样参数下可重复。
 import { createWriteStream } from 'node:fs';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -155,7 +155,28 @@ const specs = {
   '22-bad-syntax.json': { note: '根语法错误，应提示解析失败', run: () => write('22-bad-syntax.json', ['{"a":1,}']) },
   '23-crlf.jsonl': { note: 'CRLF 换行 5000 行，应正常解析', run: () => write('23-crlf.jsonl', crlfJsonl()) },
   '24-bom.jsonl': { note: '带 UTF-8 BOM 的 JSONL，应正常解析', run: () => write('24-bom.jsonl', bomJsonl()) },
-  '25-deep-129.json': { note: '129 层嵌套，应报"嵌套超过 128 层"', run: () => write('25-deep-129.json', deepDocument(129, true)) }
+  '25-deep-129.json': { note: '129 层嵌套，应报"嵌套超过 128 层"', run: () => write('25-deep-129.json', deepDocument(129, true)) },
+
+  // 26–31：内容边界。全部小于 2 KiB，因而都走内存模式，可在 IDE 视图里编辑，
+  // 用来补 01–25 覆盖不到的键名、数字、空容器、行形态与搜索开关。
+  '26-edge-content.json': {
+    note: '内容边界：特殊键名（点/空/纯数字/引号/反斜杠/换行/__proto__/仅大小写不同）、大整数与极端浮点、空容器、Unicode 转义。内存模式，IDE 视图可直接编辑',
+    run: () => write('26-edge-content.json', [edgeContentJson()])
+  },
+  '27-search-modes.jsonl': {
+    note: '搜索开关验收：大小写 / 全词 / 正则 / 范围内查找各自的正例与反例，约 20 行',
+    run: () => write('27-search-modes.jsonl', [searchModesJsonl()])
+  },
+  '28-jsonl-mixed-rows.jsonl': {
+    note: 'JSONL 行不是对象：数组行、标量行、null / true 行，验证记录列表与搜索不崩',
+    run: () => write('28-jsonl-mixed-rows.jsonl', [mixedRowsJsonl()])
+  },
+  '29-duplicate-keys-small.json': {
+    note: '小体积重复键。内存模式按 JSON.parse 取最后一个；保存回写后重复项丢失，用于确认这是已知行为',
+    run: () => write('29-duplicate-keys-small.json', [duplicateSmallJson()])
+  },
+  '30-empty.json': { note: '0 字节 .json，与 21 的 .jsonl 走不同分支', run: () => write('30-empty.json', []) },
+  '31-scalar-root.json': { note: '根值是字符串标量，既不是数组也不是对象', run: () => write('31-scalar-root.json', ['"just a string"\n']) }
 };
 
 // --- 各类文档生成器 ---------------------------------------------------------
@@ -285,6 +306,99 @@ function* bomJsonl() {
   }
 }
 
+// --- 内容边界样本（26–31）---------------------------------------------------
+// 这些文件要小到手写也不累，重点在键名 / 数字 / 空容器 / 行形态，不在体量。
+// 26 故意写成原始文本而不用 JSON.stringify：要点正是 -0、1.0 这类
+// 经过 JS 序列化就会被抹平的写法，必须原样落盘。
+
+const edgeContentJson = () => `{
+  "_readme": "内容边界样本：看的是键名、数字与空容器，不是值本身。",
+  "键名": {
+    "中文键": "值",
+    "a.b": "含点号，路径应编码为 [\\"a.b\\"]，不能拆成两级",
+    "0": "纯数字字符串键，不能被当成数组下标",
+    "": "空键",
+    "[x]": "含方括号",
+    "quote\\"key": "含双引号",
+    "back\\\\slash": "含反斜杠",
+    "line\\nbreak": "含换行",
+    "tab\\tkey": "含制表符",
+    "__proto__": "不应污染原型",
+    "constructor": "不应覆盖构造函数",
+    "Key": "大写 K",
+    "key": "小写 k，与 Key 只差大小写"
+  },
+  "数字": {
+    "safeMax": 9007199254740991,
+    "unsafe": 9007199254740993,
+    "uint64": 18446744073709551615,
+    "negativeZero": -0,
+    "onePointZero": 1.0,
+    "tiny": 1e-7,
+    "big": 1e21,
+    "bigger": 1e23,
+    "float": 0.1,
+    "sum": 0.30000000000000004
+  },
+  "空容器": { "object": {}, "array": [] },
+  "Unicode": {
+    "cjk": "中文测试",
+    "emoji": "😀🚀🌏",
+    "escaped": "\\u4e2d\\u6587",
+    "surrogate": "\\ud83d\\ude00",
+    "combining": "e\\u0301"
+  },
+  "字面量": [true, false, null],
+  "嵌套": { "a": { "b": { "c": [1, 2, 3] } } }
+}
+`;
+
+// 每类开关都给正例和反例，便于一眼看出是"没匹配"还是"匹配错了"。
+// 注意：note 里刻意不写出被测词本身（写成"正则三点""全词"），否则 note
+// 会被同一个查询命中，反例全部失效。
+function searchModesJsonl() {
+  const line = (id, word, note) => JSON.stringify({ id, word, note });
+  return [
+    line(1, 'Alpha', '大小写：默认不敏感应命中；开启敏感后本行不应命中'),
+    line(2, 'alpha', '大小写：敏感后只应命中本行，与首尾两行对照'),
+    line(3, 'ALPHA', '大小写：敏感后本行不应命中'),
+    line(4, 'cat', '全词：单数形式，应命中'),
+    line(5, 'cats', '全词：复数形式，不应命中'),
+    line(6, 'concatenate', '全词：词内包含，不应命中'),
+    line(7, 'cat.', '全词：标点是词边界，应命中'),
+    line(8, 'abc', '正则三点：应命中'),
+    line(9, 'a-c', '正则三点：横杠不是点，转义点后本行不应命中'),
+    line(10, 'aXc', '正则三点：应命中'),
+    line(11, 'a c', '正则三点：空格也算任意字符，应命中'),
+    line(12, 'emoji 😀 alpha', '全词：前面是空格、后面是行尾，应命中；正则匹配 emoji 也应命中'),
+    line(13, '中文词 中文搜索', '中文按子串匹配，无词边界概念'),
+    line(14, 'SEARCH_TARGET_001', '唯一标记：搜全串应只命中本行'),
+    line(15, 'alpha alpha alpha', '同一行三次命中，结果只应出现一次'),
+    line(16, '$ ^ ( ) [ ] { } * + ? | .', '正则元字符：普通搜索应按字面命中整行，不应报错'),
+    line(17, '范围外 BETA', '范围内查找：不在 scope 子节点内'),
+    JSON.stringify({ id: 18, scope: { hit: 'BETA 在范围内', miss: 'gamma' }, note: '范围内查找：只作用于 scope 节点' }),
+    line(19, '', '空字符串值：搜空串不应返回全量'),
+    line(20, 'end', '末行哨兵'),
+    line(21, 'a.c', '正则三点：字面点，转义点后只应命中本行')
+  ].join('\n') + '\n';
+}
+
+// JSONL 的行不一定是对象。数组行、标量行、null / true 行都要能进记录列表。
+const mixedRowsJsonl = () => [
+  '{"id":1,"kind":"object"}',
+  '[1,2,3]',
+  '"bare string row"',
+  '42',
+  'null',
+  'true',
+  '{"id":2,"kind":"object again"}',
+  '[[1,2],[3,4]]'
+].join('\n') + '\n';
+
+// 与 12 同一个问题，但小到内存模式：JSON.parse 只保留最后一个，
+// 保存回写后中间的 1、2 会消失——这是已知行为，需要有人认领过。
+const duplicateSmallJson = () => '{"dup":1,"dup":2,"dup":3,"nested":{"x":1,"x":2},"keep":"ok"}\n';
+
 // --- 主流程 ---------------------------------------------------------------
 
 await mkdir(OUT, { recursive: true });
@@ -306,6 +420,12 @@ for (const [name, spec] of Object.entries(specs)) {
   }
 }
 
-await writeFile(join(OUT, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
-const total = manifest.reduce((sum, item) => sum + (item.bytes || 0), 0);
-console.log(`\n共 ${manifest.length} 个文件，合计 ${bytes(total)}`);
+// 只生成一部分样本时不能把整份 manifest 覆盖掉，按文件名合并。
+const manifestPath = join(OUT, 'manifest.json');
+const previous = JSON.parse(await readFile(manifestPath, 'utf8').catch(() => '[]'));
+const merged = new Map(Array.isArray(previous) ? previous.map(item => [item.name, item]) : []);
+for (const item of manifest) merged.set(item.name, item);
+const all = [...merged.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+await writeFile(manifestPath, JSON.stringify(all, null, 2), 'utf8');
+const total = all.reduce((sum, item) => sum + (item.bytes || 0), 0);
+console.log(`\n本次 ${manifest.length} 个文件；目录清单共 ${all.length} 个，合计 ${bytes(total)}`);
