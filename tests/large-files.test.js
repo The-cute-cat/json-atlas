@@ -165,7 +165,7 @@ test('search batches preserve DFS hits and reduce requests without caching readi
   for (const item of [old, batched, counted]) item.source.dispose();
 });
 
-test('batch search cancellation and fallback do not read later branches after an early match', async () => {
+test('batch search cancellation stops reads and fallback checks whether an exact cap has more matches', async () => {
   const value = [{ text: 'target' }, { text: 'later' }], memory = new MemoryDataSource(value);
   for (const cancel of [true, false]) {
     const calls = []; let cancelled = false;
@@ -176,8 +176,8 @@ test('batch search cancellation and fallback do not read later branches after an
     }, 'batch-fallback', { root: memory.getRoot(), searchBatch: true });
     const result = await source.search('target', { limit: 1, cancelled: () => cancelled });
     if (cancel) assert.equal(result, null);
-    else assert.deepEqual(result, { hits: [[0, 'text']], truncated: true });
-    assert(!calls.some(c => c.op === 'page' && c.args.path[0] === 1));
+    else assert.deepEqual(result, { hits: [[0, 'text']], truncated: false });
+    assert.equal(calls.some(c => c.op === 'page' && c.args.path[0] === 1), !cancel);
     source.dispose();
   }
 });

@@ -27,7 +27,7 @@
         <h1>JSON Atlas</h1>
         <p>浏览结构，专注内容</p>
         <button id="chooseBtn" class="desktop-open"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h3l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>打开文件…</button>
-        <span class="empty-drop-hint">拖入文件，或按 <kbd>Ctrl</kbd> <kbd>O</kbd></span>
+        <span class="empty-drop-hint">拖入文件，或按 <kbd id="openShortcutModifier"></kbd> <kbd>O</kbd></span>
         <input id="fileInput" type="file" multiple accept=".json,.jsonl,.ndjson,.jsonlines,application/json,application/x-ndjson,application/jsonl" />
       </div>
     </div>
@@ -63,14 +63,15 @@
         <button id="switchViewBtn" title="切换当前文件的查看方式">IDE 视图</button>
         <button id="editModeBtn" aria-pressed="false">编辑模式</button>
         <button id="undoEditBtn" disabled>撤销修改</button>
-        <button id="saveCopyBtn" disabled>另存为…</button>
-        <button id="formatIdeBtn" disabled title="格式化文档（Shift + Alt + F）">格式化文档</button>
+        <button id="saveBtn" disabled title="保存修改">保存</button>
+        <button id="saveCopyBtn" disabled title="另存为副本">另存为…</button>
+        <button id="formatIdeBtn" disabled title="格式化文档">格式化文档</button>
         <div class="ctx-sep"></div>
       </div>
       <button id="recordTemplateBtn" title="以当前展开状态为模板">记录当前展开为模板</button>
       <button id="editorBtn" title="编辑模板：显示/隐藏字段">模板编辑…</button>
       <div class="ctx-sep"></div>
-      <button id="findBtn">高级查找… <span class="shortcut">Ctrl/⌘+F</span></button>
+      <button id="findBtn">高级查找… <span id="findShortcutLabel" class="shortcut"></span></button>
       <button id="settingsBtn" title="设置">设置…</button>
       <button id="aboutBtn">关于 JSON Atlas…</button>
     </div>
@@ -81,7 +82,7 @@
 
     <div class="canvas-area">
       <section id="ideView" class="ide-view" tabindex="0" aria-label="JSON 代码编辑器" hidden>
-        <div class="ide-editor"><div id="ideHighlight" aria-hidden="true"><div id="ideLines"></div></div><textarea id="ideInput" aria-label="JSON 文档内容" wrap="off" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></div>
+        <div class="ide-editor"><div id="ideHighlight"><div id="ideLines"></div></div><textarea id="ideInput" aria-label="JSON 文档内容" wrap="off" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></div>
       </section>
       <main id="viewport" class="viewport" tabindex="0" aria-label="树形画布">
         <div id="world" class="world">
@@ -100,7 +101,7 @@
   <footer class="statusbar">
     <span id="pathText">路径：$</span>
     <span id="ideStatus" role="status" hidden></span>
-    <span class="help">空白处拖动 · 滚轮平移 · Ctrl/⌘ + 滚轮缩放 · 右键节点展开/收起子树</span>
+    <span class="help">空白处拖动 · 滚轮平移 · 右键节点展开/收起子树</span>
   </footer>
 </section>
 
@@ -138,7 +139,7 @@
   <p id="valueEditError" role="alert"></p><p class="s-hint" id="valueEditHint">修改保留在工作副本中，另存为后导出。</p>
   <div class="edit-actions"><button id="valueEditCancel" type="button">取消</button><button type="submit">应用修改</button></div></form>
 </dialog>
-<dialog id="discardEditDialog" class="value-edit-dialog"><h2>有尚未另存的修改</h2><p>关闭后会丢弃工作副本中的修改。可先取消并另存为。</p><div class="edit-actions"><button id="discardEditCancel">取消</button><button id="discardEditConfirm">丢弃修改并关闭</button></div></dialog>
+<dialog id="discardEditDialog" class="value-edit-dialog"><h2>有尚未保存的修改</h2><p>关闭后会丢弃工作副本中的修改。可先取消并保存或另存为。</p><div class="edit-actions"><button id="discardEditCancel">取消</button><button id="discardEditConfirm">丢弃修改并关闭</button></div></dialog>
 <div id="ctxMenu">
   <button id="ctxExpandOne">展开一级</button>
   <button id="ctxExpandSubtree">展开全部下级</button>
@@ -162,7 +163,8 @@
     <div class="settings-body">
       <div class="settings-group">
       <div class="settings-group-title">阅读与布局</div>
-      <div class="settings-row"><div><label class="s-label" for="optViewMode">文件查看方式</label><div class="s-hint">树形视图为默认方式。自动模式对简单结构使用带行号和语法高亮的 IDE 视图；优先 IDE 适合习惯代码阅读的用户。超过内存阈值、结构过深或文本过多时始终使用树形视图。IDE 可直接编辑、格式化及缩放字号；修改后可另存为副本，不覆盖原文件。</div></div><select id="optViewMode"><option value="tree">树形视图</option><option value="auto">简单结构自动使用 IDE</option><option value="ide">优先使用 IDE</option></select></div>
+      <div class="settings-row"><div><label class="s-label" for="optTheme">外观主题</label><div class="s-hint">白天模式适合明亮环境，夜间模式减少暗处的屏幕亮度。默认跟随系统，系统切换外观时会自动更新。</div></div><select id="optTheme"><option value="system">跟随系统</option><option value="light">白天模式</option><option value="dark">夜间模式</option></select></div>
+      <div class="settings-row"><div><label class="s-label" for="optViewMode">文件查看方式</label><div class="s-hint">树形视图为默认方式。自动模式对简单结构使用带行号和语法高亮的 IDE 视图；优先 IDE 适合习惯代码阅读的用户。超过内存阈值、结构过深或文本过多时始终使用树形视图。IDE 可直接编辑、格式化及缩放字号；鼠标移到行号区域可折叠或展开结构。修改后可保存到原文件或另存为副本。</div></div><select id="optViewMode"><option value="tree">树形视图</option><option value="auto">简单结构自动使用 IDE</option><option value="ide">优先使用 IDE</option></select></div>
       <div class="settings-row"><div><label class="s-label" for="optVimEditing">Vim 风格编辑快捷键</label><div class="s-hint">默认关闭。开启后，在画布空白处按 i 进入编辑模式，按 Esc 退出；输入框内不触发。右键编辑节点始终可用。索引大文件暂只读。</div></div><label class="switch"><input type="checkbox" id="optVimEditing" /><span class="slider"></span></label></div>
       <div class="settings-row">
         <div>
@@ -321,6 +323,11 @@
           <input id="settingsImportInput" type="file" accept=".json,application/json" hidden />
         </div>
       </div>
+      </div>
+      <div class="settings-group">
+        <div class="settings-group-title">键盘快捷键</div>
+        <p class="s-hint">参考 IDEA 的常用键位，按当前系统显示。展开与收起仅作用于树形视图；在普通输入框中保留原有文字编辑行为。也可继续使用 Shift+Alt+F 格式化。</p>
+        <dl id="shortcutHelp" class="shortcut-help"></dl>
       </div>
     </div>
     <div class="modal-foot">

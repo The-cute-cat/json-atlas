@@ -5,10 +5,14 @@ import { ViewportWindow } from './viewport-window.js';
 import { NodeBudget } from './node-budget.js';
 import { compileSearch } from './search-pattern.js';
 import { valueAt, replaceValue, parseEdit, serializeDocument } from './editing.js';
-import { ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines } from './ide-view.js';
+import { ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit } from './ide-view.js';
+import { normalizeTheme, watchTheme } from './theme.js';
+import { updateWindowTheme } from './desktop.js';
+import { installTooltips } from './tooltips.js';
 import { openAbout } from './about.js';
+import { isMacPlatform, shortcutLabel, shortcutAction } from './shortcuts.js';
 import { MAX_FILE_BYTES, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath } from './data.js';
-import { updateDocumentMenu, saveDocumentCopy, guardEditedClose, desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
+import { updateDocumentMenu, saveNativeDocument, saveDocumentCopy, guardEditedClose, desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
 
 let expansionGeneration = 0;
 let searchTimer;
@@ -17,12 +21,19 @@ let focusGeneration = 0;
 let searchTruncated = false;
 let activeLoad = null;
 let openQueue = Promise.resolve();
+let openBatchGeneration = 0;
 let editMode = false;
 let editingNode = null;
 let discardResolver = null;
 let ideActive = false;
 let ideLocations = new Map();
+const macPlatform = isMacPlatform(navigator);
+const primaryModifier = macPlatform ? '⌘' : 'Ctrl';
+const shortcutText = action => shortcutLabel(action, macPlatform);
 function rememberEdit(doc){
+  doc.ideFolds?.clear();
+  doc.savedText ??= doc.text;
+  doc.diskText ??= doc.text;
   (doc.editHistory ||= []).push({parsed:doc.parsed, records:doc.records, dirty:!!doc.dirty, text:doc.text,
     ideDraft:doc.ideDraft, ideError:doc.ideError, bad:doc.bad, totalLines:doc.totalLines});
   if(doc.editHistory.length > 10) doc.editHistory.shift();
@@ -42,25 +53,56 @@ function renderIdeBuffer(doc){
   const text = doc.ideDraft ?? doc.text ?? '', lines = text.length > 2 * 1024 * 1024 ? [] : ideTextLines(text);
   const plain = text.length > 2 * 1024 * 1024 || lines.length > 20000;
   document.getElementById('ideView').classList.toggle('ide-plain', plain);
-  ideLocations = renderIde(document.getElementById('ideLines'), plain ? [] : lines, document);
+  doc.ideProjection = plain ? null : ideProjection(text, doc.ideFolds);
+  const input = document.getElementById('ideInput');
+  const projected = doc.ideProjection?.text ?? text;
+  if(input.value !== projected) input.value = projected;
+  ideLocations = renderIde(document.getElementById('ideLines'), doc.ideProjection?.lines || [], document, line => toggleIdeFold(line));
   const status = document.getElementById('ideStatus');
   status.textContent = doc.ideError ? '语法错误：' + doc.ideError : plain ? '大段文本已暂停高亮' : '';
   status.hidden = !status.textContent;
   status.title = status.textContent; status.classList.toggle('invalid', !!doc.ideError);
   syncIdeScroll();
 }
+function toggleIdeFold(line){
+  const doc = activeDoc(); if(!ideActive || !doc?.ideProjection) return;
+  const input = document.getElementById('ideInput'), scroll = input.scrollTop;
+  const raw = ideRawOffset(doc.ideProjection, input.selectionStart || 0);
+  doc.ideFolds ||= new Set();
+  if(doc.ideFolds.has(line)) doc.ideFolds.delete(line); else doc.ideFolds.add(line);
+  renderIdeBuffer(doc);
+  let caret = 0;
+  for(const row of doc.ideProjection.offsets) {
+    if(row.raw > raw) break;
+    caret = row.visible + Math.min(row.length, raw - row.raw);
+  }
+  input.setSelectionRange?.(caret, caret); input.scrollTop = scroll; syncIdeScroll();
+}
+function handleIdeInput(text){
+  const doc = activeDoc(), input = document.getElementById('ideInput');
+  if(!doc) return;
+  if(doc.ideFolds?.size && doc.ideProjection){
+    const result = ideProjectedEdit((doc.ideDraft ?? doc.text ?? '').replace(/\r\n/g,'\n'), doc.ideProjection, text);
+    doc.ideFolds.clear();
+    if(!result){ renderIdeBuffer(doc); showToast('已展开折叠内容，请继续编辑'); return; }
+    applyIdeChange(result.text); input.setSelectionRange?.(result.caret, result.caret);
+  } else applyIdeChange(text);
+}
 function applyIdeChange(text){
   const doc = activeDoc(); if(!doc || !ideActive || doc.source?.indexed || text === doc.text) return;
+  const previousProblem = doc.ideError, previousCount = doc.records?.length;
   rememberEdit(doc);
+  doc.ideFolds?.clear();
   doc.ideDraft = text; doc.text = text; doc.dirty = true;
   try {
     Object.assign(doc, parseIdeText(text, doc.kind)); doc.ideError = '';
     const resolved = resolveDoc(doc); doc.data = resolved.data; parsedData = doc.data;
-    doc.source?.dispose(); doc.source = new MemoryDataSource(doc.data);
+    // Tree rendering refreshes its source when switching back; IDE search uses raw lines.
   } catch(error){ doc.ideError = error.message; }
   searchGeneration++; focusGeneration++; matches = []; currentMatchIndex = -1;
   setSearchCount(''); nextMatchBtn.disabled = true; prevMatchBtn.disabled = true;
-  renderIdeBuffer(doc); updateDocHeader(doc); syncEditing(); renderRail();
+  renderIdeBuffer(doc); updateDocHeader(doc); syncEditing();
+  if(previousProblem !== doc.ideError || previousCount !== doc.records?.length) renderRail();
   if(searchInput.value){ clearTimeout(searchTimer); searchTimer = setTimeout(() => searchTree(searchInput.value), 180); }
 }
 function leaveIde(){
@@ -72,8 +114,9 @@ function formatIde(){
   if(!ideActive) return;
   const doc = activeDoc(), input = document.getElementById('ideInput');
   try {
-    const formatted = formatIdeText(input.value, doc.kind);
-    applyIdeChange(formatted); input.value = formatted; syncIdeScroll(); input.focus();
+    const formatted = formatIdeText(doc.ideDraft ?? doc.text ?? '', doc.kind);
+    doc.ideFolds?.clear();
+    applyIdeChange(formatted); renderIdeBuffer(doc); input.value = formatted; syncIdeScroll(); input.focus();
   } catch(error){
     const status = document.getElementById('ideStatus');
     status.textContent = '无法格式化：' + error.message; status.title = status.textContent; status.classList.add('invalid');
@@ -83,13 +126,20 @@ function formatIde(){
 }
 function syncDocumentMenu(){
   if(!desktop) return;
+  const actions = {'switch-view':'switchView','edit-mode':'editMode','undo-edit':'undo','format-json':'format'};
   updateDocumentMenu([
     ['switch-view','switchViewBtn'], ['edit-mode','editModeBtn'],
-    ['undo-edit','undoEditBtn'], ['save-copy','saveCopyBtn'], ['format-json','formatIdeBtn']
+    ['undo-edit','undoEditBtn'], ['save','saveBtn'], ['save-copy','saveCopyBtn'], ['format-json','formatIdeBtn']
   ].map(([id, buttonId]) => {
     const button = document.getElementById(buttonId);
-    return {id, text:button.textContent, enabled:!!activeDoc() && !button.disabled && !(id === 'edit-mode' && ideActive)};
-  }));
+    return {id, text:button.textContent, shortcut:actions[id] ? shortcutText(actions[id]) : null,
+      enabled:!!activeDoc() && !button.disabled && !(id === 'edit-mode' && ideActive)};
+  }).concat([
+    {id:'close',text:'关闭当前文件',shortcut:shortcutText('close'),enabled:!!activeDoc()},
+    {id:'reset',text:'重置视图',shortcut:shortcutText('resetView'),enabled:!!activeDoc() && !activeDoc().error},
+    {id:'settings',text:'设置…',shortcut:shortcutText('settings'),enabled:true},
+    {id:'about',text:'关于 JSON Atlas',shortcut:shortcutText('about'),enabled:true}
+  ]));
 }
 
 function resizeNodeEditor(){
@@ -118,10 +168,10 @@ function syncDocumentView(doc){
   const switcher = document.getElementById('switchViewBtn');
   switcher.textContent = ideActive ? '树形视图' : 'IDE 视图';
   switcher.disabled = !ideActive && !ideModel(doc, 'ide', settings.largeFileThresholdMiB);
-  switcher.title = switcher.disabled ? '文件超过内存阈值或结构过于复杂，使用树形视图' : '切换当前文件的查看方式';
+  switcher.title = switcher.disabled ? '文件超过内存阈值或结构过于复杂，使用树形视图' : `切换当前文件的查看方式（${shortcutText('switchView')}）`;
   for(const id of ['expandAllBtn','collapseAllBtn','resetViewBtn','recordTemplateBtn','editorBtn']) document.getElementById(id).hidden = ideActive;
   document.getElementById('editModeBtn').hidden = ideActive;
-  document.querySelector('.statusbar .help').textContent = ideActive ? '直接编辑 · Ctrl/⌘ + ＋ / − 缩放 · Ctrl/⌘ + 0 重置 · Shift + Alt + F 格式化' : '空白处拖动 · 滚轮平移 · Ctrl/⌘ + 滚轮缩放 · 右键节点展开/收起子树';
+  document.querySelector('.statusbar .help').textContent = ideActive ? `直接编辑 · ${primaryModifier} + ＋ / − 缩放 · ${primaryModifier} + 0 重置 · ${shortcutText('format')} 格式化` : `空白处拖动 · 滚轮平移 · ${primaryModifier} + 滚轮缩放 · 右键节点展开/收起子树`;
   document.getElementById('formatIdeBtn').disabled = !ideActive;
   searchScopeBtn.disabled = ideActive;
   if(ideActive) setEditMode(false);
@@ -145,7 +195,8 @@ function syncEditing(){
   document.getElementById('editModeBtn').textContent = editMode ? '退出编辑' : '编辑模式';
   document.getElementById('editModeBtn').disabled = !doc || !!doc.error || !!doc.source?.indexed;
   document.getElementById('undoEditBtn').disabled = !doc?.editHistory?.length;
-  document.getElementById('saveCopyBtn').disabled = !doc?.dirty;
+  document.getElementById('saveBtn').disabled = !doc?.dirty || !!doc?.saving;
+  document.getElementById('saveCopyBtn').disabled = !doc?.dirty || !!doc?.saving;
   syncDocumentMenu();
 }
 function setEditMode(on){ editMode = !!on; syncEditing(); }
@@ -164,7 +215,7 @@ function beginNodeEdit(node){
   closeMenu(); document.getElementById('valueEditDialog').showModal();
   document.getElementById('valueEditHint').textContent = doc.kind === 'jsonl'
     ? '字符串直接输入，其他类型填写 JSON。另存为仅导出有效记录，不保留注释和坏行。'
-    : '字符串直接输入，其他类型填写 JSON。修改保留在工作副本中，原文件不会被覆盖。';
+    : '字符串直接输入，其他类型填写 JSON。修改先保留在工作副本中，可保存到原文件或另存为副本。';
   resizeNodeEditor();
   document.getElementById('valueEditText').focus();
 }
@@ -507,7 +558,7 @@ function closeDoc(id){
 }
 
 function updateDocHeader(doc){
-  fileName.textContent = doc.name + (doc.dirty ? ' • 未另存' : '');
+  fileName.textContent = doc.name + (doc.dirty ? ' • 未保存' : '');
   fileName.title = doc.path || doc.name;
 
   const kindTag = doc.kind === 'jsonl' ? ' · JSONL' : '';
@@ -524,6 +575,7 @@ function resetSearchState(){
   currentMatchIndex = -1;
   searchInput.value = '';
   quickSearchInput.value = '';
+  searchTruncated = false; searchCount.title = ''; quickSearchCount.title = '';
   setSearchCount('');
   nextMatchBtn.disabled = true;
   prevMatchBtn.disabled = true;
@@ -747,7 +799,13 @@ viewer.addEventListener('drop', e => {
 /* 一次打开多个文件（多选 / 拖入多个） */
 function openFiles(fileList){
   const files = [...fileList].filter(Boolean);
-  openQueue = openQueue.then(async () => { for(const file of files) await loadFile(file); });
+  const generation = openBatchGeneration;
+  openQueue = openQueue.catch(() => {}).then(async () => {
+    for(const file of files){
+      if(generation !== openBatchGeneration) break;
+      await loadFile(file);
+    }
+  });
   return openQueue;
 }
 
@@ -762,8 +820,10 @@ async function chooseFiles(){
 }
 
 function openPaths(paths, sessions){
-  openQueue = openQueue.then(async () => {
+  const generation = openBatchGeneration;
+  openQueue = openQueue.catch(() => {}).then(async () => {
     for(const path of paths){
+      if(generation !== openBatchGeneration) break;
       await loadFile({ path }, sessions);
     }
   });
@@ -831,7 +891,7 @@ async function loadFile(file, sessions){
     if(indexedSource) doc.source = indexedSource;
     doc.path = source.path || null;
     // Windows paths are case insensitive; native canonical paths identify documents.
-    doc.identity = doc.path && navigator.platform.startsWith('Win') ? doc.path.toLowerCase() : doc.path;
+    doc.identity = doc.path && (navigator.userAgentData?.platform || navigator.platform || '').startsWith('Win') ? doc.path.toLowerCase() : doc.path;
     if(doc.kind === 'jsonl') doc.bad ||= [];
     const duplicate = docs.find(d => doc.path ? docKey(d) === docKey(doc)
       : !d.path && d.name === doc.name && d.size === doc.size && d.text === doc.text);
@@ -839,6 +899,8 @@ async function loadFile(file, sessions){
       if(duplicate.dirty && !await confirmDiscardEdits()) return;
       duplicate.dirty = false; duplicate.editHistory = [];
       duplicate.ideDraft = undefined; duplicate.ideError = undefined;
+      duplicate.ideFolds = undefined; duplicate.ideProjection = undefined;
+      duplicate.savedText = undefined; duplicate.diskText = undefined;
       duplicate.source?.dispose();
       Object.assign(duplicate, { parsed: doc.parsed, records: doc.records, bad: doc.bad,
         totalLines: doc.totalLines, text: doc.text, size: doc.size, kind: doc.kind, error: doc.error,
@@ -1061,7 +1123,8 @@ tree.addEventListener('focusin', e => nodeBudget.touch(e.target.closest('.tree-n
 function updateVirtualization(){
   const n = tree.querySelectorAll('.tree-node').length;
   nodeBudget.observe(tree.querySelectorAll('.tree-node'));
-  if(n >= nodeBudget.limit && !nodeBudget.warned) showNodeLimit();
+  // Reaching the count alone is normal for wide files. Prompt only when an
+  // explicit expansion actually stops at the budget (showNodeLimit).
   updateNodeBudgetNotice(n);
   tree.classList.toggle('virtualized', n > CV_THRESHOLD && !activeDoc()?.source?.indexed);
   if(viewportWindow.enabled && activeDoc()?.source?.indexed){
@@ -1082,7 +1145,7 @@ function updateVirtualization(){
 function syncReadingActions(){
   const indexed = !!activeDoc()?.source?.indexed;
   expandAllBtn.textContent = indexed ? '展开当前页' : '展开全部';
-  expandAllBtn.title = indexed ? '展开当前页的节点，最多显示约 5000 个节点' : '展开全部节点，最多显示约 5000 个节点';
+  expandAllBtn.title = (indexed ? '展开当前页的节点，最多显示约 5000 个节点' : '展开全部节点，最多显示约 5000 个节点') + `（${shortcutText('expandAll')}）`;
   document.getElementById('ctxExpandSubtree').textContent = indexed ? '展开当前页的下级' : '展开全部下级';
   document.getElementById('editorExpandAllBtn').textContent = indexed ? '展开当前页' : '展开全部';
 }
@@ -1666,6 +1729,7 @@ const SESSION_KEY = 'json-atlas_session_v1';
 })();
 
 let settings = {
+  theme: 'system',
   viewMode: 'tree',
   vimEditing: false,
   largeFileThresholdMiB: 64,
@@ -1685,10 +1749,20 @@ let template = null;
 
 try{
   const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-  if(s && typeof s === 'object') settings = Object.assign(settings, s);
+  if(s && typeof s === 'object' && !Array.isArray(s)) {
+    for(const key of Object.keys(settings)) {
+      if(Object.hasOwn(s, key) && typeof s[key] === typeof settings[key]) settings[key] = s[key];
+    }
+  }
 }catch(_){}
 settings.largeFileThresholdMiB = normalizeThreshold(settings.largeFileThresholdMiB);
 settings.viewMode = normalizeViewMode(settings.viewMode);
+settings.theme = normalizeTheme(settings.theme);
+const applyTheme = watchTheme(document.documentElement, window.matchMedia?.('(prefers-color-scheme: dark)'), settings.theme,
+  (resolved, preference) => updateWindowTheme(preference, resolved));
+document.getElementById('optTheme').addEventListener('change', e => {
+  settings.theme = normalizeTheme(e.target.value); applyTheme(settings.theme); saveSettings();
+});
 try{
   const t = JSON.parse(localStorage.getItem(TEMPLATE_KEY));
   if(t && Array.isArray(t.paths)) template = t;
@@ -1882,6 +1956,7 @@ function updateTemplateStatus(){
 }
 
 function openSettings(){
+  document.getElementById('optTheme').value = settings.theme;
   document.getElementById('optVimEditing').checked = settings.vimEditing === true;
   syncThresholdControl();
   optLegacyTreeLayout.checked = settings.legacyTreeLayout === true;
@@ -2102,10 +2177,11 @@ optValueMaxLines.addEventListener('change', () => {
 /* 窗口变窄会让值换行更多：全部重测一次（防抖） */
 let overflowResizeTimer = null;
 window.addEventListener('resize', () => {
-  viewportWindow.restoreAll();
-  if(!settings.limitValueHeight) return;
   clearTimeout(overflowResizeTimer);
-  overflowResizeTimer = setTimeout(() => refreshValueOverflow(tree, true), 200);
+  overflowResizeTimer = setTimeout(() => {
+    viewportWindow.restoreAll();
+    if(settings.limitValueHeight) refreshValueOverflow(tree, true);
+  }, 200);
 });
 
 /* 按当前 settings 重建当前文档的根结构（不重新读盘）。
@@ -2166,6 +2242,7 @@ settingsImportInput.addEventListener('change', () => {
         ? payload.settings : payload;
 
       settings = {
+        theme: normalizeTheme(s.theme),
         viewMode: normalizeViewMode(s.viewMode),
         vimEditing: s.vimEditing === true,
         largeFileThresholdMiB: normalizeThreshold(s.largeFileThresholdMiB),
@@ -2188,6 +2265,7 @@ settingsImportInput.addEventListener('change', () => {
         template = null;
       }
 
+      applyTheme(settings.theme);
       saveSettings();
       saveTemplate();
       for(const doc of docs) delete doc.viewOverride;
@@ -2535,8 +2613,8 @@ editorSaveBtn.addEventListener('click', async () => {
 
 /* Value editing works on an independent document revision. */
 document.getElementById('documentActions').hidden = desktop;
-document.getElementById('ideInput').addEventListener('input', e => { if(!e.isComposing) applyIdeChange(e.target.value); });
-document.getElementById('ideInput').addEventListener('compositionend', e => applyIdeChange(e.target.value));
+document.getElementById('ideInput').addEventListener('input', e => { if(!e.isComposing) handleIdeInput(e.target.value); });
+document.getElementById('ideInput').addEventListener('compositionend', e => handleIdeInput(e.target.value));
 document.getElementById('ideInput').addEventListener('scroll', syncIdeScroll);
 document.getElementById('formatIdeBtn').addEventListener('click', formatIde);
 document.getElementById('ideInput').addEventListener('wheel', e => {
@@ -2569,6 +2647,7 @@ tree.addEventListener('click', e => {
   const card = e.target.closest('.node-card');
   if(card){ e.stopPropagation(); beginNodeEdit(card.closest('.tree-node')); }
 }, true);
+document.getElementById('valueEditDialog').addEventListener('close', () => { editingNode = null; });
 document.getElementById('valueEditCancel').addEventListener('click', () => { editingNode = null; document.getElementById('valueEditDialog').close(); });
 document.getElementById('valueEditForm').addEventListener('submit', e => {
   e.preventDefault();
@@ -2580,25 +2659,37 @@ document.getElementById('discardEditDialog').addEventListener('cancel', e => { e
 document.getElementById('undoEditBtn').addEventListener('click', () => {
   const doc = activeDoc(), previous = doc?.editHistory?.pop();
   if(!previous) return;
-  snapshotDoc(); Object.assign(doc, previous); doc.searchQuery = ''; activateDoc(doc.id);
+  snapshotDoc(); doc.ideFolds?.clear(); Object.assign(doc, previous);
+  if(doc.savedText !== undefined) doc.dirty = doc.text !== doc.savedText;
+  doc.searchQuery = ''; activateDoc(doc.id);
 });
-document.getElementById('saveCopyBtn').addEventListener('click', async () => {
-  const doc = activeDoc(); if(!doc?.dirty) return;
-  if(doc.ideError){ showToast('请先修正 JSON 语法，再另存为'); return; }
+async function saveCurrentDocument(copy = false){
+  const doc = activeDoc(); if(!doc?.dirty || doc.saving || doc.source?.indexed) return;
+  if(doc.ideError){ showToast('请先修正 JSON 语法，再保存'); return; }
+  if(!copy && desktop && doc.path && doc.kind === 'jsonl' && doc.bad?.length){
+    showToast('文件中有被跳过的行，请使用另存为，避免覆盖原始记录'); return;
+  }
   const revision = doc.text;
   const extension = doc.kind === 'jsonl' ? 'jsonl' : 'json';
   const name = doc.name.replace(/\.[^.]+$/, '') + '-edited.' + extension;
+  doc.saving = true; syncEditing();
   try {
-    if(desktop){ if(!await saveDocumentCopy(name, revision, doc.path || null)) return; }
+    if(desktop && doc.path && !copy){
+      await saveNativeDocument(doc.path, revision, doc.diskText ?? doc.savedText ?? doc.text);
+      doc.diskText = revision;
+    }else if(desktop){ if(!await saveDocumentCopy(name, revision, doc.path || null)) return; }
     else {
       const url = URL.createObjectURL(new Blob([revision], {type:'application/json;charset=utf-8'}));
       const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
     }
-    if(doc.text === revision){ doc.dirty = false; doc.editHistory = []; }
+    doc.savedText = revision; doc.dirty = doc.text !== revision;
     if(doc === activeDoc()){ updateDocHeader(doc); syncEditing(); }
-    showToast('已导出修改副本');
-  } catch(error){ showToast('另存为失败：' + error); }
-});
+    showToast(desktop && doc.path && !copy ? '已保存' : '已导出修改副本');
+  } catch(error){ showToast((copy ? '另存为失败：' : '保存失败：') + error); }
+  finally { doc.saving = false; if(doc === activeDoc()) syncEditing(); }
+}
+document.getElementById('saveBtn').addEventListener('click', () => saveCurrentDocument());
+document.getElementById('saveCopyBtn').addEventListener('click', () => saveCurrentDocument(true));
 window.addEventListener('beforeunload', e => { if(docs.some(d => d.dirty)){ e.preventDefault(); e.returnValue = ''; } });
 if(desktop) guardEditedClose(() => docs.some(d => d.dirty), confirmDiscardEdits).catch(console.error);
 
@@ -2634,24 +2725,49 @@ document.addEventListener('keydown', e => {
     if(e.key === 'i' && settings.vimEditing === true){ e.preventDefault(); setEditMode(true); return; }
     if(e.key === 'Escape' && editMode){ e.preventDefault(); setEditMode(false); return; }
   }
-  const modifier = e.ctrlKey || e.metaKey;
+  if(e.isComposing || e.getModifierState?.('AltGraph')) return;
+  if(e.key !== 'Escape' && ['settingsMask','editorMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'))) return;
+  const modifier = macPlatform ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
   const key = e.key.toLowerCase();
   const inIde = ideActive && (e.target === document.getElementById('ideInput') || e.target === document.getElementById('ideView') || e.target?.closest?.('#ideView'));
+  const typing = inIde || !!e.target?.closest?.('input,textarea,select,[contenteditable]');
+  const action = shortcutAction(e, macPlatform);
+  const consume = callback => { e.preventDefault(); callback(); };
+  if(action === 'save' || action === 'saveCopy') { consume(() => saveCurrentDocument(action === 'saveCopy')); return; }
+  if(action === 'open') { consume(chooseFiles); return; }
+  if(action === 'settings') { consume(openSettings); return; }
+  if(action === 'about') { consume(openAbout); return; }
+  if(action === 'switchView' && activeDoc()) { consume(() => document.getElementById('switchViewBtn').click()); return; }
+  if(action === 'editMode' && activeDoc() && !ideActive) { consume(() => document.getElementById('editModeBtn').click()); return; }
+  if(action === 'resetView' && activeDoc() && !activeDoc().error) { consume(() => ideActive ? setIdeZoom(100) : resetView()); return; }
+  if(action === 'find' && activeDoc()) { consume(openFindPanel); return; }
+  if(action === 'format' && ideActive) { consume(formatIde); return; }
+  if(action === 'undo' && (inIde || !typing)) { consume(() => document.getElementById('undoEditBtn').click()); return; }
+  if(action === 'close' && activeDoc()) { consume(() => closeDoc(activeDocId)); return; }
+  if((action === 'nextFile' || action === 'previousFile') && (!typing || inIde) && docs.length > 1) {
+    consume(() => {
+      const index = docs.findIndex(doc => doc.id === activeDocId);
+      activateDoc(docs[(index + (action === 'nextFile' ? 1 : -1) + docs.length) % docs.length].id);
+    }); return;
+  }
+  if((action === 'expandAll' || action === 'collapseAll') && !typing && !ideActive && activeDoc() && !activeDoc().error) {
+    consume(() => (action === 'expandAll' ? expandAllBtn : collapseAllBtn).click()); return;
+  }
+  if((action === 'nextMatch' || action === 'previousMatch') && matches.length) {
+    consume(() => focusMatch((currentMatchIndex + (action === 'previousMatch' ? -1 : 1) + matches.length) % matches.length)); return;
+  }
   if(inIde && !e.isComposing){
-    if(modifier && ['+','=','-','0'].includes(e.key)){ e.preventDefault(); setIdeZoom(e.key === '0' ? 100 : (activeDoc().ideZoom || 100) + (e.key === '-' ? -10 : 10)); return; }
-    if(e.shiftKey && e.altKey && key === 'f'){ e.preventDefault(); formatIde(); return; }
-    if(modifier && !e.shiftKey && key === 'z'){ e.preventDefault(); document.getElementById('undoEditBtn').click(); return; }
+    if(modifier && !e.altKey && ['+','=','-','0'].includes(e.key)){ e.preventDefault(); setIdeZoom(e.key === '0' ? 100 : (activeDoc().ideZoom || 100) + (e.key === '-' ? -10 : 10)); return; }
+    if(e.shiftKey && e.altKey && !e.ctrlKey && !e.metaKey && key === 'f'){ e.preventDefault(); formatIde(); return; }
     if(e.key === 'Tab' && !e.shiftKey && e.target === document.getElementById('ideInput')){
       e.preventDefault(); const input = e.target;
-      input.setRangeText('  ',input.selectionStart,input.selectionEnd,'end'); applyIdeChange(input.value); return;
+      input.setRangeText('  ',input.selectionStart,input.selectionEnd,'end'); handleIdeInput(input.value); return;
     }
   }
-  if(modifier && key === 'o'){ e.preventDefault(); chooseFiles(); return; }
-  if(modifier && key === 'f' && activeDoc()){ e.preventDefault(); openFindPanel(); return; }
-  if(modifier && key === 'w' && activeDoc() && !e.target.closest('input,textarea,[contenteditable]')){
+  if(modifier && !e.altKey && !e.shiftKey && key === 'w' && activeDoc() && !typing){
     e.preventDefault(); closeDoc(activeDocId); return;
   }
-  if(e.key === 'F3' && matches.length){
+  if(e.key === 'F3' && !modifier && !e.altKey && matches.length){
     e.preventDefault(); focusMatch((currentMatchIndex + (e.shiftKey ? -1 : 1) + matches.length) % matches.length); return;
   }
   if(e.key === 'Escape'){
@@ -2674,11 +2790,13 @@ function saveFindPlacement(){
 }
 function positionFindPanel(x = findPlacement.x, y = findPlacement.y){
   if(findPanel.hidden) return;
-  const rect = findPanel.getBoundingClientRect();
   const width = window.innerWidth, height = window.innerHeight;
   const toolbarBottom = document.querySelector('.toolbar').getBoundingClientRect().bottom;
+  const minTop = Math.max(12, toolbarBottom + 12);
+  findPanel.style.maxHeight = `${Math.max(32, height - minTop - 12)}px`;
+  const rect = findPanel.getBoundingClientRect();
   findPlacement.x = clamp(x ?? width - rect.width - 16, 12, Math.max(12, width - rect.width - 12));
-  findPlacement.y = clamp(y ?? toolbarBottom + 12, 12, Math.max(12, height - rect.height - 12));
+  findPlacement.y = clamp(y ?? minTop, minTop, Math.max(minTop, height - rect.height - 12));
   findPanel.style.left = `${findPlacement.x}px`;
   findPanel.style.top = `${findPlacement.y}px`;
 }
@@ -2694,6 +2812,7 @@ function openFindPanel(){
   findPanel.hidden = false;
   updateFindPin();
   positionFindPanel();
+  saveFindPlacement();
   searchInput.focus(); searchInput.select();
 }
 function closeFindPanel(restoreFocus = true){
@@ -2730,8 +2849,17 @@ findDragHandle.addEventListener('keydown', e => {
   if(!delta) return;
   e.preventDefault(); positionFindPanel(findPlacement.x + delta[0], findPlacement.y + delta[1]); saveFindPlacement();
 });
-window.addEventListener('resize', () => { positionFindPanel(); saveFindPlacement(); });
-if(typeof ResizeObserver !== 'undefined') new ResizeObserver(() => positionFindPanel()).observe(findPanel);
+let findPlacementTimer;
+window.addEventListener('resize', () => {
+  positionFindPanel();
+  clearTimeout(findPlacementTimer);
+  findPlacementTimer = setTimeout(saveFindPlacement, 200);
+});
+if(typeof ResizeObserver !== 'undefined') {
+  const observer = new ResizeObserver(() => positionFindPanel());
+  observer.observe(findPanel);
+  observer.observe(document.querySelector('.toolbar'));
+}
 findPanel.addEventListener('keydown', e => {
   if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeFindPanel(); }
 });
@@ -2768,8 +2896,8 @@ quickNextMatchBtn.addEventListener('click', () => {
 function setSearchError(message){
   searchError.hidden = !message; searchError.textContent = message;
   searchInput.setAttribute('aria-invalid', message ? 'true' : 'false');
-  quickSearchInput.title = message ? `${message}；按 Ctrl/⌘+F 调整查找选项` :
-    Object.values(searchOptions).some(Boolean) ? '高级查找选项正在生效；按 Ctrl/⌘+F 调整，输入新内容恢复普通搜索' : '';
+  quickSearchInput.title = message ? `${message}；按 ${shortcutText('find')} 调整查找选项` :
+    Object.values(searchOptions).some(Boolean) ? `高级查找选项正在生效；按 ${shortcutText('find')} 调整，输入新内容恢复普通搜索` : '';
 }
 function searchSignature(){ return JSON.stringify([searchInput.value, searchOptions]); }
 function clearSearch(){
@@ -2827,12 +2955,13 @@ async function searchTree(query){
   nextMatchBtn.disabled = true;
   prevMatchBtn.disabled = true;
   setSearchError('');
+  searchTruncated = false; searchCount.title = ''; quickSearchCount.title = '';
   const q = query;
   if(!q){ setSearchCount(''); return; }
   try { compileSearch(q, searchOptions); }
   catch(error){ setSearchCount('表达式无效'); setSearchError(error.message); return; }
   setSearchCount('搜索中…');
-  const temporarySource = ideActive ? new MemoryDataSource(document.getElementById('ideInput').value.split('\n')) : null;
+  const temporarySource = ideActive ? new MemoryDataSource((activeDoc()?.ideDraft ?? activeDoc()?.text ?? '').split(/\r?\n/)) : null;
   const source = temporarySource || activeDoc()?.source;
   if(!source || !activeDoc() || activeDoc().error){ temporarySource?.dispose(); setSearchCount('0'); return; }
   let result;
@@ -2870,6 +2999,7 @@ function openAncestors(node){
 async function focusMatch(index){
   if(ideActive){
     if(!matches.length) return;
+    if(activeDoc().ideFolds?.size) { activeDoc().ideFolds.clear(); renderIdeBuffer(activeDoc()); }
     currentMatchIndex = index;
     document.getElementById('ideLines').querySelectorAll('.current-match').forEach(n => n.classList.remove('current-match'));
     const row = ideLocations.get(JSON.stringify(matches[index]));
@@ -3084,7 +3214,33 @@ const loadingProgress = document.getElementById('loadingProgress');
 document.getElementById('reopenHint').textContent = desktop
   ? '下次启动时从原路径读取文件的最新内容。关闭此项会清除恢复记录，不会删除原文件。'
   : '在浏览器本地保存文件副本，刷新后继续打开。关闭此项会清除副本，不会删除原文件。';
-document.getElementById('cancelLoadBtn').addEventListener('click', () => activeLoad?.abort());
+document.getElementById('cancelLoadBtn').addEventListener('click', () => { openBatchGeneration++; activeLoad?.abort(); });
+function initializeShortcutHints(){
+  document.getElementById('openShortcutModifier').textContent = primaryModifier;
+  document.getElementById('findShortcutLabel').textContent = shortcutText('find');
+  const buttons = {
+    chooseBtn:['open','打开文件'], openAnotherBtn:['open','打开文件'],
+    saveBtn:['save','保存修改'], saveCopyBtn:['saveCopy','另存为副本'],
+    undoEditBtn:['undo','撤销修改'], formatIdeBtn:['format','格式化文档'],
+    collapseAllBtn:['collapseAll','全部收起'], settingsBtn:['settings','设置'],
+    nextMatchBtn:['nextMatch','下一个匹配'], prevMatchBtn:['previousMatch','上一个匹配'],
+    quickNextMatchBtn:['nextMatch','下一个匹配'],
+    switchViewBtn:['switchView','切换树形 / IDE 视图'], editModeBtn:['editMode','切换编辑模式'],
+    resetViewBtn:['resetView','重置视图'], aboutBtn:['about','关于 JSON Atlas']
+  };
+  for(const [id,[action,label]] of Object.entries(buttons)) document.getElementById(id).title = `${label}（${shortcutText(action)}）`;
+  const help = document.getElementById('shortcutHelp');
+  help.replaceChildren();
+  for(const [action,label] of Object.entries({open:'打开文件',save:'保存',saveCopy:'另存为副本',close:'关闭当前文件',undo:'撤销修改',find:'查找',nextMatch:'下一个匹配',previousMatch:'上一个匹配',format:'格式化文档',settings:'打开设置',switchView:'切换树形 / IDE 视图',editMode:'切换树形编辑模式',resetView:'重置视图 / IDE 字号',about:'关于 JSON Atlas',expandAll:'展开全部 / 当前页',collapseAll:'全部收起',nextFile:'下一个文件',previousFile:'上一个文件'})){
+    const name = document.createElement('dt'), value = document.createElement('dd'), keys = document.createElement('kbd');
+    name.textContent = label; keys.textContent = shortcutText(action); value.appendChild(keys); help.append(name,value);
+  }
+  document.querySelector('.statusbar .help').textContent = `空白处拖动 · 滚轮平移 · ${primaryModifier} + 滚轮缩放 · 右键节点展开/收起子树`;
+}
+initializeShortcutHints();
+syncDocumentMenu();
+installTooltips(document, window);
+
 (async () => {
   if(nativeRestore){
     await openPaths(nativeRestore.paths, nativeRestore.sessions);
@@ -3093,15 +3249,17 @@ document.getElementById('cancelLoadBtn').addEventListener('click', () => activeL
   }
   await connectDesktop(openPaths, error => showToast('桌面文件入口失败：' + error), action => {
     if(document.getElementById('valueEditDialog').open || document.getElementById('discardEditDialog').open) return;
+    if(document.getElementById('aboutDialog').open || ['settingsMask','editorMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'))) return;
     if(action === 'open') chooseFiles();
     else if(action === 'close' && activeDocId) closeDoc(activeDocId);
     else if(action === 'find') openFindPanel();
-    else if(action === 'reset' && activeDocId) resetView();
+    else if(action === 'reset' && activeDocId) { if(ideActive) setIdeZoom(100); else resetView(); }
     else if(action === 'settings') openSettings();
     else if(action === 'about') openAbout();
     else if(action === 'switch-view') document.getElementById('switchViewBtn').click();
     else if(action === 'edit-mode') document.getElementById('editModeBtn').click();
     else if(action === 'undo-edit') document.getElementById('undoEditBtn').click();
+    else if(action === 'save') document.getElementById('saveBtn').click();
     else if(action === 'save-copy') document.getElementById('saveCopyBtn').click();
     else if(action === 'format-json') formatIde();
   });

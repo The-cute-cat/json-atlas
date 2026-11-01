@@ -9,7 +9,10 @@ import { normalizeThreshold, needsIndex, IndexedDataSource } from '../src/large-
 import { ViewportWindow } from '../src/viewport-window.js';
 import { NodeBudget } from '../src/node-budget.js';
 import { compileSearch } from '../src/search-pattern.js';
-import { ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines } from '../src/ide-view.js';
+import { ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit } from '../src/ide-view.js';
+import { normalizeTheme, watchTheme } from '../src/theme.js';
+import { installTooltips } from '../src/tooltips.js';
+import { isMacPlatform, shortcutLabel, shortcutAction } from '../src/shortcuts.js';
 
 // A small DOM harness for reader state transitions; this does not test layout/WebView2.
 class Element {
@@ -68,6 +71,7 @@ function reader(storage = new Map(), native = {}) {
   const elements = new Map();
   const frames = [];
   const keyListeners = new Map();
+  let toolbarBottom = 54;
   const document = {
     getElementById(id) {
       if (!elements.has(id)) {
@@ -79,7 +83,7 @@ function reader(storage = new Map(), native = {}) {
     createElement: () => new Element(),
     createTextNode: text => Object.assign(new Element(), {textContent:text}),
     addEventListener(name, listener) { keyListeners.set(name, listener); },
-    querySelector: () => ({ getBoundingClientRect: () => ({ bottom: 54 }) })
+    querySelector: () => ({ getBoundingClientRect: () => ({ bottom: toolbarBottom }) })
   };
   const context = {
     document, window: { innerWidth: 1440, innerHeight: 900, addEventListener() {} }, navigator: { platform: 'Win32' },
@@ -90,20 +94,77 @@ function reader(storage = new Map(), native = {}) {
     },
     requestAnimationFrame: callback => frames.push(callback),
     setTimeout: (callback, delay) => delay === 0 ? setTimeout(callback, 0) : 1, clearTimeout() {},
-    desktop: false, connectDesktop: async () => {}, updateWindowTitle() {},
+    desktop: false, connectDesktop: async () => {}, updateWindowTitle() {}, updateWindowTheme() {},
     MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
-    valueAt, replaceValue, parseEdit, serializeDocument, ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines,
+    valueAt, replaceValue, parseEdit, serializeDocument, ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit, normalizeTheme, watchTheme,
     encodePath: encodeDataPath, normalizePath: normalizeDataPath, compileSearch,
-    console, Blob, ...native
+    console, Blob, isMacPlatform, shortcutLabel, shortcutAction, installTooltips, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
-    ;({ buildDoc, resolveDoc, activateDoc, collectSession, expandByPaths, expandLevels, expandOne,
-      beginNodeEdit, applyNodeEdit, applyIdeChange, formatIde, openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile, showNodeLimit, collapseAll, updateVirtualization,
+    ;({ buildDoc, resolveDoc, activateDoc, collectSession, expandByPaths, expandLevels, expandOne, positionFindPanel,
+      beginNodeEdit, applyNodeEdit, applyIdeChange, toggleIdeFold, handleIdeInput, formatIde, openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile, openPaths, showNodeLimit, collapseAll, updateVirtualization, saveCurrentDocument,
       add: doc => docs.push(doc), configure: value => Object.assign(settings, value),
       setTemplate: value => { template = value; }, template: () => template,
       state: () => ({ activeDocId, currentRootLabel, doc: activeDoc(), view: { ...mainView.state } }) });`, context);
-  return { api, elements, storage, keyListeners, flush: async () => { while (frames.length) await frames.shift()(); } };
+  return { api, elements, storage, keyListeners, setToolbarBottom: value => {toolbarBottom=value;}, flush: async () => { while (frames.length) await frames.shift()(); } };
 }
+
+test('IDE folding retains source for save, formatting and search and guards hidden deletions', async () => {
+  const writes = [];
+  const {api,elements} = reader(new Map(),{desktop:true, updateDocumentMenu(){}, guardEditedClose:async()=>{}, saveNativeDocument:async(...args)=>writes.push(args)}); api.configure({viewMode:'ide'});
+  const raw = '{\n  "a": {\n    "secret": 1\n  },\n  "b": 2\n}';
+  const doc = api.buildDoc(raw,'fold.json',raw.length); doc.path='C:\\fold.json'; api.add(doc); api.activateDoc(doc.id);
+  const input = elements.get('ideInput');
+  api.toggleIdeFold(1); assert.equal(input.value.includes('secret'),false);
+  assert.equal(doc.text,raw); assert.equal(doc.dirty,undefined);
+  api.handleIdeInput(''); assert.equal(doc.text,raw); assert.equal(input.value,raw);
+  api.toggleIdeFold(1); api.handleIdeInput(input.value.replace('"b": 2','"b": 3'));
+  assert.equal(doc.parsed.a.secret,1); assert.equal(doc.parsed.b,3);
+  api.toggleIdeFold(1); await api.saveCurrentDocument(); assert.match(writes[0][1],/secret/); assert.equal(doc.ideFolds.size,1);
+  api.toggleIdeFold(1); api.formatIde(); assert.equal(doc.parsed.a.secret,1); assert.match(input.value,/secret/);
+  api.toggleIdeFold(1); await api.searchTree('secret');
+  assert.equal(doc.ideFolds.size,0); assert.match(input.value,/secret/);
+});
+
+test('theme preference persists and is shown when settings reopen', () => {
+  const {elements,storage,keyListeners} = reader();
+  const selector = elements.get('optTheme'); selector.value = 'dark';
+  selector.listeners.get('change')({target:selector});
+  const reopened = reader(storage);
+  reopened.keyListeners.get('keydown')({key:'s',ctrlKey:true,altKey:true,preventDefault(){}});
+  assert.equal(reopened.elements.get('optTheme').value,'dark');
+  keyListeners.get('keydown')({key:'s',ctrlKey:true,altKey:true,preventDefault(){}});
+  assert.equal(selector.value,'dark');
+});
+
+test('custom shortcuts switch views, toggle tree editing and reset IDE zoom without changing content', () => {
+  const {api,elements,keyListeners}=reader();
+  const doc=api.buildDoc('{"a":1}','keys.json',7); api.add(doc); api.activateDoc(doc.id);
+  const press=key=>keyListeners.get('keydown')({key,ctrlKey:true,altKey:true,target:elements.get('viewport'),preventDefault(){}});
+  press('e'); assert.equal(elements.get('editModeBtn').textContent,'退出编辑');
+  press('e'); assert.equal(elements.get('editModeBtn').textContent,'编辑模式');
+  press('v'); assert.equal(elements.get('ideView').hidden,false);
+  doc.ideZoom=150; press('0'); assert.equal(doc.ideZoom,100);
+  assert.match(elements.get('switchViewBtn').title,/Ctrl\+Alt\+V/);
+  elements.get('settingsBtn').click(); press('v'); assert.equal(elements.get('ideView').hidden,false);
+  elements.get('settingsClose').click(); press('v'); assert.equal(elements.get('ideView').hidden,true);
+  assert.equal(doc.text,'{"a":1}');
+});
+
+test('native menu updates retain shortcuts when view labels and enabled states change', () => {
+  let menu;
+  const {api,elements}=reader(new Map(),{desktop:true,guardEditedClose:async()=>{},updateDocumentMenu:items=>{menu=items;}});
+  assert.equal(menu.find(item=>item.id==='close').enabled,false);
+  const doc=api.buildDoc('{}','keys.json',2); api.add(doc); api.activateDoc(doc.id);
+  assert.equal(menu.find(item=>item.id==='close').shortcut,'Ctrl+F4');
+  assert.equal(menu.find(item=>item.id==='format-json').shortcut,'Ctrl+Alt+L');
+  assert.equal(menu.find(item=>item.id==='settings').shortcut,'Ctrl+Alt+S');
+  assert.equal(menu.find(item=>item.id==='switch-view').text,'IDE 视图');
+  elements.get('switchViewBtn').click();
+  assert.equal(menu.find(item=>item.id==='switch-view').text,'树形视图');
+  assert.equal(menu.find(item=>item.id==='switch-view').shortcut,'Ctrl+Alt+V');
+  assert.equal(menu.find(item=>item.id==='edit-mode').enabled,false);
+});
 
 test('find shortcut opens a modeless window; dragging, pinning and remembered placement cooperate', () => {
   const { api, elements, storage, keyListeners } = reader();
@@ -128,6 +189,53 @@ test('find shortcut opens a modeless window; dragging, pinning and remembered pl
   reopened.elements.get('findBtn').listeners.get('click')();
   assert.equal(reopened.elements.get('findPanel').style.left, '514px');
   assert.equal(reopened.elements.get('findPanel').dataset.pinned, 'true');
+});
+
+test('find window stays below the toolbar for dragging, keyboard moves and pinned saved positions', () => {
+  const storage=new Map([['json-atlas_find-window_v1',JSON.stringify({x:300,y:12,pinned:true})]]);
+  const {api,elements,setToolbarBottom}=reader(storage);
+  const doc=api.buildDoc('{}','find.json',2); api.add(doc); api.activateDoc(doc.id);
+  elements.get('findBtn').click();
+  const panel=elements.get('findPanel'),handle=elements.get('findDragHandle');
+  assert.equal(panel.style.top,'66px');
+  assert.equal(JSON.parse(storage.get('json-atlas_find-window_v1')).y,66);
+  assert.equal(panel.dataset.pinned,'true');
+  elements.get('pinFindBtn').click();
+  handle.listeners.get('pointerdown')({button:0,pointerId:1,clientX:320,clientY:76,target:{closest:()=>null},preventDefault(){}});
+  handle.listeners.get('pointermove')({pointerId:1,clientX:320,clientY:-200});
+  handle.listeners.get('pointerup')(); assert.equal(panel.style.top,'66px');
+  handle.listeners.get('keydown')({key:'ArrowUp',target:handle,preventDefault(){}}); assert.equal(panel.style.top,'66px');
+  setToolbarBottom(140); api.positionFindPanel(); assert.equal(panel.style.top,'152px');
+  assert.equal(panel.style.maxHeight,'736px');
+  api.positionFindPanel(99999,99999); assert.equal(panel.style.left,'818px'); assert.equal(panel.style.top,'786px');
+});
+
+test('cancelling a queued native batch skips its remaining files but permits a later batch', async () => {
+  const calls = []; let release;
+  const {api, elements} = reader(new Map(), {statNativeFile: path => {
+    calls.push(path);
+    return new Promise(resolve => { release = resolve; });
+  }});
+  const pending = api.openPaths(['first.json', 'second.json']);
+  await new Promise(resolve => setImmediate(resolve));
+  elements.get('cancelLoadBtn').click();
+  release({path:'first.json', name:'first.json', size:2});
+  await pending;
+  assert.deepEqual(calls, ['first.json']);
+  const next = api.openPaths(['third.json']);
+  await new Promise(resolve => setImmediate(resolve));
+  elements.get('cancelLoadBtn').click();
+  release({path:'third.json', name:'third.json', size:2});
+  await next;
+  assert.deepEqual(calls, ['first.json', 'third.json']);
+});
+
+test('stored settings cannot set the prototype or overwrite settings with the wrong type', () => {
+  const storage = new Map([['json-atlas_settings_v1', '{"__proto__":{"polluted":true},"strictJsonl":"false","largeFileThresholdMiB":128}']]);
+  const {elements} = reader(storage);
+  elements.get('settingsBtn').click();
+  assert.equal(elements.get('optStrictJsonl').checked, false);
+  assert.equal(elements.get('optLargeFileThreshold').value, '128');
 });
 
 test('new toolbar queries restore plain matching and synchronize both search fields and counts', async () => {
@@ -158,12 +266,14 @@ test('switching files persists the selected document even with session restorati
   assert.equal(JSON.parse(storage.get('json-atlas_lastfile_v1')).activeKey, 'first.json::7');
 });
 
-test('node cleanup appears on limit, releases old content, and hides after manual collapse or file switch', async () => {
+test('wide files do not prompt automatically; blocked expansion cleanup releases content and clears the notice', async () => {
   const { api, elements } = reader();
   const doc = api.buildDoc(JSON.stringify(Array.from({ length: 5000 }, (_, i) => i)), 'wide.json', 1);
   api.add(doc); api.activateDoc(doc.id);
   const root = elements.get('tree').firstElementChild;
   await api.expandOne(root);
+  assert.equal(elements.get('nodeBudgetNotice').hidden, true);
+  api.showNodeLimit();
   assert.equal(elements.get('nodeBudgetNotice').hidden, false);
   const cleanup = elements.get('reclaimNodesBtn').listeners.get('click');
   cleanup();
@@ -662,4 +772,86 @@ test('JSONL first-record editing preserves later records and undo restores origi
   assert.equal(doc.records[0].x,9);assert.equal(doc.records[1].x,2);
   assert.deepEqual(JSON.parse(doc.text.split('\n')[1]),{x:2});
   elements.get('undoEditBtn').listeners.get('click')();assert.equal(doc.text,text);
+});
+
+test('save shortcut writes the active revision and undo remains dirty relative to saved content', async () => {
+  const writes = [];
+  const {api, elements, keyListeners} = reader(new Map(), {
+    desktop:true, guardEditedClose:async()=>{}, updateDocumentMenu(){},
+    saveNativeDocument:async(...args)=>{ writes.push(args); }
+  });
+  api.configure({viewMode:'ide'});
+  const doc = api.buildDoc('{"n":1}', 'save.json', 7); doc.path='C:\\save.json';
+  api.add(doc); api.activateDoc(doc.id);
+  api.applyIdeChange('{"n":2}');
+  let prevented = false;
+  keyListeners.get('keydown')({key:'s',ctrlKey:true,target:elements.get('ideInput'),preventDefault(){prevented=true;}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert(prevented); assert.deepEqual(writes[0], [doc.path, '{"n":2}', '{"n":1}']);
+  assert.equal(doc.dirty,false); assert.equal(elements.get('saveBtn').disabled,true);
+  elements.get('undoEditBtn').click(); assert.equal(doc.text,'{"n":1}'); assert.equal(doc.dirty,true);
+  await api.saveCurrentDocument(); assert.equal(writes[1][2],'{"n":2}'); assert.equal(doc.dirty,false);
+});
+
+test('saving keeps later edits dirty, prevents overlapping writes, and preserves dirty state on errors', async () => {
+  let release, fail = false, calls = 0;
+  const {api} = reader(new Map(), {
+    desktop:true, guardEditedClose:async()=>{}, updateDocumentMenu(){},
+    saveNativeDocument:async()=>{ calls++; if(fail) throw new Error('disk error'); await new Promise(resolve=>{release=resolve;}); }
+  });
+  api.configure({viewMode:'ide'});
+  const doc=api.buildDoc('{"n":1}','save.json',7);doc.path='C:\\save.json';api.add(doc);api.activateDoc(doc.id);
+  api.applyIdeChange('{"n":2}');
+  const pending=api.saveCurrentDocument(); await api.saveCurrentDocument(); assert.equal(calls,1);
+  api.applyIdeChange('{"n":3}'); release(); await pending;
+  assert.equal(doc.dirty,true); assert.equal(doc.diskText,'{"n":2}');
+  fail=true; await api.saveCurrentDocument(); assert.equal(doc.dirty,true); assert.equal(doc.saving,false);
+  api.applyIdeChange('{'); await api.saveCurrentDocument(); assert.equal(calls,2);
+});
+
+test('IDEA shortcuts format, switch documents and open settings while respecting modal and text input focus', async () => {
+  const {api,elements,keyListeners} = reader();
+  api.configure({viewMode:'ide'});
+  const first=api.buildDoc('{"n":1}','first.json',7), second=api.buildDoc('{}','second.json',2);
+  api.add(first);api.add(second);api.activateDoc(first.id);
+  const press = (key, extra={}) => keyListeners.get('keydown')({key,target:elements.get('ideInput'),preventDefault(){},...extra});
+  press('l',{ctrlKey:true,altKey:true}); assert.equal(elements.get('ideInput').value,'{\n  "n": 1\n}\n');
+  press('ArrowRight',{altKey:true}); assert.equal(api.state().activeDocId,second.id);
+  press('ArrowLeft',{altKey:true}); assert.equal(api.state().activeDocId,first.id);
+  const textField={closest:selector=>selector.includes('input,textarea') ? {} : null};
+  press('ArrowRight',{altKey:true,target:textField}); assert.equal(api.state().activeDocId,first.id);
+  press('s',{ctrlKey:true,altKey:true}); assert(elements.get('settingsMask').classList.contains('open'));
+  press('ArrowRight',{altKey:true}); assert.equal(api.state().activeDocId,first.id);
+  elements.get('settingsClose').click();
+  press('ArrowRight',{altKey:true,isComposing:true}); assert.equal(api.state().activeDocId,first.id);
+  api.activateDoc(second.id);
+  press('F4',{ctrlKey:true}); assert.equal(api.state().activeDocId,first.id);
+});
+
+test('tree folding and undo shortcuts preserve ordinary text editing', async () => {
+  const {api,elements,keyListeners}=reader();
+  const doc=api.buildDoc('{"a":1}','tree.json',7);api.add(doc);api.activateDoc(doc.id);
+  elements.get('tree').firstElementChild.isConnected=true;
+  elements.get('tree').querySelector=()=>null;
+  const press=(key,extra={})=>keyListeners.get('keydown')({key,target:elements.get('viewport'),preventDefault(){},...extra});
+  press('+',{code:'NumpadAdd',ctrlKey:true,shiftKey:true});await new Promise(resolve=>setImmediate(resolve));
+  assert(elements.get('tree').firstElementChild.classList.contains('open'));
+  press('-',{code:'NumpadSubtract',ctrlKey:true,shiftKey:true});assert(!elements.get('tree').firstElementChild.classList.contains('open'));
+  api.beginNodeEdit(elements.get('tree').firstElementChild);
+  elements.get('valueEditType').value='object';elements.get('valueEditText').value='{"b":2}';api.applyNodeEdit();
+  press('z',{ctrlKey:true,target:{closest:()=>({})}});assert.equal(doc.parsed.b,2);
+  press('z',{ctrlKey:true});assert.equal(doc.parsed.a,1);
+});
+
+test('macOS hints and shortcuts use Command and platform specific settings and tab keys', () => {
+  const {api,elements,keyListeners}=reader(new Map(),{navigator:{platform:'MacIntel'}});
+  assert.equal(elements.get('openShortcutModifier').textContent,'⌘');
+  assert.equal(elements.get('findShortcutLabel').textContent,'⌘+F');
+  assert.equal(elements.get('saveBtn').title,'保存修改（⌘+S）');
+  assert(!elements.get('shortcutHelp').children.some(el=>el.children[0]?.textContent.includes('Ctrl')));
+  const first=api.buildDoc('{}','first.json',2),second=api.buildDoc('{}','second.json',2);
+  api.add(first);api.add(second);api.activateDoc(first.id);
+  const press=(key,extra={})=>keyListeners.get('keydown')({key,target:elements.get('viewport'),preventDefault(){},...extra});
+  press('}',{code:'BracketRight',metaKey:true,shiftKey:true});assert.equal(api.state().activeDocId,second.id);
+  press(',',{metaKey:true});assert(elements.get('settingsMask').classList.contains('open'));
 });

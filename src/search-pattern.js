@@ -55,5 +55,6 @@ export function compileSearch(query, { caseSensitive = false, wholeWord = false,
     expression = new RegExp(`(?<!${WORD})(?:${expression.source})(?!${WORD})`, caseSensitive ? 'u' : 'iu');
     nativePattern = `\\b{start-half}(?:${nativePattern})\\b{end-half}`;
   }
+  if(new TextEncoder().encode(nativePattern).length > 128 * 1024) throw new Error('正则展开后过长，请缩短表达式');
   return { test: text => expression.test(text), nativePattern, caseSensitive };
 }

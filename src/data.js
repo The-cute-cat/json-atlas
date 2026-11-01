@@ -83,7 +83,8 @@ export async function searchData(value, query, { rootLabel, indexBase, hidden, s
     for(let i = 0; i < value.length; i++){
       if(cancelled()) return null;
       if(matcher.test(value[i])){
-        hits.push([i]); if(hits.length === limit) return {hits,truncated:true};
+        if(hits.length >= limit) return {hits,truncated:true};
+        hits.push([i]);
       }
       if(i % 2000 === 1999) await yieldTask();
     }
@@ -101,8 +102,8 @@ export async function searchData(value, query, { rootLabel, indexBase, hidden, s
   for (const item of walkData(value, rootLabel, indexBase, hidden, scopePath || [], false)) {
     if (cancelled()) return null;
     if (matcher.test(item.text)) {
+      if (hits.length >= limit) return { hits, truncated: true };
       hits.push(item.path);
-      if (hits.length === limit) return { hits, truncated: true };
     }
     if (++count % 2000 === 0) await yieldTask();
   }

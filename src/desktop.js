@@ -4,6 +4,14 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { IndexedDataSource } from './large-files.js';
 
 export const desktop = isTauri();
+let themeUpdate = Promise.resolve();
+export function updateWindowTheme(theme, resolved) {
+  if(!desktop) return;
+  themeUpdate = themeUpdate.then(async () => {
+    await getCurrentWebviewWindow().setTheme(theme === 'system' ? null : theme);
+    await invoke('sync_menu_theme', { dark:resolved === 'dark' });
+  }).catch(console.error);
+}
 let menuUpdate = Promise.resolve();
 export function updateDocumentMenu(items) {
   if(!desktop) return;
@@ -12,6 +20,7 @@ export function updateDocumentMenu(items) {
 export const readNativeFile = path => invoke('read_document', { path });
 export const selectNativeFiles = () => invoke('select_documents');
 export const saveDocumentCopy = (name, text, originalPath) => invoke('save_document_copy', { name, text, originalPath });
+export const saveNativeDocument = (path, text, expectedText) => invoke('save_document', { path, text, expectedText });
 export async function guardEditedClose(hasChanges, confirmDiscard) {
   await getCurrentWebviewWindow().onCloseRequested(async event => {
     if (!hasChanges()) return;

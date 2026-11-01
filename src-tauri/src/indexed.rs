@@ -291,7 +291,9 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 pub fn stat(path: &str) -> Result<Value> {
+    super::documents::validate_local_path(path)?;
     let path = std::fs::canonicalize(path).map_err(err)?;
+    super::documents::validate_local_path(&path.to_string_lossy())?;
     let meta = path.metadata().map_err(err)?;
     if !meta.is_file() {
         return Err("请选择文件，不能打开目录".into());

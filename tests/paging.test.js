@@ -22,6 +22,22 @@ const { pagedChildren, discardPagedTree } = runInNewContext(sourceText + '\n;({p
 });
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const event = { stopPropagation() {} };
+
+test('returning to a mounted page clears a failed navigation diagnostic', async () => {
+  const memory = Object.assign(new MemoryDataSource(Array.from({length:201}, (_, i) => i)), {paged:true});
+  let fail = false;
+  const {node, container, items} = mount({paged:true, getChildren: (...args) => fail ? Promise.reject(new Error('read failed')) : memory.getChildren(...args)});
+  await node._ensureChildren();
+  const first = items()[0];
+  fail = true;
+  assert.equal(await node._ensureChildren(undefined, 100), false);
+  assert.equal(node._pageError, 'read failed');
+  fail = false;
+  assert.equal(await node._ensureChildren(undefined, 0), true);
+  assert.equal(node._pageError, null);
+  assert.equal(items()[0], first);
+  assert.equal(container.children.at(-1).children[1].textContent, '1–100 / 201');
+});
 function mount(source, firstArrayOnly = false) {
   const node = new Element(), container = new Element();
   node.appendChild(container);

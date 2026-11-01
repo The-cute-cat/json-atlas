@@ -49,7 +49,15 @@ export function pagedChildren(node, container, source, path, render, changed, fi
         if (signal.aborted || request !== generation) return false;
         const page = await source.getChildren(path, { offset, key, firstArrayOnly, signal, all: source.paged === false && !compact });
         if (signal.aborted || request !== generation) return false;
-        if (mountedStart === page.start && !trimmed) return true;
+        if (mountedStart === page.start && !trimmed) {
+          if (node._pageError) {
+            node._pageError = null;
+            const navigation = container.children[container.children.length - 1];
+            if (navigation?.className === 'page-navigation') navigation.children[1].textContent = `${page.start + 1}–${page.end} / ${page.total}`;
+            changed();
+          }
+          return true;
+        }
         const children = [];
         for (const [index, item] of page.items.entries()) {
           if(signal.aborted || request !== generation) return false;

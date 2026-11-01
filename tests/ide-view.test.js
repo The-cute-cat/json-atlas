@@ -1,9 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ideModel, normalizeViewMode, parseIdeText, formatIdeText, ideDecorations, ideTextLines } from '../src/ide-view.js';
+import { ideModel, normalizeViewMode, parseIdeText, formatIdeText, ideDecorations, ideTextLines, ideProjection, ideProjectedEdit } from '../src/ide-view.js';
 import { searchData } from '../src/data.js';
 
 const doc = data => ({data, text:JSON.stringify(data), size:100});
+test('nested folding preserves original numbers, quoted braces, and hidden source when editing', () => {
+  const raw = '{\n  "a": {\n    "s": "[{}]"\n  },\n  "b": 1\n}';
+  const projection = ideProjection(raw, new Set([1]));
+  assert.deepEqual(projection.lines.map(line=>line.path[0]),[0,1,3,4,5]);
+  assert.equal(projection.lines[1].folded,true);
+  assert.equal(projection.lines[2].decoration.tokens[0].className,'ide-bracket-1');
+  const edited = ideProjectedEdit(raw, projection, projection.text.replace('"b": 1','"b": 2'));
+  assert.equal(edited.text,raw.replace('"b": 1','"b": 2'));
+  assert.equal(ideProjectedEdit(raw,projection,''),null,'deleting across hidden text must expand instead');
+  assert.equal(ideProjection(raw,new Set([0,1])).text,'{\n}');
+  assert.equal(ideProjection(raw,new Set([1])).text,projection.text,'inner folds survive outer folding');
+  assert.equal(ideDecorations(ideTextLines('"[{}]"'))[0].foldEnd,undefined);
+  assert.equal(ideDecorations(ideTextLines('{\n "unfinished: [\n}'))[0].foldEnd,2);
+});
 test('bracket colours match pairs across lines and ignore quoted or incomplete string brackets', () => {
   const result = ideDecorations(ideTextLines('{\n  "records": [\n    {"literal": "[{}]"}\n  ]\n}'));
   const brackets = row => row.tokens.filter(token=>token.className.startsWith('ide-bracket-')).map(token=>[token.text,token.className]);

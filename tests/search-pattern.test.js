@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 import { compileSearch } from '../src/search-pattern.js';
 import { searchData } from '../src/data.js';
 
+test('exact result caps do not report truncation and expanded regex sizes are bounded', async () => {
+  for(const textLines of [false, true]) {
+    assert.deepEqual(await searchData(['hit'], 'hit', {limit:1, textLines}), {hits:[[0]], truncated:false});
+    assert.deepEqual(await searchData(['hit', 'hit'], 'hit', {limit:1, textLines}), {hits:[[0]], truncated:true});
+  }
+  assert.throws(() => compileSearch('.'.repeat(6000), {regex:true}), /过长/);
+  assert(compileSearch('汉'.repeat(32768)));
+});
+
 test('literal matching keeps default case folding and treats regexp characters literally', () => {
   assert(compileSearch('CAT').test('cat'));
   assert(!compileSearch('CAT', { caseSensitive: true }).test('cat'));
@@ -28,7 +37,7 @@ test('advanced search preserves hidden paths, index labels, and DFS limits', asy
   const value = [{ text: 'Cat', hidden: 'cat' }, { text: 'catalog' }, { text: 'cat' }];
   assert.deepEqual((await searchData(value, 'cat', { wholeWord: true, hidden: new Set(['$[0].hidden']) })).hits, [[0, 'text'], [2, 'text']]);
   assert.deepEqual((await searchData(value, 'Cat', { caseSensitive: true })).hits, [[0, 'text']]);
-  assert.deepEqual(await searchData(value, '^3 ', { regex: true, indexBase: 1, limit: 1 }), { hits: [[2]], truncated: true });
+  assert.deepEqual(await searchData(value, '^3 ', { regex: true, indexBase: 1, limit: 1 }), { hits: [[2]], truncated: false });
 });
 
 test('scoped matching excludes ancestors and siblings and keeps exact result paths', async () => {

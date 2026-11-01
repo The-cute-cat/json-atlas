@@ -2,6 +2,7 @@
 
 mod documents;
 mod indexed;
+mod menu_theme;
 mod window;
 
 use std::sync::Mutex;
@@ -176,6 +177,15 @@ async fn read_document(path: String) -> Result<documents::Document, String> {
 }
 
 #[tauri::command]
+async fn save_document(path: String, text: String, expected_text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        documents::save_document(&path, &text, &expected_text)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn save_document_copy(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -184,6 +194,10 @@ async fn save_document_copy(
     original_path: Option<String>,
 ) -> Result<bool, String> {
     use tauri_plugin_dialog::DialogExt;
+    if text.len() as u64 > documents::MAX_FILE_BYTES {
+        return Err("工作副本超过 256 MiB，无法保存".into());
+    }
+    let name = documents::copy_name(&name);
     tauri::async_runtime::spawn_blocking(move || {
         let file = app
             .dialog()
@@ -194,6 +208,7 @@ async fn save_document_copy(
             .blocking_save_file();
         let Some(file) = file else { return Ok(false) };
         let path = file.into_path().map_err(|e| e.to_string())?;
+        documents::validate_local_path(&path.to_string_lossy())?;
         if let Some(original) = original_path {
             if let (Ok(original), Ok(destination)) = (
                 std::fs::canonicalize(original),
@@ -279,7 +294,9 @@ fn main() {
             indexed_document,
             select_documents,
             save_document_copy,
+            save_document,
             window::sync_document_menu,
+            menu_theme::sync_menu_theme,
             set_document_title
         ])
         .run(tauri::generate_context!())

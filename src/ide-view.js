@@ -56,7 +56,8 @@ export function ideModel(doc, mode, threshold) {
 // so braces inside values never change the nesting colours or guide columns.
 export function ideDecorations(lines) {
   const stack = [];
-  return lines.map(({text}, line) => {
+  const result = [];
+  lines.forEach(({text}, line) => {
     const whitespace = text.match(/^[\t ]*/)[0];
     let indent = 0;
     for(const c of whitespace) indent += c === '\t' ? 2 - indent % 2 : 1;
@@ -73,38 +74,85 @@ export function ideDecorations(lines) {
         stack.push({kind:value, colour, column:indent, line});
       } else if(value === '}' || value === ']') {
         const frame = stack.at(-1);
-        if(frame?.kind === (value === '}' ? '{' : '[')) { className = `ide-bracket-${frame.colour}`; stack.pop(); }
+        if(frame?.kind === (value === '}' ? '{' : '[')) {
+          className = `ide-bracket-${frame.colour}`; stack.pop();
+          if(line > frame.line + 1) result[frame.line].foldEnd = Math.max(result[frame.line].foldEnd ?? 0, line);
+        }
         else className = 'ide-bracket-invalid';
       } else className = /^(true|false|null)$/.test(value) ? 'ide-literal' : 'ide-number';
       tokens.push({start:match.index, text:value, className});
     }
-    return {tokens,guides};
+    result.push({tokens,guides});
   });
+  return result;
 }
 
-export function renderIde(container, lines, document) {
+// Folding is a view projection only. Keep original offsets so edits can never
+// accidentally replace the hidden part of a document.
+export function ideProjection(text, folds = new Set()) {
+  const lines = ideTextLines(text), decorations = ideDecorations(lines), visible = [], offsets = [];
+  let raw = 0, hiddenUntil = -1, projected = 0;
+  lines.forEach((line, i) => {
+    if(i >= hiddenUntil) {
+      offsets.push({visible:projected, raw, length:line.text.length});
+      visible.push({...line, decoration:decorations[i], folded:folds.has(i) && decorations[i].foldEnd !== undefined});
+      projected += line.text.length + 1;
+      if(folds.has(i) && decorations[i].foldEnd !== undefined) hiddenUntil = decorations[i].foldEnd;
+    }
+    raw += line.text.length + 1;
+  });
+  return {lines:visible, text:visible.map(line => line.text).join('\n'), offsets};
+}
+export function ideRawOffset(projection, offset) {
+  let row = projection.offsets[0];
+  for(const candidate of projection.offsets) { if(candidate.visible > offset) break; row = candidate; }
+  return row ? row.raw + Math.min(row.length, Math.max(0, offset - row.visible)) : 0;
+}
+export function ideProjectedEdit(raw, projection, edited) {
+  let start = 0, end = projection.text.length, editedEnd = edited.length;
+  while(start < end && start < editedEnd && projection.text[start] === edited[start]) start++;
+  while(end > start && editedEnd > start && projection.text[end - 1] === edited[editedEnd - 1]) { end--; editedEnd--; }
+  const from = ideRawOffset(projection, start), to = ideRawOffset(projection, end);
+  if(raw.slice(from, to) !== projection.text.slice(start, end)) return null;
+  return {text:raw.slice(0, from) + edited.slice(start, editedEnd) + raw.slice(to), caret:from + editedEnd - start};
+}
+
+export function renderIde(container, lines, document, onFold) {
   container.replaceChildren();
   const locations = new Map();
-  const decorations = ideDecorations(lines);
+  const decorations = lines.every(line => line.decoration) ? lines.map(line => line.decoration) : ideDecorations(lines);
   for(const [i, line] of lines.entries()) {
     const row = document.createElement('div'); row.className = 'ide-line';
-    row.dataset.line = String(i + 1);
-    const number = document.createElement('span'); number.className = 'ide-line-number'; number.textContent = String(i + 1);
-    number.setAttribute('aria-hidden', 'true'); row.appendChild(number);
+    const original = line.decoration ? line.path[0] : i;
+    row.dataset.line = String(original + 1);
+    const number = document.createElement('span'); number.className = 'ide-line-number'; number.textContent = String(original + 1);
+    const decoration = line.decoration || decorations[i];
+    if(onFold && decoration.foldEnd !== undefined) {
+      const arrow = document.createElement('button'); arrow.className = 'ide-fold'; arrow.type = 'button';
+      arrow.textContent = line.folded ? '›' : '⌄';
+      arrow.title = line.folded ? '展开结构' : '折叠结构';
+      arrow.setAttribute('aria-label', `${arrow.title}，第 ${original + 1} 行`);
+      arrow.setAttribute('aria-expanded', String(!line.folded));
+      arrow.addEventListener('click', () => onFold(original)); number.appendChild(arrow);
+    }
+    row.appendChild(number);
     const code = document.createElement('span'); code.className = 'ide-code';
-    for(const {column,colour} of decorations[i].guides) {
+    code.setAttribute('aria-hidden', 'true');
+    for(const {column,colour} of decoration.guides) {
       const guide = document.createElement('span'); guide.className = `ide-guide ide-bracket-${colour}`;
       guide.style.setProperty('--ide-column', String(column)); code.appendChild(guide);
     }
     // Text nodes only: JSON strings must never become HTML.
     let end = 0;
-    for(const part of decorations[i].tokens) {
+    for(const part of decoration.tokens) {
       code.appendChild(document.createTextNode(line.text.slice(end, part.start)));
       const token = document.createElement('span');
       token.className = part.className;
       token.textContent = part.text; code.appendChild(token); end = part.start + part.text.length;
     }
-    code.appendChild(document.createTextNode(line.text.slice(end))); row.appendChild(code); container.appendChild(row);
+    code.appendChild(document.createTextNode(line.text.slice(end)));
+    if(line.folded) { const hint = document.createElement('span'); hint.className = 'ide-fold-hint'; hint.textContent = ' …'; code.appendChild(hint); }
+    row.appendChild(code); container.appendChild(row);
     const key = JSON.stringify(line.path); if(!locations.has(key)) locations.set(key, row);
   }
   return locations;

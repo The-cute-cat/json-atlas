@@ -81,9 +81,12 @@ impl Search<'_> {
                 .as_ref()
                 .is_none_or(|scope| path.starts_with(scope))
         {
+            if self.hits.len() >= self.options.limit {
+                return true;
+            }
             self.hits.push(path.to_vec());
         }
-        self.hits.len() >= self.options.limit
+        false
     }
     pub(super) fn root_label(&self) -> String {
         self.options.root_label.clone()
@@ -252,13 +255,17 @@ impl Indexed {
         if !(1..=1000).contains(&options.limit)
             || options.index_base > 1
             || options.query.is_empty()
-            || options.query.len() > 64 * 1024
+            || options.hidden.len() > 100_000
+            || options.hidden.iter().map(String::len).sum::<usize>() > 8 * 1024 * 1024
             || options
                 .scope_path
                 .as_ref()
                 .is_some_and(|path| path.len() > 128)
         {
             return Err("无效的搜索参数".into());
+        }
+        if options.query.encode_utf16().count() > 32768 {
+            return Err("搜索内容过长，请缩短后重试".into());
         }
         self.check()?;
         let mut search = Search {
@@ -1008,6 +1015,25 @@ mod tests {
             let mut copy = doc.search_copy().unwrap();
             std::fs::write(&doc.source_path, "{}").unwrap();
             assert!(copy.native_search(&opt, &AtomicBool::new(false)).is_err());
+        });
+    }
+
+    #[test]
+    fn query_lengths_use_utf16_units_and_hidden_paths_have_a_budget() {
+        run("{}", "json", |doc| {
+            let mut opt = options(&"汉".repeat(32768));
+            assert_eq!(
+                doc.native_search(&opt, &AtomicBool::new(false)).unwrap()["truncated"],
+                false
+            );
+            opt.query.push('汉');
+            assert!(doc
+                .native_search(&opt, &AtomicBool::new(false))
+                .unwrap_err()
+                .contains("过长"));
+            opt = options("x");
+            opt.hidden.insert("x".repeat(8 * 1024 * 1024 + 1));
+            assert!(doc.native_search(&opt, &AtomicBool::new(false)).is_err());
         });
     }
 }

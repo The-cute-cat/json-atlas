@@ -198,7 +198,8 @@ export class IndexedDataSource {
         const value = branch ? node.type : node.truncated ? await this.getText(node.path, { signal }) : String(node.value);
         if (cancelled()) return null;
         if (pathInside(node.path, scopePath) && matcher.test(`${frame.key} ${value}`)) {
-          hits.push(node.path); if (hits.length >= limit) return finish(true);
+          if (hits.length >= limit) return finish(true);
+          hits.push(node.path);
         }
         if (!branch) { stack.pop(); continue; }
         frame.cursor = 0; frame.page = null;

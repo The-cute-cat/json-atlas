@@ -51,7 +51,7 @@ export class NodeBudget {
       distances.set(node, distance);
       if (this.read.has(node) || distance <= 400) protectedNodes.add(node);
     }
-    for (const node of nodes.toReversed()) {
+    for (const node of [...nodes].reverse()) {
       if (protectedNodes.has(node) && parents.get(node)) protectedNodes.add(parents.get(node));
     }
     const rootNode = this.root.firstElementChild;
