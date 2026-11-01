@@ -37,7 +37,7 @@ MSI 使用固定的 `bundle.windows.wix.upgradeCode` 标识同一应用的后续
 `src-tauri/windows/file-associations.wxs` 为 MSI 补充与 EXE 共用的 `JSONAtlas.Document` 标识、“打开方式”和 Windows 默认应用注册，避免切换安装方式后原有选择指向失效的标识。不要移除该兼容标识或直接写入 Windows 的 `UserChoice`。打包后可运行以下只读检查；发布流程也执行同一检查：
 
 ```powershell
-./scripts/check-msi.ps1 -Path 'src-tauri/target/release/bundle/msi/JSON Atlas_0.2.0_x64_zh-CN.msi'
+./scripts/check-msi.ps1 -Path 'src-tauri/target/release/bundle/msi/JSON Atlas_0.3.0_x64_zh-CN.msi'
 ```
 
 该检查核对安装包内的注册信息及组件引用，不能替代实际安装、升级和卸载测试。校验步骤排在打包之后，因此失败时草稿 Release 已经生成；请删除该草稿，修复后重新触发工作流，不要把未通过校验的产物公开发布。
@@ -76,7 +76,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --release --locked indexed::benc
 在 PowerShell 中可执行版本一致性检查：
 
 ```powershell
-$env:RELEASE_TAG = 'v0.2.0'
+$env:RELEASE_TAG = 'v0.3.0'
 node scripts/check-release.js
 ```
 

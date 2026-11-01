@@ -1,6 +1,6 @@
 {
   "name": "json-atlas",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Explore, search, and read JSON / JSONL files on an interactive tree canvas.",
   "private": true,
   "type": "module",
@@ -18,7 +18,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "node --check src/reader.js && node --check src/main.js && node --check src/data.js && node --check src/data-source.js && node --check src/large-files.js && node --check src/page-cache.js && node --check src/node-budget.js && node --check src/search-pattern.js && node --check src/viewport-window.js && node --check src/paging.js && node --check src/desktop.js && node --check src/parser.worker.js && node --check src/search.worker.js && node --check src/about.js && node --check src/editing.js",
+    "check": "node --check src/reader.js && node --check src/main.js && node --check src/data.js && node --check src/data-source.js && node --check src/large-files.js && node --check src/page-cache.js && node --check src/node-budget.js && node --check src/search-pattern.js && node --check src/shortcuts.js && node --check src/theme.js && node --check src/tooltips.js && node --check src/ide-view.js && node --check src/viewport-window.js && node --check src/paging.js && node --check src/desktop.js && node --check src/parser.worker.js && node --check src/search.worker.js && node --check src/about.js && node --check src/editing.js && node --check scripts/check-release.js",
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
