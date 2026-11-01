@@ -49,9 +49,6 @@
     <button id="expandAllBtn" title="展开全部节点，最多显示约 5000 个节点">展开全部</button>
     <button id="collapseAllBtn">全部收起</button>
     <button id="resetViewBtn">重置视图</button>
-    <button id="editModeBtn" aria-pressed="false">编辑模式</button>
-    <button id="undoEditBtn" disabled>撤销修改</button>
-    <button id="saveCopyBtn" disabled>另存为…</button>
 
     <div class="quick-search" role="search" aria-label="快速搜索当前文件">
       <input id="quickSearchInput" type="search" placeholder="搜索键名或值…" aria-label="快速搜索键名或值" autocomplete="off" spellcheck="false" />
@@ -62,6 +59,14 @@
     <button id="moreBtn" class="icon-btn" title="更多">⋯</button>
 
     <div id="moreMenu">
+      <div id="documentActions">
+        <button id="switchViewBtn" title="切换当前文件的查看方式">IDE 视图</button>
+        <button id="editModeBtn" aria-pressed="false">编辑模式</button>
+        <button id="undoEditBtn" disabled>撤销修改</button>
+        <button id="saveCopyBtn" disabled>另存为…</button>
+        <button id="formatIdeBtn" disabled title="格式化文档（Shift + Alt + F）">格式化文档</button>
+        <div class="ctx-sep"></div>
+      </div>
       <button id="recordTemplateBtn" title="以当前展开状态为模板">记录当前展开为模板</button>
       <button id="editorBtn" title="编辑模板：显示/隐藏字段">模板编辑…</button>
       <div class="ctx-sep"></div>
@@ -75,6 +80,9 @@
     <aside id="fileRail" class="file-rail" aria-label="已打开的文件"></aside>
 
     <div class="canvas-area">
+      <section id="ideView" class="ide-view" tabindex="0" aria-label="JSON 代码编辑器" hidden>
+        <div class="ide-editor"><div id="ideHighlight" aria-hidden="true"><div id="ideLines"></div></div><textarea id="ideInput" aria-label="JSON 文档内容" wrap="off" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></div>
+      </section>
       <main id="viewport" class="viewport" tabindex="0" aria-label="树形画布">
         <div id="world" class="world">
           <div id="tree" class="tree"></div>
@@ -91,6 +99,7 @@
 
   <footer class="statusbar">
     <span id="pathText">路径：$</span>
+    <span id="ideStatus" role="status" hidden></span>
     <span class="help">空白处拖动 · 滚轮平移 · Ctrl/⌘ + 滚轮缩放 · 右键节点展开/收起子树</span>
   </footer>
 </section>
@@ -124,9 +133,9 @@
 
 <dialog id="valueEditDialog" class="value-edit-dialog" aria-labelledby="valueEditTitle">
   <form id="valueEditForm"><h2 id="valueEditTitle">编辑节点</h2><p id="valueEditPath"></p>
-  <label>值类型 <select id="valueEditType"><option value="string">字符串</option><option value="number">数字</option><option value="boolean">布尔值</option><option value="null">null</option><option value="object">对象</option><option value="array">数组</option></select></label>
+  <label class="edit-type-row">值类型 <select id="valueEditType"><option value="string">字符串</option><option value="number">数字</option><option value="boolean">布尔值</option><option value="null">null</option><option value="object">对象</option><option value="array">数组</option></select></label>
   <textarea id="valueEditText" aria-label="节点内容" spellcheck="false"></textarea>
-  <p id="valueEditError" role="alert"></p><p class="s-hint">字符串直接输入文本；其他类型使用合法 JSON。修改只作用于工作副本，原文件不被覆盖。JSONL 另存为只包含有效记录，不保留注释和坏行。</p>
+  <p id="valueEditError" role="alert"></p><p class="s-hint" id="valueEditHint">修改保留在工作副本中，另存为后导出。</p>
   <div class="edit-actions"><button id="valueEditCancel" type="button">取消</button><button type="submit">应用修改</button></div></form>
 </dialog>
 <dialog id="discardEditDialog" class="value-edit-dialog"><h2>有尚未另存的修改</h2><p>关闭后会丢弃工作副本中的修改。可先取消并另存为。</p><div class="edit-actions"><button id="discardEditCancel">取消</button><button id="discardEditConfirm">丢弃修改并关闭</button></div></dialog>
@@ -153,6 +162,7 @@
     <div class="settings-body">
       <div class="settings-group">
       <div class="settings-group-title">阅读与布局</div>
+      <div class="settings-row"><div><label class="s-label" for="optViewMode">文件查看方式</label><div class="s-hint">树形视图为默认方式。自动模式对简单结构使用带行号和语法高亮的 IDE 视图；优先 IDE 适合习惯代码阅读的用户。超过内存阈值、结构过深或文本过多时始终使用树形视图。IDE 可直接编辑、格式化及缩放字号；修改后可另存为副本，不覆盖原文件。</div></div><select id="optViewMode"><option value="tree">树形视图</option><option value="auto">简单结构自动使用 IDE</option><option value="ide">优先使用 IDE</option></select></div>
       <div class="settings-row"><div><label class="s-label" for="optVimEditing">Vim 风格编辑快捷键</label><div class="s-hint">默认关闭。开启后，在画布空白处按 i 进入编辑模式，按 Esc 退出；输入框内不触发。右键编辑节点始终可用。索引大文件暂只读。</div></div><label class="switch"><input type="checkbox" id="optVimEditing" /><span class="slider"></span></label></div>
       <div class="settings-row">
         <div>

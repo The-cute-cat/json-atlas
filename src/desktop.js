@@ -4,6 +4,11 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { IndexedDataSource } from './large-files.js';
 
 export const desktop = isTauri();
+let menuUpdate = Promise.resolve();
+export function updateDocumentMenu(items) {
+  if(!desktop) return;
+  menuUpdate = menuUpdate.then(() => invoke('sync_document_menu', { items })).catch(console.error);
+}
 export const readNativeFile = path => invoke('read_document', { path });
 export const selectNativeFiles = () => invoke('select_documents');
 export const saveDocumentCopy = (name, text, originalPath) => invoke('save_document_copy', { name, text, originalPath });

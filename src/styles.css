@@ -210,6 +210,24 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   background-size:24px 24px;
 }
 .viewport.dragging{cursor:grabbing}
+.viewport:focus,.ide-view:focus{outline:none}
+.viewport:focus-visible #zoomDock{box-shadow:0 0 0 2px var(--accent-soft),var(--shadow)}
+.viewport[hidden],.ide-view[hidden]{display:none}
+.ide-view{--ide-size:13px;--ide-line-height:23px;display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;background:#fff;tab-size:2;user-select:text}
+#ideStatus{min-width:0;max-width:45%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--muted)}#ideStatus.invalid{color:var(--danger)}
+.ide-editor{position:relative;flex:1;min-height:0;overflow:hidden;font:var(--ide-size)/var(--ide-line-height) Consolas,"Cascadia Code",Menlo,monospace;font-variant-ligatures:none}
+#ideHighlight,#ideInput{position:absolute;inset:0;width:100%;height:100%;margin:0;border:0;font:inherit;letter-spacing:normal;tab-size:2;white-space:pre}
+#ideHighlight{overflow:hidden;pointer-events:none}#ideLines{min-width:100%;width:max-content;padding:18px 24px 40px 54px}
+#ideInput{resize:none;outline:none;padding:18px 24px 40px calc(54px + 4em);color:transparent;caret-color:var(--text);background:transparent;overflow:auto;scrollbar-width:thin;scrollbar-color:#c7c7cc transparent;-webkit-text-fill-color:transparent}
+#ideInput::selection{background:rgba(0,113,227,.22)}
+.ide-plain #ideInput{color:var(--text);-webkit-text-fill-color:var(--text)}
+.ide-line{display:flex;min-width:max-content;white-space:pre;border-radius:3px}
+.ide-line-number{flex:0 0 4em;text-align:right;padding-right:18px;color:#98989d;background:#fff;user-select:none}
+.ide-code{position:relative;padding-right:24px}
+.ide-bracket-0{color:#a87900}.ide-bracket-1{color:#b04abc}.ide-bracket-2{color:#007acc}.ide-bracket-invalid{color:var(--danger)}
+.ide-guide{position:absolute;left:calc(var(--ide-column) * 1ch);top:0;bottom:0;width:0;border-left:1px dashed currentColor;opacity:.28;pointer-events:none}
+.ide-key{color:#7553a3}.ide-string{color:#228149}.ide-number{color:#aa5d16}.ide-literal{color:#0069bc}
+.ide-line.current-match{background:#fff0b3;outline:1px solid #eac366}
 .page-navigation{display:flex;align-items:center;gap:10px;padding:10px 14px;color:var(--muted);font-size:12px}
 .page-navigation button,.loading-status button{border:0;border-radius:8px;padding:7px 10px;cursor:pointer;background:var(--accent-soft);color:var(--accent)}
 .page-navigation button:disabled{opacity:.4;cursor:default}
@@ -1572,12 +1590,17 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .shortcut{float:right;margin-left:16px;color:var(--muted);font-size:11px}
 @media(max-width:850px){.quick-search{width:calc(100% - 42px);flex:1 0 calc(100% - 42px);order:10;margin-left:0}.toolbar #moreBtn{order:11}}
 
-.value-edit-dialog{width:min(620px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;padding:24px;border:1px solid var(--line);border-radius:14px;color:var(--text);box-shadow:var(--shadow)}
-.value-edit-dialog::backdrop{background:rgba(0,0,0,.22)}
-.value-edit-dialog h2{margin:0 0 12px;font-size:18px}.value-edit-dialog p{overflow-wrap:anywhere}
-.value-edit-dialog textarea{display:block;resize:vertical;width:100%;height:240px;margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:8px;font:13px/1.6 Consolas,monospace}
-.value-edit-dialog select,.edit-actions button{padding:8px 14px;border:0;border-radius:7px;background:#f0f0f4;color:var(--text);cursor:pointer}
-.edit-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.edit-actions button:last-child{background:var(--accent);color:white}
-#valueEditError{color:var(--danger);font-size:13px}#valueEditPath{font-size:12px;color:var(--muted)}
+.value-edit-dialog{width:min(400px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);overflow:auto;padding:24px;border:1px solid rgba(0,0,0,.07);border-radius:20px;background:var(--card);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.18);scrollbar-width:thin}
+.value-edit-dialog::backdrop{background:rgba(25,25,30,.24);backdrop-filter:blur(3px)}
+.value-edit-dialog h2{margin:0 0 6px;font-size:18px;letter-spacing:-.3px;font-weight:650}.value-edit-dialog p{overflow-wrap:anywhere}
+.value-edit-dialog .edit-type-row{display:flex;align-items:center;justify-content:space-between;margin:18px 0 10px;color:var(--muted);font-size:12px}
+.value-edit-dialog textarea{display:block;resize:none;width:100%;min-height:72px;margin:0;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:#fafafb;color:var(--text);font:13px/1.6 Consolas,"Microsoft YaHei",monospace;outline:none;scrollbar-width:thin;transition:border-color .15s,box-shadow .15s}
+.value-edit-dialog textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.value-edit-dialog select,.edit-actions button{padding:7px 12px;border:0;border-radius:8px;background:#f0f0f4;color:var(--text);font:inherit;font-size:13px;cursor:pointer}
+.value-edit-dialog select{font-size:12px;max-width:160px}
+.edit-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.edit-actions button{min-width:64px;white-space:nowrap}.edit-actions button:last-child{background:var(--accent);color:white;font-weight:600}
+.value-edit-dialog button:focus-visible,.value-edit-dialog select:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.value-edit-dialog .s-hint{font-size:11px;line-height:1.6;margin:12px 0 0;color:var(--muted)}
+#valueEditError{color:var(--danger);font-size:12px;margin:10px 0 0}#valueEditError:empty{display:none}#valueEditPath{font-size:12px;color:var(--muted);margin:0;max-height:44px;overflow:auto}
 .toolbar #editModeBtn[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
 #viewer.editing .node-card{cursor:text}#viewer.editing .node-card:hover{outline:2px solid rgba(0,113,227,.3)}

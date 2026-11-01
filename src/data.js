@@ -75,10 +75,20 @@ export function normalizeDataPath(path) {
     segment => segment.startsWith('["') ? segment : '[0]');
 }
 
-export async function searchData(value, query, { rootLabel, indexBase, hidden, scopePath, caseSensitive = false, wholeWord = false, regex = false, cancelled = () => false,
+export async function searchData(value, query, { rootLabel, indexBase, hidden, scopePath, textLines = false, caseSensitive = false, wholeWord = false, regex = false, cancelled = () => false,
   yieldTask = () => new Promise(resolve => setTimeout(resolve, 0)), limit = 1000 } = {}) {
   const hits = [];
   const matcher = compileSearch(query, { caseSensitive, wholeWord, regex });
+  if(textLines){
+    for(let i = 0; i < value.length; i++){
+      if(cancelled()) return null;
+      if(matcher.test(value[i])){
+        hits.push([i]); if(hits.length === limit) return {hits,truncated:true};
+      }
+      if(i % 2000 === 1999) await yieldTask();
+    }
+    return cancelled() ? null : {hits,truncated:false};
+  }
   if (scopePath?.length) {
     for (const key of scopePath) {
       if (value === null || typeof value !== 'object' || !Object.hasOwn(value, key)) return { hits: [], truncated: false };

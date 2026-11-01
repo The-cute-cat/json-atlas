@@ -5,9 +5,10 @@ import { ViewportWindow } from './viewport-window.js';
 import { NodeBudget } from './node-budget.js';
 import { compileSearch } from './search-pattern.js';
 import { valueAt, replaceValue, parseEdit, serializeDocument } from './editing.js';
+import { ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines } from './ide-view.js';
 import { openAbout } from './about.js';
 import { MAX_FILE_BYTES, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath } from './data.js';
-import { saveDocumentCopy, guardEditedClose, desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
+import { updateDocumentMenu, saveDocumentCopy, guardEditedClose, desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
 
 let expansionGeneration = 0;
 let searchTimer;
@@ -19,6 +20,113 @@ let openQueue = Promise.resolve();
 let editMode = false;
 let editingNode = null;
 let discardResolver = null;
+let ideActive = false;
+let ideLocations = new Map();
+function rememberEdit(doc){
+  (doc.editHistory ||= []).push({parsed:doc.parsed, records:doc.records, dirty:!!doc.dirty, text:doc.text,
+    ideDraft:doc.ideDraft, ideError:doc.ideError, bad:doc.bad, totalLines:doc.totalLines});
+  if(doc.editHistory.length > 10) doc.editHistory.shift();
+}
+function syncIdeScroll(){
+  const input = document.getElementById('ideInput'), highlight = document.getElementById('ideHighlight');
+  highlight.scrollTop = input.scrollTop; highlight.scrollLeft = input.scrollLeft;
+}
+function setIdeZoom(value){
+  const doc = activeDoc(); if(!doc) return;
+  doc.ideZoom = Math.min(200, Math.max(70, value));
+  document.getElementById('ideView').style.setProperty('--ide-size', `${13 * doc.ideZoom / 100}px`);
+  document.getElementById('ideView').style.setProperty('--ide-line-height', `${23 * doc.ideZoom / 100}px`);
+  syncIdeScroll();
+}
+function renderIdeBuffer(doc){
+  const text = doc.ideDraft ?? doc.text ?? '', lines = text.length > 2 * 1024 * 1024 ? [] : ideTextLines(text);
+  const plain = text.length > 2 * 1024 * 1024 || lines.length > 20000;
+  document.getElementById('ideView').classList.toggle('ide-plain', plain);
+  ideLocations = renderIde(document.getElementById('ideLines'), plain ? [] : lines, document);
+  const status = document.getElementById('ideStatus');
+  status.textContent = doc.ideError ? '语法错误：' + doc.ideError : plain ? '大段文本已暂停高亮' : '';
+  status.hidden = !status.textContent;
+  status.title = status.textContent; status.classList.toggle('invalid', !!doc.ideError);
+  syncIdeScroll();
+}
+function applyIdeChange(text){
+  const doc = activeDoc(); if(!doc || !ideActive || doc.source?.indexed || text === doc.text) return;
+  rememberEdit(doc);
+  doc.ideDraft = text; doc.text = text; doc.dirty = true;
+  try {
+    Object.assign(doc, parseIdeText(text, doc.kind)); doc.ideError = '';
+    const resolved = resolveDoc(doc); doc.data = resolved.data; parsedData = doc.data;
+    doc.source?.dispose(); doc.source = new MemoryDataSource(doc.data);
+  } catch(error){ doc.ideError = error.message; }
+  searchGeneration++; focusGeneration++; matches = []; currentMatchIndex = -1;
+  setSearchCount(''); nextMatchBtn.disabled = true; prevMatchBtn.disabled = true;
+  renderIdeBuffer(doc); updateDocHeader(doc); syncEditing(); renderRail();
+  if(searchInput.value){ clearTimeout(searchTimer); searchTimer = setTimeout(() => searchTree(searchInput.value), 180); }
+}
+function leaveIde(){
+  const doc = activeDoc();
+  if(ideActive && doc?.ideError){ showToast('请先修正 JSON 语法，再切换到树形视图'); return false; }
+  return true;
+}
+function formatIde(){
+  if(!ideActive) return;
+  const doc = activeDoc(), input = document.getElementById('ideInput');
+  try {
+    const formatted = formatIdeText(input.value, doc.kind);
+    applyIdeChange(formatted); input.value = formatted; syncIdeScroll(); input.focus();
+  } catch(error){
+    const status = document.getElementById('ideStatus');
+    status.textContent = '无法格式化：' + error.message; status.title = status.textContent; status.classList.add('invalid');
+    status.hidden = false;
+    showToast('无法格式化：' + error.message);
+  }
+}
+function syncDocumentMenu(){
+  if(!desktop) return;
+  updateDocumentMenu([
+    ['switch-view','switchViewBtn'], ['edit-mode','editModeBtn'],
+    ['undo-edit','undoEditBtn'], ['save-copy','saveCopyBtn'], ['format-json','formatIdeBtn']
+  ].map(([id, buttonId]) => {
+    const button = document.getElementById(buttonId);
+    return {id, text:button.textContent, enabled:!!activeDoc() && !button.disabled && !(id === 'edit-mode' && ideActive)};
+  }));
+}
+
+function resizeNodeEditor(){
+  const dialog = document.getElementById('valueEditDialog');
+  if(!dialog.open) return;
+  const input = document.getElementById('valueEditText');
+  // A short sample is enough to reach the width cap; avoid allocating an
+  // additional character array for an entire large edited value on each key.
+  const longest = input.value.slice(0,32768).split('\n').slice(0,200).reduce((max, line) => Math.max(max, [...line.slice(0,100)].reduce((length, c) => length + (c.charCodeAt(0) > 255 ? 2 : 1), 0)), 0);
+  const type = document.getElementById('valueEditType').value;
+  const maxWidth = ['object','array'].includes(type) ? 640 : 520;
+  dialog.style.width = `${Math.min(Math.max(360, longest * 7.5 + 80), maxWidth, window.innerWidth - 32)}px`;
+  input.style.height = '0px';
+  input.style.height = `${Math.min(Math.max(72, input.scrollHeight + 2 || 72), Math.max(72, Math.min(300, window.innerHeight - 300)))}px`;
+}
+
+function syncDocumentView(doc){
+  const lines = ideModel(doc, doc.viewOverride || settings.viewMode, settings.largeFileThresholdMiB);
+  ideActive = !!lines || (typeof doc.ideDraft === 'string' && !doc.source?.indexed && !needsIndex(doc.size, settings.largeFileThresholdMiB));
+  const panel = document.getElementById('ideView');
+  panel.hidden = !ideActive; viewport.hidden = ideActive;
+  if(ideActive){
+    const input = document.getElementById('ideInput'); input.value = doc.ideDraft ?? (doc.text || '').replace(/\r\n/g,'\n');
+    renderIdeBuffer(doc); setIdeZoom(doc.ideZoom || 100); input.scrollTop = doc.ideScrollTop || 0; syncIdeScroll();
+  }else{ document.getElementById('ideLines').replaceChildren(); ideLocations = new Map(); document.getElementById('ideStatus').hidden = true; }
+  const switcher = document.getElementById('switchViewBtn');
+  switcher.textContent = ideActive ? '树形视图' : 'IDE 视图';
+  switcher.disabled = !ideActive && !ideModel(doc, 'ide', settings.largeFileThresholdMiB);
+  switcher.title = switcher.disabled ? '文件超过内存阈值或结构过于复杂，使用树形视图' : '切换当前文件的查看方式';
+  for(const id of ['expandAllBtn','collapseAllBtn','resetViewBtn','recordTemplateBtn','editorBtn']) document.getElementById(id).hidden = ideActive;
+  document.getElementById('editModeBtn').hidden = ideActive;
+  document.querySelector('.statusbar .help').textContent = ideActive ? '直接编辑 · Ctrl/⌘ + ＋ / − 缩放 · Ctrl/⌘ + 0 重置 · Shift + Alt + F 格式化' : '空白处拖动 · 滚轮平移 · Ctrl/⌘ + 滚轮缩放 · 右键节点展开/收起子树';
+  document.getElementById('formatIdeBtn').disabled = !ideActive;
+  searchScopeBtn.disabled = ideActive;
+  if(ideActive) setEditMode(false);
+  syncDocumentMenu();
+}
 
 function confirmDiscardEdits(){
   if(discardResolver) return Promise.resolve(false);
@@ -38,6 +146,7 @@ function syncEditing(){
   document.getElementById('editModeBtn').disabled = !doc || !!doc.error || !!doc.source?.indexed;
   document.getElementById('undoEditBtn').disabled = !doc?.editHistory?.length;
   document.getElementById('saveCopyBtn').disabled = !doc?.dirty;
+  syncDocumentMenu();
 }
 function setEditMode(on){ editMode = !!on; syncEditing(); }
 function canEditNode(node){
@@ -53,6 +162,10 @@ function beginNodeEdit(node){
   document.getElementById('valueEditText').value = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   document.getElementById('valueEditError').textContent = '';
   closeMenu(); document.getElementById('valueEditDialog').showModal();
+  document.getElementById('valueEditHint').textContent = doc.kind === 'jsonl'
+    ? '字符串直接输入，其他类型填写 JSON。另存为仅导出有效记录，不保留注释和坏行。'
+    : '字符串直接输入，其他类型填写 JSON。修改保留在工作副本中，原文件不会被覆盖。';
+  resizeNodeEditor();
   document.getElementById('valueEditText').focus();
 }
 function applyNodeEdit(){
@@ -65,8 +178,7 @@ function applyNodeEdit(){
   if(doc.kind === 'jsonl' && wrapped && !state.path.length && !value.length) throw new Error('JSONL 至少需要一条记录');
   const next = replaceValue(doc.data, state.path, value);
   snapshotDoc();
-  (doc.editHistory ||= []).push({ parsed: doc.parsed, records: doc.records, dirty: !!doc.dirty, text: doc.text });
-  if(doc.editHistory.length > 10) doc.editHistory.shift();
+  rememberEdit(doc);
   if(doc.kind !== 'jsonl') doc.parsed = next;
   else if(wrapped) doc.records = next;
   else { doc.records = doc.records.slice(); doc.records[0] = next; }
@@ -269,6 +381,11 @@ function resolveDoc(doc){
 function snapshotDoc(){
   const doc = activeDoc();
   if(!doc || doc.error) return;
+  if(ideActive){
+    doc.ideScrollTop = document.getElementById('ideInput').scrollTop;
+    doc.searchQuery = searchInput.value || '';
+    return;
+  }
 
   doc.openPaths = [...tree.querySelectorAll('.tree-node.open')]
     .map(n => n.dataset.path);
@@ -317,6 +434,7 @@ function activateDoc(id){
   resetSearchState();
 
   if(doc.error){
+    syncDocumentView(doc);
     /* 清空画布，否则上一份文件的树会留在半透明错误面板后面 */
     tree.innerHTML = '';
     tree.classList.remove('virtualized');
@@ -327,6 +445,12 @@ function activateDoc(id){
 
   /* 重建树：初始全收起，稍后按这份文件上次的展开状态恢复 */
   renderTree(parsedData, currentRootLabel);
+  syncDocumentView(doc);
+  if(ideActive){
+    if(doc.searchQuery){ searchInput.value = doc.searchQuery; searchTree(doc.searchQuery); }
+    scheduleSessionSave();
+    return;
+  }
 
   const activation = expansionGeneration;
   requestAnimationFrame(async () => {
@@ -378,6 +502,7 @@ function closeDoc(id){
 
   saveReopenCopy();
   saveSession();
+  syncEditing();
   showToast(`已关闭 ${closing.name}`);
 }
 
@@ -697,6 +822,9 @@ async function loadFile(file, sessions){
         name: source.name, size: source.size, file: file.path ? null : file,
         text: file.path ? source.text : null, keepText: !desktop
       }, controller.signal));
+      // Native parsing avoids returning another copy through the worker, but
+      // the IDE needs the already-read original text, including its formatting.
+      if(file.path) text = source.text;
     }
     if(controller.signal.aborted) return;
     const doc = Object.assign(makeDoc(source.name, source.size, text, result.kind), result);
@@ -710,6 +838,7 @@ async function loadFile(file, sessions){
     if(duplicate){
       if(duplicate.dirty && !await confirmDiscardEdits()) return;
       duplicate.dirty = false; duplicate.editHistory = [];
+      duplicate.ideDraft = undefined; duplicate.ideError = undefined;
       duplicate.source?.dispose();
       Object.assign(duplicate, { parsed: doc.parsed, records: doc.records, bad: doc.bad,
         totalLines: doc.totalLines, text: doc.text, size: doc.size, kind: doc.kind, error: doc.error,
@@ -849,6 +978,9 @@ async function applyOpenPolicy(){
 
 /* 撤回阅读器视图，回到落地页（关掉最后一份文件时用） */
 function withdrawView(){
+  ideActive = false; ideLocations = new Map();
+  document.getElementById('ideInput').value = '';
+  document.getElementById('ideLines').replaceChildren();
   nodeBudget.reset(); updateNodeBudgetNotice();
   viewportWindow.clear();
   discardPagedTree(tree);
@@ -1534,6 +1666,7 @@ const SESSION_KEY = 'json-atlas_session_v1';
 })();
 
 let settings = {
+  viewMode: 'tree',
   vimEditing: false,
   largeFileThresholdMiB: 64,
   legacyTreeLayout: false,
@@ -1555,6 +1688,7 @@ try{
   if(s && typeof s === 'object') settings = Object.assign(settings, s);
 }catch(_){}
 settings.largeFileThresholdMiB = normalizeThreshold(settings.largeFileThresholdMiB);
+settings.viewMode = normalizeViewMode(settings.viewMode);
 try{
   const t = JSON.parse(localStorage.getItem(TEMPLATE_KEY));
   if(t && Array.isArray(t.paths)) template = t;
@@ -1709,10 +1843,14 @@ const optLegacyTreeLayout = document.getElementById('optLegacyTreeLayout');
 const optLargeFileThreshold = document.getElementById('optLargeFileThreshold');
 function syncThresholdControl(){
   optLargeFileThreshold.value = String(settings.largeFileThresholdMiB);
+  document.getElementById('optViewMode').value = settings.viewMode;
 }
 optLargeFileThreshold.addEventListener('change', () => {
+  if(!leaveIde()){ syncThresholdControl(); return; }
+  if(activeDoc()) activeDoc().ideDraft = undefined;
   settings.largeFileThresholdMiB = normalizeThreshold(optLargeFileThreshold.value);
   syncThresholdControl(); saveSettings();
+  if(activeDocId){ snapshotDoc(); activateDoc(activeDocId); }
 });
 const optReopenLast = document.getElementById('optReopenLast');
 const optRestoreSession = document.getElementById('optRestoreSession');
@@ -2013,18 +2151,22 @@ settingsImportInput.addEventListener('change', () => {
   const file = settingsImportInput.files[0];
   settingsImportInput.value = '';
   if(!file) return;
+  if(!leaveIde()) return;
 
   const reader = new FileReader();
   reader.onload = () => {
     try{
       const payload = JSON.parse(reader.result);
       if(!payload || typeof payload !== 'object') throw new Error('文件格式不正确');
+      if(!leaveIde()) return;
+      if(activeDoc()) activeDoc().ideDraft = undefined;
 
       /* 兼容两种格式：完整导出包 { settings, template } 或裸设置对象 */
       const s = (payload.settings && typeof payload.settings === 'object')
         ? payload.settings : payload;
 
       settings = {
+        viewMode: normalizeViewMode(s.viewMode),
         vimEditing: s.vimEditing === true,
         largeFileThresholdMiB: normalizeThreshold(s.largeFileThresholdMiB),
         legacyTreeLayout: s.legacyTreeLayout === true,
@@ -2048,6 +2190,7 @@ settingsImportInput.addEventListener('change', () => {
 
       saveSettings();
       saveTemplate();
+      for(const doc of docs) delete doc.viewOverride;
       openSettings();   /* 刷新面板显示 */
       if(activeDocId){
         if(activeDoc()?.source?.indexed && activeDoc().kind === 'jsonl') rebuildJsonlRoot();
@@ -2391,6 +2534,31 @@ editorSaveBtn.addEventListener('click', async () => {
 
 
 /* Value editing works on an independent document revision. */
+document.getElementById('documentActions').hidden = desktop;
+document.getElementById('ideInput').addEventListener('input', e => { if(!e.isComposing) applyIdeChange(e.target.value); });
+document.getElementById('ideInput').addEventListener('compositionend', e => applyIdeChange(e.target.value));
+document.getElementById('ideInput').addEventListener('scroll', syncIdeScroll);
+document.getElementById('formatIdeBtn').addEventListener('click', formatIde);
+document.getElementById('ideInput').addEventListener('wheel', e => {
+  if(!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault(); setIdeZoom((activeDoc()?.ideZoom || 100) + (e.deltaY > 0 ? -10 : 10));
+}, {passive:false});
+document.getElementById('valueEditText').addEventListener('input', resizeNodeEditor);
+document.getElementById('valueEditType').addEventListener('change', resizeNodeEditor);
+window.addEventListener('resize', resizeNodeEditor);
+document.getElementById('optViewMode').addEventListener('change', e => {
+  if(!leaveIde()){ e.target.value = settings.viewMode; return; }
+  if(activeDoc()) activeDoc().ideDraft = undefined;
+  settings.viewMode = normalizeViewMode(e.target.value); saveSettings();
+  for(const doc of docs) delete doc.viewOverride;
+  if(activeDocId){ snapshotDoc(); activateDoc(activeDocId); }
+});
+document.getElementById('switchViewBtn').addEventListener('click', () => {
+  const doc = activeDoc(); if(!doc) return;
+  if(!leaveIde()) return;
+  if(ideActive) doc.ideDraft = undefined;
+  snapshotDoc(); doc.viewOverride = ideActive ? 'tree' : 'ide'; activateDoc(doc.id);
+});
 document.getElementById('optVimEditing').addEventListener('change', e => {
   settings.vimEditing = e.target.checked; saveSettings();
 });
@@ -2416,6 +2584,7 @@ document.getElementById('undoEditBtn').addEventListener('click', () => {
 });
 document.getElementById('saveCopyBtn').addEventListener('click', async () => {
   const doc = activeDoc(); if(!doc?.dirty) return;
+  if(doc.ideError){ showToast('请先修正 JSON 语法，再另存为'); return; }
   const revision = doc.text;
   const extension = doc.kind === 'jsonl' ? 'jsonl' : 'json';
   const name = doc.name.replace(/\.[^.]+$/, '') + '-edited.' + extension;
@@ -2461,12 +2630,22 @@ document.addEventListener('keydown', e => {
   if(document.getElementById('valueEditDialog').open || document.getElementById('discardEditDialog').open) return;
   if(document.getElementById('aboutDialog').open) return;
   const canvasFocused = e.target === viewport;
-  if(canvasFocused && !e.isComposing && !e.ctrlKey && !e.metaKey && !e.altKey){
+  if(canvasFocused && !ideActive && !e.isComposing && !e.ctrlKey && !e.metaKey && !e.altKey){
     if(e.key === 'i' && settings.vimEditing === true){ e.preventDefault(); setEditMode(true); return; }
     if(e.key === 'Escape' && editMode){ e.preventDefault(); setEditMode(false); return; }
   }
   const modifier = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
+  const inIde = ideActive && (e.target === document.getElementById('ideInput') || e.target === document.getElementById('ideView') || e.target?.closest?.('#ideView'));
+  if(inIde && !e.isComposing){
+    if(modifier && ['+','=','-','0'].includes(e.key)){ e.preventDefault(); setIdeZoom(e.key === '0' ? 100 : (activeDoc().ideZoom || 100) + (e.key === '-' ? -10 : 10)); return; }
+    if(e.shiftKey && e.altKey && key === 'f'){ e.preventDefault(); formatIde(); return; }
+    if(modifier && !e.shiftKey && key === 'z'){ e.preventDefault(); document.getElementById('undoEditBtn').click(); return; }
+    if(e.key === 'Tab' && !e.shiftKey && e.target === document.getElementById('ideInput')){
+      e.preventDefault(); const input = e.target;
+      input.setRangeText('  ',input.selectionStart,input.selectionEnd,'end'); applyIdeChange(input.value); return;
+    }
+  }
   if(modifier && key === 'o'){ e.preventDefault(); chooseFiles(); return; }
   if(modifier && key === 'f' && activeDoc()){ e.preventDefault(); openFindPanel(); return; }
   if(modifier && key === 'w' && activeDoc() && !e.target.closest('input,textarea,[contenteditable]')){
@@ -2639,6 +2818,7 @@ searchInput.addEventListener('input', queueSearch);
 searchInput.addEventListener('compositionend', () => queueSearch());
 
 async function searchTree(query){
+  document.getElementById('ideLines').querySelectorAll('.current-match').forEach(n => n.classList.remove('current-match'));
   quickSearchInput.value = query;
   const generation = ++searchGeneration;
   tree.querySelectorAll('.match,.current-match').forEach(n => n.classList.remove('match','current-match'));
@@ -2652,17 +2832,19 @@ async function searchTree(query){
   try { compileSearch(q, searchOptions); }
   catch(error){ setSearchCount('表达式无效'); setSearchError(error.message); return; }
   setSearchCount('搜索中…');
-  const source = activeDoc()?.source;
-  if(!source || activeDoc().error){ setSearchCount('0'); return; }
+  const temporarySource = ideActive ? new MemoryDataSource(document.getElementById('ideInput').value.split('\n')) : null;
+  const source = temporarySource || activeDoc()?.source;
+  if(!source || !activeDoc() || activeDoc().error){ temporarySource?.dispose(); setSearchCount('0'); return; }
   let result;
   try{ result = await source.search(q, {
-    rootLabel: currentRootLabel, indexBase: settings.indexBase, hidden: getHiddenSet(),
+    rootLabel: currentRootLabel, indexBase: settings.indexBase, hidden: ideActive ? new Set() : getHiddenSet(),
     ...searchOptions,
+    ...(ideActive ? {textLines:true, scopePath:null} : {}),
     cancelled: () => generation !== searchGeneration
   }); }catch(error){
     if(generation === searchGeneration){ setSearchCount('搜索失败'); setSearchError(error.message); }
     return;
-  }
+  }finally{ temporarySource?.dispose(); }
   if(!result || generation !== searchGeneration) return;
   matches = result.hits;
   searchTruncated = result.truncated;
@@ -2686,6 +2868,18 @@ function openAncestors(node){
 }
 
 async function focusMatch(index){
+  if(ideActive){
+    if(!matches.length) return;
+    currentMatchIndex = index;
+    document.getElementById('ideLines').querySelectorAll('.current-match').forEach(n => n.classList.remove('current-match'));
+    const row = ideLocations.get(JSON.stringify(matches[index]));
+    if(row) row.classList.add('current-match');
+    const input = document.getElementById('ideInput');
+    input.scrollTop = Math.max(0, (matches[index][0] || 0) * 23 * (activeDoc().ideZoom || 100) / 100 - (input.clientHeight || 400) / 2);
+    syncIdeScroll();
+    setSearchCount(`${index + 1} / ${matches.length}${searchTruncated ? '+' : ''}`);
+    return;
+  }
   expansionGeneration++;
   const generation = ++focusGeneration;
   const search = searchGeneration;
@@ -2898,11 +3092,17 @@ document.getElementById('cancelLoadBtn').addEventListener('click', () => activeL
     if(active) activateDoc(active.id);
   }
   await connectDesktop(openPaths, error => showToast('桌面文件入口失败：' + error), action => {
+    if(document.getElementById('valueEditDialog').open || document.getElementById('discardEditDialog').open) return;
     if(action === 'open') chooseFiles();
     else if(action === 'close' && activeDocId) closeDoc(activeDocId);
     else if(action === 'find') openFindPanel();
     else if(action === 'reset' && activeDocId) resetView();
     else if(action === 'settings') openSettings();
     else if(action === 'about') openAbout();
+    else if(action === 'switch-view') document.getElementById('switchViewBtn').click();
+    else if(action === 'edit-mode') document.getElementById('editModeBtn').click();
+    else if(action === 'undo-edit') document.getElementById('undoEditBtn').click();
+    else if(action === 'save-copy') document.getElementById('saveCopyBtn').click();
+    else if(action === 'format-json') formatIde();
   });
 })().catch(error => showToast('启动失败：' + error));

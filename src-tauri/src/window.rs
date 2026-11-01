@@ -39,14 +39,30 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     let close = MenuItem::with_id(app, "close", "关闭当前文件(&W)", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出(&X)", true, Some("Alt+F4"))?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let file = Submenu::with_items(app, "文件(&F)", true, &[&open, &close, &separator, &quit])?;
+    let save = MenuItem::with_id(app, "save-copy", "另存为…", false, None::<&str>)?;
+    let file = Submenu::with_items(
+        app,
+        "文件(&F)",
+        true,
+        &[&open, &close, &save, &separator, &quit],
+    )?;
+    let edit_mode = MenuItem::with_id(app, "edit-mode", "编辑模式", false, None::<&str>)?;
+    let undo = MenuItem::with_id(app, "undo-edit", "撤销修改", false, None::<&str>)?;
+    let format = MenuItem::with_id(app, "format-json", "格式化文档", false, None::<&str>)?;
+    let edit = Submenu::with_items(app, "编辑(&E)", true, &[&edit_mode, &undo, &format])?;
     let reset = MenuItem::with_id(app, "reset", "重置视图(&R)", true, None::<&str>)?;
     let find = MenuItem::with_id(app, "find", "查找(&F)…", true, Some("CmdOrCtrl+F"))?;
     let settings = MenuItem::with_id(app, "settings", "设置(&S)…", true, None::<&str>)?;
-    let view = Submenu::with_items(app, "查看(&V)", true, &[&find, &reset, &settings])?;
+    let switch_view = MenuItem::with_id(app, "switch-view", "IDE 视图", false, None::<&str>)?;
+    let view = Submenu::with_items(
+        app,
+        "查看(&V)",
+        true,
+        &[&switch_view, &find, &reset, &settings],
+    )?;
     let about = MenuItem::with_id(app, "about", "关于 JSON Atlas(&A)", true, None::<&str>)?;
     let help = Submenu::with_items(app, "帮助(&H)", true, &[&about])?;
-    let menu = Menu::with_items(app, &[&file, &view, &help])?;
+    let menu = Menu::with_items(app, &[&file, &edit, &view, &help])?;
     tauri::WebviewWindowBuilder::from_config(app, &config)?
         .menu(menu)
         .on_menu_event(|window, event| {
@@ -62,6 +78,49 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
             }
         })
         .build()?;
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+pub struct DocumentMenuItem {
+    id: String,
+    text: String,
+    enabled: bool,
+}
+
+#[tauri::command]
+pub fn sync_document_menu(
+    window: tauri::WebviewWindow,
+    items: Vec<DocumentMenuItem>,
+) -> Result<(), String> {
+    let Some(menu) = window.menu() else {
+        return Ok(());
+    };
+    for submenu in menu.items().map_err(|e| e.to_string())? {
+        let Some(submenu) = submenu.as_submenu() else {
+            continue;
+        };
+        for state in &items {
+            if ![
+                "save-copy",
+                "edit-mode",
+                "undo-edit",
+                "switch-view",
+                "format-json",
+            ]
+            .contains(&state.id.as_str())
+            {
+                continue;
+            }
+            if let Some(item) = submenu
+                .get(&state.id)
+                .and_then(|item| item.as_menuitem().cloned())
+            {
+                item.set_text(&state.text).map_err(|e| e.to_string())?;
+                item.set_enabled(state.enabled).map_err(|e| e.to_string())?;
+            }
+        }
+    }
     Ok(())
 }
 

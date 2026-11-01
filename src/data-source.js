@@ -84,8 +84,8 @@ export class MemoryDataSource {
         worker.onmessage = ({ data }) => this.#closed || cancelled() || options.signal?.aborted
           ? finish(null, null) : data.progress ? armTimeout() : finish(data.error ? new Error(data.error) : null, data.result);
         worker.onerror = event => finish(new Error(event.message || '后台搜索失败'));
-        const { rootLabel, indexBase, hidden, caseSensitive, wholeWord, regex, limit, scopePath } = options;
-        try { worker.postMessage({ value: this.#value, query, options: { rootLabel, indexBase, hidden, caseSensitive, wholeWord, regex, limit, scopePath } }); }
+        const { rootLabel, indexBase, hidden, caseSensitive, wholeWord, regex, limit, scopePath, textLines } = options;
+        try { worker.postMessage({ value: this.#value, query, options: { rootLabel, indexBase, hidden, caseSensitive, wholeWord, regex, limit, scopePath, textLines } }); }
         catch (error) { finish(error); }
       });
     }

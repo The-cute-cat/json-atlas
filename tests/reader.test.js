@@ -9,6 +9,7 @@ import { normalizeThreshold, needsIndex, IndexedDataSource } from '../src/large-
 import { ViewportWindow } from '../src/viewport-window.js';
 import { NodeBudget } from '../src/node-budget.js';
 import { compileSearch } from '../src/search-pattern.js';
+import { ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines } from '../src/ide-view.js';
 
 // A small DOM harness for reader state transitions; this does not test layout/WebView2.
 class Element {
@@ -40,6 +41,7 @@ class Element {
   showModal() { this.open = true; }
   focus() {}
   select() {}
+  click() { if(!this.disabled) this.listeners.get('click')?.({target:this}); }
   setPointerCapture() {}
   getBoundingClientRect() { return { width: 610, height: 102, bottom: 54 }; }
   querySelectorAll(selector) {
@@ -75,6 +77,7 @@ function reader(storage = new Map(), native = {}) {
       return elements.get(id);
     },
     createElement: () => new Element(),
+    createTextNode: text => Object.assign(new Element(), {textContent:text}),
     addEventListener(name, listener) { keyListeners.set(name, listener); },
     querySelector: () => ({ getBoundingClientRect: () => ({ bottom: 54 }) })
   };
@@ -89,13 +92,13 @@ function reader(storage = new Map(), native = {}) {
     setTimeout: (callback, delay) => delay === 0 ? setTimeout(callback, 0) : 1, clearTimeout() {},
     desktop: false, connectDesktop: async () => {}, updateWindowTitle() {},
     MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
-    valueAt, replaceValue, parseEdit, serializeDocument,
+    valueAt, replaceValue, parseEdit, serializeDocument, ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines,
     encodePath: encodeDataPath, normalizePath: normalizeDataPath, compileSearch,
     console, Blob, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
     ;({ buildDoc, resolveDoc, activateDoc, collectSession, expandByPaths, expandLevels, expandOne,
-      beginNodeEdit, applyNodeEdit, openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile, showNodeLimit, collapseAll, updateVirtualization,
+      beginNodeEdit, applyNodeEdit, applyIdeChange, formatIde, openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile, showNodeLimit, collapseAll, updateVirtualization,
       add: doc => docs.push(doc), configure: value => Object.assign(settings, value),
       setTemplate: value => { template = value; }, template: () => template,
       state: () => ({ activeDocId, currentRootLabel, doc: activeDoc(), view: { ...mainView.state } }) });`, context);
@@ -527,6 +530,28 @@ test('native opening at the threshold retains the ordinary worker parser', async
   assert.equal(read, 1); assert.equal(api.state().doc.parsed.ok, true);
 });
 
+test('native IDE retains original source text and reopening clears the previous draft', async () => {
+  const original='{ "ok": true }';
+  const {api,elements}=reader(new Map(), {
+    URL,
+    Worker: class {
+      terminate() {}
+      postMessage(payload) { this.onmessage({data:{result:parseDocument(payload.text,payload.name),text:''}}); }
+    },
+    statNativeFile: async path => ({path,name:'normal.json',size:original.length}),
+    readNativeFile: async path => ({path,name:'normal.json',size:original.length,text:original})
+  });
+  api.configure({viewMode:'ide'});await api.loadFile({path:'D:/normal.json'});
+  assert.equal(elements.get('ideInput').value,original);
+  const first=api.state().doc;
+  elements.get('ideInput').value='{"ok":false}';api.applyIdeChange('{"ok":false}');
+  first.dirty=false;
+  await api.loadFile({path:'D:/normal.json'});
+  assert.equal(api.state().doc.id,first.id);
+  assert.equal(elements.get('ideInput').value,original);
+  assert.equal(first.ideDraft,undefined);
+});
+
 test('reading action labels follow the active file mode and small files have no paging controls', async () => {
   const { api, elements } = reader();
   const doc = api.buildDoc(JSON.stringify(Array.from({length:201},(_,i)=>i)), 'small.json', 800);
@@ -585,6 +610,49 @@ test('editing updates search source, undo restores the original and shortcuts st
   press('Escape'); assert.equal(elements.get('viewer').classList.contains('editing'),false);
 });
 
+
+test('IDE settings, search, manual switching and edits share the active revision', async () => {
+  const {api,elements}=reader();
+  api.configure({viewMode:'auto'});
+  const doc=api.buildDoc('{"count":1,"message":"hello"}','simple.json',30);
+  api.add(doc);api.activateDoc(doc.id);
+  assert.equal(elements.get('ideView').hidden,false);
+  assert.equal(elements.get('viewport').hidden,true);
+  await api.searchTree('hello');
+  assert.equal(elements.get('searchCount').textContent,'1 / 1');
+  assert.equal(elements.get('ideLines').querySelectorAll('.current-match').length,1);
+  elements.get('switchViewBtn').listeners.get('click')();
+  assert.equal(elements.get('ideView').hidden,true);
+  api.beginNodeEdit(elements.get('tree').firstElementChild);
+  elements.get('valueEditType').value='object'; elements.get('valueEditText').value='{"count":2}';api.applyNodeEdit();
+  elements.get('switchViewBtn').listeners.get('click')();
+  assert.equal(elements.get('ideView').hidden,false);
+  assert.equal(doc.parsed.count,2);
+  elements.get('undoEditBtn').listeners.get('click')();
+  await api.searchTree('hello');
+  assert.equal(elements.get('searchCount').textContent,'1 / 1');
+  doc.size=65*1024*1024;api.activateDoc(doc.id);
+  assert.equal(elements.get('ideView').hidden,true);
+  assert.equal(elements.get('switchViewBtn').disabled,true);
+});
+
+test('IDE drafts survive invalid syntax and file switches, formatting and zoom remain undoable and scoped', async () => {
+  const {api,elements,keyListeners}=reader();api.configure({viewMode:'ide'});
+  const doc=api.buildDoc('{"count":1}','edit.json',11);api.add(doc);api.activateDoc(doc.id);
+  const input=elements.get('ideInput');input.value='{"count":';
+  input.listeners.get('input')({target:input});
+  assert.equal(doc.dirty,true);assert.ok(doc.ideError);assert.equal(doc.parsed.count,1);
+  elements.get('switchViewBtn').click();assert.equal(elements.get('ideView').hidden,false);
+  const other=api.buildDoc('{}','other.json',2);api.add(other);api.activateDoc(other.id);api.activateDoc(doc.id);
+  assert.equal(input.value,'{"count":');
+  input.value='{"count":2}';input.listeners.get('input')({target:input});assert.equal(doc.parsed.count,2);assert.equal(doc.ideError,'');
+  api.formatIde();assert.equal(input.value,'{\n  "count": 2\n}\n');
+  elements.get('undoEditBtn').click();assert.equal(input.value,'{"count":2}');
+  const key=keyListeners.get('keydown');key({key:'=',ctrlKey:true,target:input,preventDefault(){}});assert.equal(doc.ideZoom,110);
+  key({key:'0',ctrlKey:true,target:input,preventDefault(){}});assert.equal(doc.ideZoom,100);
+  await api.searchTree('count');assert.equal(elements.get('searchCount').textContent,'1 / 1');
+  elements.get('switchViewBtn').click();assert.equal(elements.get('ideView').hidden,true);assert.equal(doc.parsed.count,2);
+});
 
 test('JSONL first-record editing preserves later records and undo restores original text', () => {
   const {api,elements}=reader(); api.configure({jsonlWrapArray:false});

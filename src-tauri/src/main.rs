@@ -279,6 +279,7 @@ fn main() {
             indexed_document,
             select_documents,
             save_document_copy,
+            window::sync_document_menu,
             set_document_title
         ])
         .run(tauri::generate_context!())
