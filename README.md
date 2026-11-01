@@ -10,6 +10,7 @@
 - 从 [Releases](https://github.com/The-cute-cat/json-atlas/releases) 下载所需版本的 `*-setup.exe` 或 `.msi`，选择一种安装即可。
 - 支持关联 `.json`、`.jsonl`、`.ndjson`、`.jsonlines`。EXE 安装时可选择关联，MSI 会注册这些文件类型；如系统已有默认应用，可在 Windows 的“打开方式”中选择 JSON Atlas。
 - 从 EXE 切换到 MSI 时，先卸载旧安装方式，再安装新包。MSI 保留对原有文件类型标识的兼容；如果 Windows 已将格式设为其他应用，请在“设置 → 应用 → 默认应用 → JSON Atlas”中确认默认打开方式。
+- MSI 普通及静默卸载自动清除当前用户的本地设置、阅读历史与缓存，不再询问；升级不会清理。清除不可撤销，不会删除应用数据目录之外的 JSON / JSONL 文件。其他 Windows 用户的数据不在清理范围内。
 
 ## 快速上手
 

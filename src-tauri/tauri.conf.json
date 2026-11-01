@@ -62,8 +62,8 @@
       "wix": {
         "upgradeCode": "1d36a936-5fd6-5061-9069-87611655a266",
         "language": "zh-CN",
-        "fragmentPaths": ["windows/file-associations.wxs"],
-        "componentRefs": ["DocumentAssociations"]
+        "fragmentPaths": ["windows/file-associations.wxs", "windows/installer-ui.wxs"],
+        "componentRefs": ["DocumentAssociations", "InstallerUiSupport"]
       },
       "nsis": {
         "installerHooks": "windows/installer-hooks.nsh"

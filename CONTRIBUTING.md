@@ -42,6 +42,10 @@ MSI 使用固定的 `bundle.windows.wix.upgradeCode` 标识同一应用的后续
 
 该检查核对安装包内的注册信息及组件引用，不能替代实际安装、升级和卸载测试。校验步骤排在打包之后，因此失败时草稿 Release 已经生成；请删除该草稿，修复后重新触发工作流，不要把未通过校验的产物公开发布。
 
+`windows/installer-ui.wxs` 定义 MSI 完成页及卸载清理条件；`installer_cleanup.rs` 在启动 WebView 前处理清理请求。普通卸载及静默卸载均自动删除当前用户的 `%LOCALAPPDATA%\io.hopecat.jsonatlas` 和 `%APPDATA%\io.hopecat.jsonatlas`，不弹出选择框。仅应用专用目录会被清理，目录链接会拒绝处理。不要把文件浏览记录中的原文件路径加入清理范围。
+
+升级通过 `NOT UPGRADINGPRODUCTCODE` 排除清理。发布前应在测试账户验证普通卸载、静默卸载与升级路径；清理当前账户不等于清理机器上的所有账户。旧 MSI 已缓存的卸载逻辑不会自动改变，需要先安装包含此改动的新包。
+
 ## 测试数据与性能验证
 
 `examples/` 提供可直接打开的小样例。`tests/` 中的 JSON 是回归测试输入，应该与测试代码一起提交；不要将真实业务数据放在此目录。

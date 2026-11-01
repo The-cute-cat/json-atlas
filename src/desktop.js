@@ -8,8 +8,10 @@ let themeUpdate = Promise.resolve();
 export function updateWindowTheme(theme, resolved) {
   if(!desktop) return;
   themeUpdate = themeUpdate.then(async () => {
-    await getCurrentWebviewWindow().setTheme(theme === 'system' ? null : theme);
+    // MenuTheme::Auto consults the process UX preference while repainting.
+    // Set that preference first, before Tauri schedules the menu repaint.
     await invoke('sync_menu_theme', { dark:resolved === 'dark' });
+    await getCurrentWebviewWindow().setTheme(theme === 'system' ? null : theme);
   }).catch(console.error);
 }
 let menuUpdate = Promise.resolve();

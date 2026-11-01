@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="InstallerUiSupport" Guid="C73022A9-2365-4AD6-9498-1DF7DBBFD7E8" Win64="yes">
+        <RegistryValue Root="HKLM" Key="Software\The_cute_cat\JSON Atlas" Name="InstallerUIVersion" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    <UI>
+      <!-- Explicit launch button avoids the opaque checkbox background. -->
+      <Dialog Id="AtlasExitDialog" Width="370" Height="270" Title="JSON Atlas 安装程序">
+        <Control Id="Background" Type="Bitmap" X="0" Y="0" Width="370" Height="234" Text="!(loc.ExitDialogBitmap)" TabSkip="yes" />
+        <Control Id="Heading" Type="Text" X="135" Y="28" Width="220" Height="45" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Bigger}JSON Atlas 安装向导已完成" />
+        <Control Id="Summary" Type="Text" X="135" Y="82" Width="220" Height="40" Transparent="yes" NoPrefix="yes" Text="单击“完成”关闭安装向导。" />
+        <Control Id="Divider" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Launch" Type="PushButton" X="188" Y="243" Width="98" Height="17" Text="启动 JSON Atlas">
+          <Condition Action="hide">Installed</Condition>
+          <Publish Event="DoAction" Value="LaunchApplication" Order="1">NOT Installed</Publish>
+          <Publish Event="EndDialog" Value="Return" Order="2">1</Publish>
+        </Control>
+        <Control Id="Finish" Type="PushButton" X="292" Y="243" Width="66" Height="17" Default="yes" Cancel="yes" Text="完成">
+          <Publish Event="EndDialog" Value="Return" Order="2">1</Publish>
+        </Control>
+      </Dialog>
+      <InstallUISequence>
+        <Show Dialog="ExitDialog" Sequence="9999">0</Show>
+        <Show Dialog="AtlasExitDialog" OnExit="success" />
+      </InstallUISequence>
+    </UI>
+    <!-- Run in the invoking user's context during uninstall, including quiet mode.
+         Upgrades retain data; never enumerate other user profiles. -->
+    <CustomAction Id="AtlasClearUserData" FileKey="Path" ExeCommand="--msi-cleanup clear" Execute="immediate" Impersonate="yes" Return="check" />
+    <InstallExecuteSequence>
+      <Custom Action="AtlasClearUserData" Before="RemoveFiles">Installed AND REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

@@ -2,6 +2,7 @@
 
 mod documents;
 mod indexed;
+mod installer_cleanup;
 mod menu_theme;
 mod window;
 
@@ -263,6 +264,9 @@ fn set_document_title(window: tauri::WebviewWindow, name: Option<String>) -> Res
 }
 
 fn main() {
+    if let Some(code) = installer_cleanup::run() {
+        std::process::exit(code);
+    }
     let cwd = std::env::current_dir().unwrap_or_default();
     let initial = documents::argument_paths(std::env::args_os().skip(1), &cwd);
     tauri::Builder::default()

@@ -71,7 +71,37 @@ try {
   foreach ($requiredFile in @('json-atlas.exe', 'document.ico')) {
     if ($requiredFile -notin $files) { throw "Missing association target file: $requiredFile" }
   }
-  Write-Output "MSI file association checks passed: $msiPath"
+  function Read-InstallerRows([string]$Query, [int]$Columns) {
+    $checkView = $database.OpenView($Query)
+    try {
+      [void]$checkView.Execute()
+      while ($checkRecord = $checkView.Fetch()) {
+        try {
+          $values = for ($column = 1; $column -le $Columns; $column++) { $checkRecord.StringData($column) }
+          [pscustomobject]@{ Values = @($values) }
+        } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($checkRecord) }
+      }
+    } finally {
+      [void]$checkView.Close()
+      [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($checkView)
+    }
+  }
+  $launch = @(Read-InstallerRows 'SELECT `Type`, `Y`, `Width`, `Text` FROM `Control` WHERE `Dialog_` = ''AtlasExitDialog'' AND `Control` = ''Launch''' 4)
+  if ($launch.Count -ne 1 -or $launch[0].Values[0] -ne 'PushButton' -or [int]$launch[0].Values[1] -ne 243 -or [int]$launch[0].Values[2] -lt 90 -or $launch[0].Values[3] -ne '启动 JSON Atlas') {
+    throw 'MSI exit dialog must use a localized launch button in the footer.'
+  }
+  $events = @(Read-InstallerRows 'SELECT `Event`, `Argument`, `Ordering` FROM `ControlEvent` WHERE `Dialog_` = ''AtlasExitDialog'' AND `Control_` = ''Launch''' 3)
+  if (!($events | Where-Object { $_.Values[0] -eq 'DoAction' -and $_.Values[1] -eq 'LaunchApplication' -and $_.Values[2] -eq '1' }) -or
+      !($events | Where-Object { $_.Values[0] -eq 'EndDialog' -and $_.Values[1] -eq 'Return' -and $_.Values[2] -eq '2' })) { throw 'Launch button must start the app and close the installer.' }
+  $exitDialog = @(Read-InstallerRows 'SELECT `Action` FROM `InstallUISequence` WHERE `Sequence` = -1' 1)
+  if ($exitDialog.Count -ne 1 -or $exitDialog[0].Values[0] -ne 'AtlasExitDialog') { throw 'Custom exit dialog is not selected.' }
+  $prompt = @(Read-InstallerRows 'SELECT `Action` FROM `CustomAction` WHERE `Action` = ''AtlasPromptDataRemoval''' 1)
+  if ($prompt.Count) { throw 'Uninstall must not ask whether to clear data.' }
+  $cleanup = @(Read-InstallerRows 'SELECT `Condition` FROM `InstallExecuteSequence` WHERE `Action` = ''AtlasClearUserData''' 1)
+  if ($cleanup.Count -ne 1 -or $cleanup[0].Values[0] -ne 'Installed AND REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE') {
+    throw 'Uninstall must clear data automatically while upgrades retain it.'
+  }
+  Write-Output "MSI association, completion UI and uninstall cleanup checks passed: $msiPath"
 }
 finally {
   foreach ($item in @($view, $database, $installer)) {
