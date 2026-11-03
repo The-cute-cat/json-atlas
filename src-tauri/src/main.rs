@@ -193,7 +193,8 @@ async fn save_document_copy(
     name: String,
     text: String,
     original_path: Option<String>,
-) -> Result<bool, String> {
+    protected_paths: Vec<String>,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     if text.len() as u64 > documents::MAX_FILE_BYTES {
         return Err("工作副本超过 256 MiB，无法保存".into());
@@ -207,7 +208,7 @@ async fn save_document_copy(
             .set_file_name(&name)
             .add_filter("JSON / JSONL", &["json", "jsonl", "ndjson", "jsonlines"])
             .blocking_save_file();
-        let Some(file) = file else { return Ok(false) };
+        let Some(file) = file else { return Ok(None) };
         let path = file.into_path().map_err(|e| e.to_string())?;
         documents::validate_local_path(&path.to_string_lossy())?;
         if let Some(original) = original_path {
@@ -220,8 +221,18 @@ async fn save_document_copy(
                 }
             }
         }
-        std::fs::write(path, text.as_bytes()).map_err(|e| e.to_string())?;
-        Ok(true)
+        if let Ok(destination) = std::fs::canonicalize(&path) {
+            for open in protected_paths {
+                if std::fs::canonicalize(open).is_ok_and(|open| open == destination) {
+                    return Err("该位置已有打开的文档，请选择其他位置，避免覆盖工作区文件".into());
+                }
+            }
+        }
+        std::fs::write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
+        // Return the actual saved location so a temporary document can become
+        // a regular document without reopening and discarding its edit history.
+        let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        Ok(Some(documents::display_path(&canonical)))
     })
     .await
     .map_err(|e| e.to_string())?

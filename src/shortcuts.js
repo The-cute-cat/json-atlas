@@ -5,7 +5,7 @@ export function isMacPlatform(platform = globalThis.navigator) {
 // Physical key codes keep Option+letter shortcuts usable on macOS layouts.
 const bindings = {
   open: ['Mod', 'O'], save: ['Mod', 'S'], saveCopy: ['Mod', 'Shift', 'S'],
-  find: ['Mod', 'F'], undo: ['Mod', 'Z'], format: ['Mod', 'Alt', 'L'],
+  find: ['Mod', 'F'], undo: ['Mod', 'Z'], copyNode: ['Mod', 'C'], format: ['Mod', 'Alt', 'L'],
   settings: ['Ctrl', 'Alt', 'S'], close: ['Ctrl', 'F4'],
   switchView: ['Mod', 'Alt', 'V'], editMode: ['Mod', 'Alt', 'E'], resetView: ['Mod', 'Alt', '0'], about: ['F1'],
   expandAll: ['Mod', 'Shift', 'NumpadAdd'], collapseAll: ['Mod', 'Shift', 'NumpadSubtract'],

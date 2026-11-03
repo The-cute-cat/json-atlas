@@ -141,7 +141,7 @@
 </dialog>
 <dialog id="discardEditDialog" class="value-edit-dialog"><h2>有尚未保存的修改</h2><p>关闭后会丢弃工作副本中的修改。可先取消并保存或另存为。</p><div class="edit-actions"><button id="discardEditCancel">取消</button><button id="discardEditConfirm">丢弃修改并关闭</button></div></dialog>
 <div id="ctxMenu">
-  <button id="ctxExpandOne">展开一级</button>
+  <button id="ctxCopyPath">复制路径</button>
   <button id="ctxExpandSubtree">展开全部下级</button>
   <div class="ctx-sep"></div>
   <button id="ctxCollapse">收起该节点（含下级）</button>
@@ -160,11 +160,13 @@
       </div>
       <button id="settingsClose" title="关闭">✕</button>
     </div>
-    <div class="settings-body">
-      <div class="settings-group">
+    <div class="settings-layout"><nav class="settings-nav" aria-label="设置分类" role="tablist" aria-orientation="vertical"><button type="button" id="settingsNav0" role="tab" aria-controls="settingsPage0" aria-selected="true" tabindex="0">阅读与布局</button><button type="button" id="settingsNav1" role="tab" aria-controls="settingsPage1" aria-selected="false" tabindex="-1">字段内容</button><button type="button" id="settingsNav2" role="tab" aria-controls="settingsPage2" aria-selected="false" tabindex="-1">JSONL</button><button type="button" id="settingsNav3" role="tab" aria-controls="settingsPage3" aria-selected="false" tabindex="-1">模板与备份</button><button type="button" id="settingsNav4" role="tab" aria-controls="settingsPage4" aria-selected="false" tabindex="-1">键盘快捷键</button></nav><div class="settings-body" id="settingsContent">
+      <div class="settings-group" id="settingsPage0" role="tabpanel" aria-labelledby="settingsNav0">
       <div class="settings-group-title">阅读与布局</div>
       <div class="settings-row"><div><label class="s-label" for="optTheme">外观主题</label><div class="s-hint">白天模式适合明亮环境，夜间模式减少暗处的屏幕亮度。默认跟随系统，系统切换外观时会自动更新。</div></div><select id="optTheme"><option value="system">跟随系统</option><option value="light">白天模式</option><option value="dark">夜间模式</option></select></div>
-      <div class="settings-row"><div><label class="s-label" for="optViewMode">文件查看方式</label><div class="s-hint">树形视图为默认方式。自动模式对简单结构使用带行号和语法高亮的 IDE 视图；优先 IDE 适合习惯代码阅读的用户。超过内存阈值、结构过深或文本过多时始终使用树形视图。IDE 可直接编辑、格式化及缩放字号；鼠标移到行号区域可折叠或展开结构。修改后可保存到原文件或另存为副本。</div></div><select id="optViewMode"><option value="tree">树形视图</option><option value="auto">简单结构自动使用 IDE</option><option value="ide">优先使用 IDE</option></select></div>
+      <div class="settings-row"><div><label class="s-label" for="optViewMode">文件查看方式</label><div class="s-hint">小文件可使用带行号和语法高亮的 IDE 视图，支持编辑、折叠与格式化。较大或复杂文件自动使用树形视图，两种视图共享修改内容。</div></div><select id="optViewMode"><option value="tree">树形视图</option><option value="auto">简单结构自动使用 IDE</option><option value="ide">优先使用 IDE</option></select></div>
+      <div class="settings-row"><div><label class="s-label" for="optIdeFoldAlwaysVisible">IDE 折叠箭头常驻显示</label><div class="s-hint">默认只在鼠标移到行号区域或用键盘聚焦按钮时显示；开启后始终显示。切换和悬停均无动画。</div></div><label class="switch"><input type="checkbox" id="optIdeFoldAlwaysVisible" /><span class="slider"></span></label></div>
+      <div class="settings-row"><div><label class="s-label" for="optNodeSelectionStyle">显示节点选中描边</label><div class="s-hint">默认关闭。关闭仅隐藏描边，点击选中节点后仍可按 Ctrl/⌘+C 复制内容。</div></div><label class="switch"><input type="checkbox" id="optNodeSelectionStyle" /><span class="slider"></span></label></div>
       <div class="settings-row"><div><label class="s-label" for="optVimEditing">Vim 风格编辑快捷键</label><div class="s-hint">默认关闭。开启后，在画布空白处按 i 进入编辑模式，按 Esc 退出；输入框内不触发。右键编辑节点始终可用。索引大文件暂只读。</div></div><label class="switch"><input type="checkbox" id="optVimEditing" /><span class="slider"></span></label></div>
       <div class="settings-row">
         <div>
@@ -251,7 +253,7 @@
         </label>
       </div>
       </div>
-      <div class="settings-group">
+      <div class="settings-group" id="settingsPage1" role="tabpanel" aria-labelledby="settingsNav1" hidden>
         <div class="settings-group-title">字段内容</div>
         <div class="settings-row">
           <div>
@@ -276,7 +278,7 @@
           </select>
         </div>
       </div>
-      <div class="settings-group">
+      <div class="settings-group" id="settingsPage2" role="tabpanel" aria-labelledby="settingsNav2" hidden>
         <div class="settings-group-title">JSONL</div>
         <div class="settings-row">
           <div>
@@ -299,7 +301,7 @@
           </label>
         </div>
       </div>
-      <div class="settings-group">
+      <div class="settings-group" id="settingsPage3" role="tabpanel" aria-labelledby="settingsNav3" hidden>
       <div class="settings-group-title">模板与备份</div>
       <div class="settings-row">
         <div>
@@ -324,11 +326,12 @@
         </div>
       </div>
       </div>
-      <div class="settings-group">
+      <div class="settings-group" id="settingsPage4" role="tabpanel" aria-labelledby="settingsNav4" hidden>
         <div class="settings-group-title">键盘快捷键</div>
         <p class="s-hint">参考 IDEA 的常用键位，按当前系统显示。展开与收起仅作用于树形视图；在普通输入框中保留原有文字编辑行为。也可继续使用 Shift+Alt+F 格式化。</p>
         <dl id="shortcutHelp" class="shortcut-help"></dl>
       </div>
+    </div>
     </div>
     <div class="modal-foot">
       <button id="recordTemplateBtn2" class="tf-btn">记录当前展开为模板</button>

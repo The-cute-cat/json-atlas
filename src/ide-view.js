@@ -66,21 +66,24 @@ export function ideDecorations(lines) {
     const tokens = [];
     const pattern = /"(?:\\.|[^"\\])*(?:"|\\?$)|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\]]/g;
     for(const match of text.matchAll(pattern)) {
-      const value = match[0]; let className;
+      const value = match[0]; let className, partner;
       if(value[0] === '"') className = /^\s*:/.test(text.slice(match.index + value.length)) ? 'ide-key' : 'ide-string';
       else if(value === '{' || value === '[') {
         const colour = stack.length % 3;
         className = `ide-bracket-${colour}`;
-        stack.push({kind:value, colour, column:indent, line});
+        stack.push({kind:value, colour, column:indent, line, tokenIndex:tokens.length});
       } else if(value === '}' || value === ']') {
         const frame = stack.at(-1);
         if(frame?.kind === (value === '}' ? '{' : '[')) {
           className = `ide-bracket-${frame.colour}`; stack.pop();
+          const opener = frame.line === line ? tokens[frame.tokenIndex] : result[frame.line].tokens[frame.tokenIndex];
+          opener.partner = {line, column:match.index};
+          partner = {line:frame.line, column:opener.start};
           if(line > frame.line + 1) result[frame.line].foldEnd = Math.max(result[frame.line].foldEnd ?? 0, line);
         }
         else className = 'ide-bracket-invalid';
       } else className = /^(true|false|null)$/.test(value) ? 'ide-literal' : 'ide-number';
-      tokens.push({start:match.index, text:value, className});
+      tokens.push({start:match.index, text:value, className, ...(partner ? {partner} : {})});
     }
     result.push({tokens,guides});
   });
@@ -122,16 +125,15 @@ export function renderIde(container, lines, document, onFold) {
   const locations = new Map();
   const decorations = lines.every(line => line.decoration) ? lines.map(line => line.decoration) : ideDecorations(lines);
   for(const [i, line] of lines.entries()) {
-    const row = document.createElement('div'); row.className = 'ide-line';
+    const row = document.createElement('div'); row.className = 'ide-line' + (line.folded ? ' folded' : '');
     const original = line.decoration ? line.path[0] : i;
     row.dataset.line = String(original + 1);
     const number = document.createElement('span'); number.className = 'ide-line-number'; number.textContent = String(original + 1);
     const decoration = line.decoration || decorations[i];
     if(onFold && decoration.foldEnd !== undefined) {
       const arrow = document.createElement('button'); arrow.className = 'ide-fold'; arrow.type = 'button';
-      arrow.textContent = line.folded ? '›' : '⌄';
-      arrow.title = line.folded ? '展开结构' : '折叠结构';
-      arrow.setAttribute('aria-label', `${arrow.title}，第 ${original + 1} 行`);
+      const label = line.folded ? '展开结构' : '折叠结构';
+      arrow.setAttribute('aria-label', `${label}，第 ${original + 1} 行`);
       arrow.setAttribute('aria-expanded', String(!line.folded));
       arrow.addEventListener('click', () => onFold(original)); number.appendChild(arrow);
     }
@@ -140,6 +142,7 @@ export function renderIde(container, lines, document, onFold) {
     code.setAttribute('aria-hidden', 'true');
     for(const {column,colour} of decoration.guides) {
       const guide = document.createElement('span'); guide.className = `ide-guide ide-bracket-${colour}`;
+      guide.dataset.column = String(column);
       guide.style.setProperty('--ide-column', String(column)); code.appendChild(guide);
     }
     // Text nodes only: JSON strings must never become HTML.
@@ -148,6 +151,7 @@ export function renderIde(container, lines, document, onFold) {
       code.appendChild(document.createTextNode(line.text.slice(end, part.start)));
       const token = document.createElement('span');
       token.className = part.className;
+      token.dataset.column = String(part.start);
       token.textContent = part.text; code.appendChild(token); end = part.start + part.text.length;
     }
     code.appendChild(document.createTextNode(line.text.slice(end)));

@@ -42,6 +42,7 @@ class Element {
   removeAttribute() {}
   close() { this.open = false; }
   showModal() { this.open = true; }
+  remove() { if(this.parentElement) this.parentElement.children = this.parentElement.children.filter(child=>child!==this); this.parentElement=null; }
   focus() {}
   select() {}
   click() { if(!this.disabled) this.listeners.get('click')?.({target:this}); }
@@ -98,11 +99,13 @@ function reader(storage = new Map(), native = {}) {
     MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
     valueAt, replaceValue, parseEdit, serializeDocument, ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit, normalizeTheme, watchTheme,
     encodePath: encodeDataPath, normalizePath: normalizeDataPath, compileSearch,
-    console, Blob, isMacPlatform, shortcutLabel, shortcutAction, installTooltips, ...native
+    console, Blob, File, isMacPlatform, shortcutLabel, shortcutAction, installTooltips, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
     ;({ buildDoc, resolveDoc, activateDoc, collectSession, expandByPaths, expandLevels, expandOne, positionFindPanel,
       beginNodeEdit, applyNodeEdit, applyIdeChange, toggleIdeFold, handleIdeInput, formatIde, openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile, openPaths, showNodeLimit, collapseAll, updateVirtualization, saveCurrentDocument,
+      openPastedText, selectCopyNode,
+      allDocs: () => docs,
       add: doc => docs.push(doc), configure: value => Object.assign(settings, value),
       setTemplate: value => { template = value; }, template: () => template,
       state: () => ({ activeDocId, currentRootLabel, doc: activeDoc(), view: { ...mainView.state } }) });`, context);
@@ -135,6 +138,20 @@ test('theme preference persists and is shown when settings reopen', () => {
   assert.equal(reopened.elements.get('optTheme').value,'dark');
   keyListeners.get('keydown')({key:'s',ctrlKey:true,altKey:true,preventDefault(){}});
   assert.equal(selector.value,'dark');
+});
+
+test('settings category navigation switches panels and supports arrow keys without changing options', () => {
+  const {elements,keyListeners}=reader();
+  keyListeners.get('keydown')({key:'s',ctrlKey:true,altKey:true,preventDefault(){}});
+  assert.equal(elements.get('settingsPage0').hidden,false);
+  elements.get('settingsNav3').click();
+  assert.equal(elements.get('settingsPage0').hidden,true);
+  assert.equal(elements.get('settingsPage3').hidden,false);
+  assert.equal(elements.get('recordTemplateBtn2').hidden,false);
+  let prevented=false;
+  elements.get('settingsNav3').listeners.get('keydown')({key:'ArrowDown',preventDefault(){prevented=true;}});
+  assert(prevented);assert.equal(elements.get('settingsPage4').hidden,false);
+  assert.equal(elements.get('recordTemplateBtn2').hidden,true);
 });
 
 test('custom shortcuts switch views, toggle tree editing and reset IDE zoom without changing content', () => {
@@ -854,4 +871,137 @@ test('macOS hints and shortcuts use Command and platform specific settings and t
   const press=(key,extra={})=>keyListeners.get('keydown')({key,target:elements.get('viewport'),preventDefault(){},...extra});
   press('}',{code:'BracketRight',metaKey:true,shiftKey:true});assert.equal(api.state().activeDocId,second.id);
   press(',',{metaKey:true});assert(elements.get('settingsMask').classList.contains('open'));
+});
+
+function pastedReader(extra = {}) {
+  return reader(new Map(), {
+    desktop:true, URL, updateDocumentMenu(){}, guardEditedClose:async()=>{},
+    Worker:class {
+      terminate() {}
+      async postMessage(payload) {
+        const text = await payload.file.text();
+        this.onmessage({data:{result:parseDocument(text,payload.name),text:payload.keepText ? text : null}});
+      }
+    }, ...extra
+  });
+}
+
+test('pasting JSON and JSONL creates distinct unsaved documents and retains original text on desktop', async () => {
+  const {api,elements} = pastedReader();
+  const text = '{ "a": 1 }';
+  await api.openPastedText(text);
+  const first = api.state().doc;
+  assert.equal(first.text,text); assert.equal(first.temporary,true); assert.equal(first.dirty,true);
+  assert.equal(first.path,null); assert.equal(elements.get('saveBtn').disabled,false);
+  await api.openPastedText(text);
+  assert.equal(api.allDocs().length,2); assert.notEqual(api.state().doc.name,first.name);
+  await api.openPastedText('{"a":1}\n{"a":2}\n');
+  assert.equal(api.state().doc.kind,'jsonl'); assert.match(api.state().doc.name,/\.jsonl$/);
+  assert.equal(api.state().doc.records.length,2);
+  await api.openPastedText('  '); await api.openPastedText('not JSON');
+  assert.equal(api.allDocs().length,3);
+  api.configure({viewMode:'ide'}); api.activateDoc(first.id);
+  api.handleIdeInput('{"a":2}'); elements.get('undoEditBtn').click();
+  assert.equal(first.text,text); assert.equal(first.dirty,true,'undo must not mark an unsaved temporary file as saved');
+});
+
+test('temporary first save cancellation/failure retains state, successful save binds path and later saves write there', async () => {
+  let outcome = null; const copies=[], writes=[];
+  const {api,elements,storage} = pastedReader({
+    saveDocumentCopy:async(...args)=>{ copies.push(args); if(outcome instanceof Error) throw outcome; return outcome; },
+    saveNativeDocument:async(...args)=>writes.push(args)
+  });
+  api.configure({reopenLast:true,viewMode:'ide'});
+  await api.openPastedText('{"a":1}'); const doc=api.state().doc;
+  await api.saveCurrentDocument(); assert.equal(doc.temporary,true); assert.equal(doc.path,null); assert.equal(doc.dirty,true);
+  outcome = new Error('write failed'); await api.saveCurrentDocument();
+  assert.equal(doc.path,null); assert.equal(doc.dirty,true); assert.equal(doc.saving,false);
+  outcome = 'C:\\saved\\clipboard.json'; await api.saveCurrentDocument();
+  assert.equal(doc.path,outcome); assert.equal(doc.name,'clipboard.json'); assert.equal(doc.temporary,false); assert.equal(doc.dirty,false);
+  assert.equal(doc.diskText,'{"a":1}'); assert.equal(doc.identity,outcome.toLowerCase());
+  assert.equal(copies[2][0],'未命名-1.json');
+  assert([...storage.values()].some(value=>value.includes('clipboard.json')));
+  api.handleIdeInput('{"a":2}'); await api.saveCurrentDocument();
+  assert.deepEqual(writes[0],[outcome,'{"a":2}','{"a":1}']);
+  assert.equal(copies.length,3); assert.equal(doc.dirty,false);
+  assert.equal(elements.get('fileName').title,outcome);
+});
+
+test('paste shortcut preserves text controls and dialogs without actively reading the clipboard', async () => {
+  let reads=0;
+  const {api,elements,keyListeners} = pastedReader({navigator:{platform:'Win32',clipboard:{readText:async()=>{reads++;throw new Error('must not request clipboard permission')}}}});
+  const paste=keyListeners.get('paste'); let prevented=false;
+  const event=target=>({target,clipboardData:{getData:()=>'{"a":1}'},preventDefault(){prevented=true;}});
+  paste(event({closest:()=>({})}));
+  assert.equal(prevented,false); assert.equal(api.allDocs().length,0);
+  elements.get('valueEditDialog').showModal();
+  paste(event({closest:()=>null})); assert.equal(prevented,false);
+  elements.get('valueEditDialog').close();
+  paste(event({closest:()=>null}));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(prevented,true); assert.equal(api.allDocs().length,1); assert.equal(reads,0);
+});
+
+test('IDE fold icon visibility is optional, immediate and retained after reopening settings and restart', () => {
+  const {elements,storage,keyListeners} = reader();
+  assert.equal(elements.get('ideView').classList.contains('ide-fold-always-visible'),false);
+  const toggle=elements.get('optIdeFoldAlwaysVisible');
+  toggle.checked=true;toggle.listeners.get('change')({target:toggle});
+  assert.equal(elements.get('ideView').classList.contains('ide-fold-always-visible'),true);
+  keyListeners.get('keydown')({key:'s',ctrlKey:true,altKey:true,preventDefault(){}});
+  assert.equal(toggle.checked,true);
+  const restarted=reader(storage);
+  assert.equal(restarted.elements.get('ideView').classList.contains('ide-fold-always-visible'),true);
+  const restored=restarted.elements.get('optIdeFoldAlwaysVisible');
+  restored.checked=false;restored.listeners.get('change')({target:restored});
+  assert.equal(restarted.elements.get('ideView').classList.contains('ide-fold-always-visible'),false);
+});
+
+test('copy path works on leaf nodes and copies the exact encoded JSON path', async () => {
+  const copied=[];
+  const {api,elements}=reader(new Map(),{navigator:{platform:'Win32',clipboard:{writeText:async text=>copied.push(text)}}});
+  const doc=api.buildDoc('{"a.b":1}','path.json',9);api.add(doc);api.activateDoc(doc.id);
+  const root=elements.get('tree').firstElementChild; await root._ensureChildren();
+  const leaf=elements.get('tree').querySelectorAll('.tree-node').find(node=>node.dataset.path==='$["a.b"]');
+  assert(leaf);
+  elements.get('tree').listeners.get('contextmenu')({target:{closest:()=>({closest:()=>leaf})},clientX:20,clientY:20,preventDefault(){},stopPropagation(){}});
+  assert.equal(elements.get('ctxCopyPath').disabled,false);
+  await elements.get('ctxCopyPath').listeners.get('click')();
+  assert.deepEqual(copied,['$["a.b"]']);
+});
+
+test('selecting a card enables Ctrl+C for its full contents, without stealing ordinary text copy', async () => {
+  const copied=[];let textSelected=false;
+  const {api,elements,keyListeners}=reader(new Map(),{
+    navigator:{platform:'Win32',clipboard:{writeText:async text=>copied.push(text)}},
+    window:{innerWidth:1440,innerHeight:900,addEventListener(){},getSelection:()=>({isCollapsed:!textSelected})}
+  });
+  const doc=api.buildDoc('{"text":"hello","number":42}','copy.json',28);api.add(doc);api.activateDoc(doc.id);
+  const root=elements.get('tree').firstElementChild;await root._ensureChildren();
+  const leaf=elements.get('tree').querySelectorAll('.tree-node').find(node=>node.dataset.path==='$.text');
+  const target={closest:selector=>selector==='.tree-node'?leaf:selector==='.node-card'?{}:null};
+  elements.get('tree').listeners.get('pointerdown')({target});
+  assert(leaf.classList.contains('selected-node'));
+  const press=(extra={})=>{let prevented=false;keyListeners.get('keydown')({key:'c',ctrlKey:true,target:elements.get('viewport'),preventDefault(){prevented=true;},...extra});return prevented;};
+  assert.equal(press(),true);await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(copied,['hello']);
+  assert.equal(press({target:{closest:()=>({})}}),false);
+  textSelected=true;assert.equal(press(),false);textSelected=false;
+  assert.equal(press({isComposing:true}),false);assert.equal(press({shiftKey:true}),false);
+  elements.get('valueEditDialog').showModal();assert.equal(press(),false);elements.get('valueEditDialog').close();
+  api.selectCopyNode(root);assert.equal(leaf.classList.contains('selected-node'),false);
+  assert.equal(press(),true);await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(JSON.parse(copied[1]),{text:'hello',number:42});
+  api.selectCopyNode(null);assert.equal(press(),false);
+  assert.equal(copied.length,2);
+});
+
+test('pending node copies cannot publish content after switching documents', async () => {
+  const copied=[];let finish;
+  const {api,elements,keyListeners}=reader(new Map(),{navigator:{platform:'Win32',clipboard:{writeText:async text=>copied.push(text)}}});
+  const first=api.buildDoc('{}','first.json',2),second=api.buildDoc('{}','second.json',2);
+  api.add(first);api.add(second);api.activateDoc(first.id);
+  const node=elements.get('tree').firstElementChild;
+  node._source.getText=()=>new Promise(resolve=>{finish=resolve;});api.selectCopyNode(node);
+  let prevented=false;keyListeners.get('keydown')({key:'c',ctrlKey:true,target:elements.get('viewport'),preventDefault(){prevented=true;}});
+  assert.equal(prevented,true);api.activateDoc(second.id);finish('{}');await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(copied,[]);assert(!node.classList.contains('selected-node'));
 });

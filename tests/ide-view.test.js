@@ -4,6 +4,13 @@ import { ideModel, normalizeViewMode, parseIdeText, formatIdeText, ideDecoration
 import { searchData } from '../src/data.js';
 
 const doc = data => ({data, text:JSON.stringify(data), size:100});
+test('bracket pairs retain both endpoints and ignore brackets inside strings', () => {
+  const rows=ideDecorations(ideTextLines('{\n  "a": [\n    "[}]"\n  ]\n}'));
+  assert.deepEqual(rows[0].tokens[0].partner,{line:4,column:0});
+  assert.deepEqual(rows[1].tokens.at(-1).partner,{line:3,column:2});
+  assert.deepEqual(rows[3].tokens[0].partner,{line:1,column:7});
+  assert.equal(rows[2].tokens[0].partner,undefined);
+});
 test('nested folding preserves original numbers, quoted braces, and hidden source when editing', () => {
   const raw = '{\n  "a": {\n    "s": "[{}]"\n  },\n  "b": 1\n}';
   const projection = ideProjection(raw, new Set([1]));
