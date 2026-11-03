@@ -1,0 +1,70 @@
+name: Pages
+
+# 从 site/ 与 assets/ 生成 dist/site/，试用页为自包含 HTML。
+# 首次启用：仓库 Settings → Pages → Source 选择 “GitHub Actions”。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'assets/**'
+      - 'src/**'
+      - 'index.html'
+      - 'LICENSE'
+      - 'vite.config.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/build-single-file.js'
+      - 'scripts/build-site.js'
+      - 'tests/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 构建落地页与试用页
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 检查与测试
+        run: |
+          npm run check
+          npm test
+
+      - name: 构建介绍页与试用版
+        run: npm run build:site
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/site
+
+  deploy:
+    name: 部署到 GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

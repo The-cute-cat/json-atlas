@@ -1,6 +1,7 @@
 # Dependencies and build output
 node_modules/
 dist/
+site/app/
 src-tauri/target/
 src-tauri/gen/
 *.log
@@ -49,3 +50,7 @@ src-tauri/icons/*-source.png
 **/temp
 Thumbs.db
 Desktop.ini
+
+# 旧版站点本地产物；新构建统一输出到已忽略的 dist/site/
+site/assets/
+site/app.html

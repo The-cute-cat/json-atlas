@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JSON Atlas · 看清 JSON 的每一层</title>
+  <meta name="description" content="用可交互的树形画布阅读 JSON / JSONL，搜索字段、展开嵌套结构，并在小文件中编辑文本。免费开源，文件在本机处理。" />
+  <meta name="theme-color" content="#f7f8fa" />
+  <link rel="icon" href="assets/app-icon.png" />
+  <link rel="canonical" href="https://the-cute-cat.github.io/json-atlas/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta property="og:url" content="https://the-cute-cat.github.io/json-atlas/" />
+  <meta property="og:title" content="JSON Atlas · 看清 JSON 的每一层" />
+  <meta property="og:description" content="从接口响应到 JSONL 记录，在树形画布里展开、搜索和阅读。免费开源，文件在本机处理。" />
+  <meta property="og:image" content="https://the-cute-cat.github.io/json-atlas/assets/screenshots/hero.png" />
+  <meta property="og:image:alt" content="JSON Atlas 的树形画布与字段搜索界面" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <a class="skip" href="#main">跳到正文</a>
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="#"><img src="assets/app-icon.png" width="32" height="32" alt="" /><span>JSON Atlas</span></a>
+      <nav aria-label="主导航"><a href="#workflow">功能</a><a href="#editions">版本选择</a><a href="https://github.com/The-cute-cat/json-atlas">GitHub <span aria-hidden="true">↗</span></a></nav>
+      <a class="nav-try" href="app.html">在线试用 <span aria-hidden="true">↗</span></a>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero wrap">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="dot"></span> JSON / JSONL 的本地阅读工作台</p>
+        <h1>看清 JSON 的<br /><span>每一层。</span></h1>
+        <p class="lede">接口响应、嵌套配置、逐行记录。把结构展开成树，在字段和值之间查找，让阅读有迹可循。</p>
+        <div class="actions"><a class="button primary" href="app.html">在浏览器中试用 <span aria-hidden="true">→</span></a><a class="button secondary" href="https://github.com/The-cute-cat/json-atlas/releases/latest">下载 Windows 版</a></div>
+        <p class="hero-note">免费开源 · 无需账号 · 文件在本机解析</p>
+      </div>
+      <aside class="outline" aria-label="阅读流程">
+        <div class="outline-head"><span class="code">{ }</span><span>从结构到内容</span><span class="outline-label">JSON ATLAS</span></div>
+        <ol><li><span>01</span><div><strong>展开结构</strong><p>保留上下文，逐层查看对象和数组</p></div></li><li><span>02</span><div><strong>定位字段</strong><p>搜索键名或值，跳到对应节点</p></div></li><li><span>03</span><div><strong>阅读与修改</strong><p>查看路径，或切换到文本编辑</p></div></li></ol>
+        <a href="app.html">打开试用版，选择一个本地文件 <span aria-hidden="true">↗</span></a>
+      </aside>
+    </section>
+    <figure class="product wrap">
+      <div class="image-frame"><div class="image-label"><span><span class="dot"></span> 树形画布</span><span>展开 · 查找 · 定位</span></div><a href="assets/screenshots/hero.png" aria-label="查看树形画布原图"><img src="assets/screenshots/hero.png" width="1280" height="800" alt="在 JSON Atlas 中展开示例接口响应，并搜索目标字段" fetchpriority="high" /></a></div>
+      <figcaption>真实应用界面，使用虚构示例数据。点击图片查看原图。</figcaption>
+    </figure>
+    <section id="workflow" class="section wrap">
+      <div class="section-heading"><p class="eyebrow">READ · FIND · EDIT</p><h2>跟着结构读，带着问题找。</h2><p>从陌生的响应结构开始，逐步缩小到你关心的内容。</p></div>
+      <div class="features">
+        <article><span class="feature-number">01 / 阅读</span><h3>复杂结构，按需展开</h3><p>对象与数组以卡片呈现，支持平移、缩放和字段隐藏。字符串中的内嵌 JSON 也可以展开阅读。</p></article>
+        <article><span class="feature-number">02 / 查找</span><h3>找到值，也找到它的位置</h3><p>搜索键名或值，支持大小写、全词和常用正则。可限定到选中分支，命中后定位到节点并查看路径。</p></article>
+        <article><span class="feature-number">03 / 编辑</span><h3>在画布与文本之间切换</h3><p>小文件支持节点值编辑、IDE 文本编辑、格式化和最近 10 步撤销。浏览器保存下载副本，桌面版支持写回文件。</p></article>
+      </div>
+      <div class="views"><figure><a href="assets/screenshots/tree-view.png"><img src="assets/screenshots/tree-view.png" alt="在树形画布中展开的示例接口响应" width="1280" height="800" loading="lazy" /></a><figcaption><strong>树形视图</strong><span>展开结构，保留阅读上下文</span></figcaption></figure><figure><a href="assets/screenshots/ide-view.png"><img src="assets/screenshots/ide-view.png" alt="带行号、语法高亮和折叠的 IDE 文本视图" width="1280" height="800" loading="lazy" /></a><figcaption><strong>IDE 视图</strong><span>需要修改原文时，切换到文本</span></figcaption></figure></div>
+    </section>
+    <section id="editions" class="editions section">
+      <div class="wrap">
+        <div class="section-heading"><p class="eyebrow">选择适合你的入口</p><h2>先试用，再带回桌面。</h2><p>两种方式共用阅读界面；文件处理能力取决于运行环境。</p></div>
+        <div class="edition-grid">
+          <article class="edition"><div class="edition-title"><h3>浏览器版</h3><span class="pill">即开即用</span></div><p>先用一份小文件，感受树形阅读与搜索。</p><ul><li>在浏览器本地解析文件，不上传文件内容</li><li>支持树形阅读、查找与小文件编辑</li><li>保存时下载修改后的副本</li><li>无磁盘索引，单文件上限 256 MiB；建议先试用小文件</li></ul><a class="button secondary" href="app.html">打开浏览器版 <span aria-hidden="true">→</span></a><p class="edition-note">可将试用页另存为 HTML，离线打开。浏览器限制可能影响后台任务。</p></article>
+          <article class="edition desktop"><div class="edition-title"><h3>Windows 桌面版</h3><span class="pill">完整文件工作流</span></div><p>适合经常阅读本地文件，或处理较大的数据。</p><ul><li>支持本地文件打开、保存与文件关联</li><li>超过阈值时后台扫描，建立临时磁盘索引</li><li>索引模式每页 100 项，按需加载；大文件只读</li><li>默认索引阈值 64 MiB，可在设置中调整</li></ul><a class="button primary" href="https://github.com/The-cute-cat/json-atlas/releases/latest">查看 Windows 安装包 <span aria-hidden="true">↗</span></a><p class="edition-note">Windows 10 / 11 x64 · 需要 WebView2。首次扫描耗时取决于文件与设备。</p></article>
+        </div>
+      </div>
+    </section>
+    <section class="section wrap faq-section">
+      <div class="section-heading"><p class="eyebrow">使用前了解</p><h2>几个你可能关心的问题。</h2></div>
+      <div class="faq">
+        <details><summary>文件会传到服务器吗？</summary><p>应用在本机解析、搜索和编辑文件，不提供文件上传或云同步。在线版首次打开需要从站点加载程序和图片；保存后的单文件 HTML 可以离线运行。</p></details>
+        <details><summary>支持 JSONL 和有问题的行吗？</summary><p>支持 .jsonl、.ndjson 和 .jsonlines。JSONL 加载会记录并跳过无法解析的行；如果跳过了坏行，保存时请使用“另存为”，保留原始记录。请先用副本验证自己的数据。</p></details>
+        <details><summary>能编辑多大的文件？</summary><p>编辑功能面向内存模式的小文件。桌面磁盘索引模式保持只读；IDE 视图另有字符数、行数与结构复杂度限制，超出后会回退到树形视图。具体限制见 <a href="https://github.com/The-cute-cat/json-atlas#大文件与已知限制">使用说明</a>。</p></details>
+        <details><summary>遇到问题，怎样提供有效反馈？</summary><p>请在 <a href="https://github.com/The-cute-cat/json-atlas/issues">GitHub Issues</a> 提供应用版本、系统、操作步骤和脱敏后的最小样例。也欢迎分享你实际使用的场景，或通过 Pull Request 改进文档与代码。</p></details>
+      </div>
+    </section>
+    <section class="closing wrap"><div><p class="eyebrow">从你手上的一份 JSON 开始</p><h2>复杂数据，也能清楚地读。</h2></div><a class="button primary" href="app.html">立即试用 <span aria-hidden="true">→</span></a></section>
+  </main>
+  <footer class="wrap"><a class="brand" href="#">JSON Atlas</a><span>免费开源 · Apache-2.0</span><nav aria-label="项目链接"><a href="https://github.com/The-cute-cat/json-atlas">源码</a><a href="https://github.com/The-cute-cat/json-atlas/blob/main/CHANGELOG.md">更新记录</a><a href="https://github.com/The-cute-cat/json-atlas/issues">反馈</a></nav></footer>
+</body>
+</html>

@@ -37,6 +37,9 @@ jobs:
       - name: 构建前端
         run: npm run build
 
+      - name: 构建介绍页与离线试用版
+        run: npm run build:site
+
   desktop:
     name: 桌面端编译检查
     runs-on: windows-latest

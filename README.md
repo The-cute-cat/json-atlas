@@ -1,14 +1,45 @@
 # JSON Atlas
 
-本地 JSON / JSONL 可视化阅读与编辑工具，基于 Tauri 2。用可交互的树形画布浏览结构，或在 IDE 视图中编辑小文件；支持大文件分页读取、全文查找、字段隐藏与内嵌 JSON 展开。所有文件都在本机处理，不会上传。
+**在可交互的树形画布中，看清 JSON 的每一层。**
 
-当前代码版本：**0.3.0**。已发布的安装包见 [Releases](https://github.com/The-cute-cat/json-atlas/releases)，版本改动见 [更新记录](CHANGELOG.md)。
+本地 JSON / JSONL 阅读与编辑工具。展开接口响应、嵌套配置和逐行记录，搜索键名或值并定位到节点；需要修改原文时，切换到 IDE 文本视图。文件内容在本机处理，不上传。
+
+Explore JSON and JSONL on an interactive tree canvas. Find fields, inspect nested data, and edit small files locally. Free and open source.
+
+[![release](https://img.shields.io/github/v/release/The-cute-cat/json-atlas?label=release)](https://github.com/The-cute-cat/json-atlas/releases)
+[![CI](https://github.com/The-cute-cat/json-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/The-cute-cat/json-atlas/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+[浏览器试用与项目介绍](https://the-cute-cat.github.io/json-atlas/) · [下载 Windows 安装包](https://github.com/The-cute-cat/json-atlas/releases/latest) · [反馈问题](https://github.com/The-cute-cat/json-atlas/issues)
+
+![JSON Atlas：在树形画布中展开示例接口响应，搜索并定位字段](assets/screenshots/hero.png)
+
+### 适合用来做什么
+
+- **读懂陌生结构**：逐层展开对象与数组，查看节点路径，隐藏无关字段。
+- **定位关心的内容**：搜索键名或值，支持全词、常用正则与选中分支范围搜索。
+- **查看 JSONL 记录**：直接打开逐行数据，无需先转换为 JSON 数组。
+- **修改小文件**：节点编辑与 IDE 文本视图共用内容和撤销；支持格式化、保存与另存为。
+
+### 选择版本
+
+| | Windows 桌面版 | 浏览器版 |
+| --- | --- | --- |
+| 用途 | 日常本地文件阅读与编辑 | 免安装试用，先从小文件开始 |
+| 文件处理 | 超过阈值时建立磁盘索引，按页读取 | 整份解析到内存，单文件上限 256 MiB |
+| 保存 | 写回原文件或另存为 | 下载修改副本 |
+| 大文件编辑 | 磁盘索引模式只读 | IDE 视图有字符数、行数与结构复杂度限制 |
+
+在线版首次打开需加载站点资源，文件内容在浏览器中处理。试用页可另存为单个 HTML 离线运行；浏览器限制可能影响后台任务。大文件建议使用桌面版，首次索引耗时取决于数据与设备。
+
+当前代码版本 **0.3.0**。已发布版本以 [Releases](https://github.com/The-cute-cat/json-atlas/releases) 为准；改动见 [更新记录](CHANGELOG.md)，开发与构建说明见 [贡献指南](CONTRIBUTING.md)。
 
 ## 下载与安装
 
 - 系统要求：Windows 10 / 11（64 位）。界面依赖 Microsoft Edge WebView2 运行时（Windows 11 与较新的 Windows 10 已自带）。
 - 从 [Releases](https://github.com/The-cute-cat/json-atlas/releases) 下载所需版本的 `*-setup.exe` 或 `.msi`，选择一种安装即可。
 - 支持关联 `.json`、`.jsonl`、`.ndjson`、`.jsonlines`。EXE 安装时可选择关联，MSI 会注册这些文件类型；如系统已有默认应用，可在 Windows 的“打开方式”中选择 JSON Atlas。
+- 免安装试用：[打开浏览器版](https://the-cute-cat.github.io/json-atlas/app.html)。浏览器版与桌面版共用阅读界面，不提供原生磁盘索引与文件关联。
 - 从 EXE 切换到 MSI 时，先卸载旧安装方式，再安装新包。MSI 保留对原有文件类型标识的兼容；如果 Windows 已将格式设为其他应用，请在“设置 → 应用 → 默认应用 → JSON Atlas”中确认默认打开方式。
 - MSI 普通及静默卸载自动清除当前用户的本地设置、阅读历史与缓存，不再询问；升级不会清理。清除不可撤销，不会删除应用数据目录之外的 JSON / JSONL 文件。其他 Windows 用户的数据不在清理范围内。
 
@@ -29,7 +60,7 @@
 - **整理**：隐藏无关字段、套用展开模板、把字符串里的内嵌 JSON 作为子树展开。
 - **大文件**：超过阈值的文件在后台建立磁盘索引，展开和搜索时按需读取；扫描与搜索都可以取消。
 - **会话**：文件切换时保留实际展开的数组条目，可选择在重启后恢复上次的阅读状态。
-- **隐私**：不联网、不上传，解析、索引与搜索全部在本机完成。
+- **隐私**：文件内容不上传，解析、索引与搜索在本机完成。
 
 ## IDE 查看方式
 
@@ -101,7 +132,7 @@ JSONL 节点编辑后的文本仅保留有效记录，不保留注释、空白�
 - 小文件支持“展开全部 / 展开全部下级”。为保护界面，画布显示约 5000 个节点时会暂停继续展开；可点击“精简远处节点”保留当前阅读区域并释放远处内容，或收起部分分支后继续。
 - 长字段只显示预览，单次全文读取或复制上限 8 MiB；查找不受此限制。
 - 索引模式不支持超过 128 层的 JSON 嵌套，以及超过 64 KiB 的字段名。
-- 目前只提供 Windows 安装包。浏览器构建（`npm run dev` / `npm run build`）仅用于开发预览，单文件上限 256 MiB。
+- 目前只提供 Windows 安装包。浏览器版单文件上限 256 MiB，整份文件仍需载入内存；这不是流畅运行的大小保证。离线单文件版与站点可分别通过 `npm run build:single` 和 `npm run build:site` 生成。
 
 ## 开发
 

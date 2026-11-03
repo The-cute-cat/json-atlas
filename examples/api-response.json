@@ -1,0 +1,17 @@
+{
+  "status": "ok",
+  "data": {
+    "items": [
+      {
+        "id": "KB-2201",
+        "name": "机械键盘",
+        "price": 349,
+        "in_stock": true
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "total": 248
+    }
+  }
+}

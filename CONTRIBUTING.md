@@ -46,6 +46,21 @@ MSI 使用固定的 `bundle.windows.wix.upgradeCode` 标识同一应用的后续
 
 升级通过 `NOT UPGRADINGPRODUCTCODE` 排除清理。发布前应在测试账户验证普通卸载、静默卸载与升级路径；清理当前账户不等于清理机器上的所有账户。旧 MSI 已缓存的卸载逻辑不会自动改变，需要先安装包含此改动的新包。
 
+## 项目介绍页与浏览器试用版
+
+`site/index.html` 和 `site/style.css` 是介绍页源码，图片放在 `assets/`。截图应来自实际应用，使用 `examples/` 中的虚构数据，避免出现个人目录或真实业务内容。
+
+```powershell
+npm run build:single
+npm run build:site
+```
+
+前者生成 `dist/json-atlas.html`，可直接双击离线打开；后者生成完整站点 `dist/site/`，包含介绍页、图片和 `app.html`。可从该目录启动静态服务器预览。产物不提交，构建过程不修改 `site/` 源文件。单文件构建把解析和搜索 Worker 内联为 data URL，保持后台执行；若 Vite 的产物格式改变，构建会失败并提示检查。
+
+提交前运行前端检查与测试，再检查站点的桌面和手机宽度、图片与链接，以及试用页打开 JSON / JSONL、搜索、编辑和下载副本的流程。同时直接用 `file://` 打开 `dist/json-atlas.html` 验证离线行为。
+
+Pages 工作流在 `main` 的相关文件变更后构建并部署 `dist/site/`；Pull Request 的 CI 只验证构建。首次发布需在仓库 Settings → Pages 中将 Source 设为 GitHub Actions。工作流通过并不代表桌面安装包验证完成。
+
 ## 测试数据与性能验证
 
 `examples/` 提供可直接打开的小样例。`tests/` 中的 JSON 是回归测试输入，应该与测试代码一起提交；不要将真实业务数据放在此目录。
