@@ -1,0 +1,86 @@
+name: macOS Apple Silicon Preview
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'macos-preview']
+    paths:
+      - '.github/workflows/macos-preview.yml'
+      - 'index.html'
+      - 'examples/**'
+      - 'public/**'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'package*.json'
+      - 'rust-toolchain.toml'
+      - 'vite.config.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: 构建 macOS arm64 测试包
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      # 仓库默认工具链固定为 Windows MSVC；Mac 任务显式使用本机工具链。
+      RUSTUP_TOOLCHAIN: stable-aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: 准备 Rust 工具链
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 检查、测试并构建前端
+        run: |
+          npm ci
+          npm run check
+          npm test
+          npm run build
+
+      - name: Rust 回归测试
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Rust 静态检查（release）
+        working-directory: src-tauri
+        run: cargo clippy --release --locked -- -D warnings
+
+      - name: 构建测试版 DMG
+        run: npm run desktop:build -- --target aarch64-apple-darwin -- --locked
+
+      - name: 校验磁盘映像、架构和签名
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=src-tauri/target/aarch64-apple-darwin/release/bundle
+          app="$bundle/macos/JSON Atlas.app"
+          dmgs=("$bundle"/dmg/*.dmg)
+          test "${#dmgs[@]}" = 1
+          test -f "${dmgs[0]}"
+          hdiutil verify "${dmgs[0]}"
+          test "$(lipo -archs "$app/Contents/MacOS/json-atlas")" = arm64
+          codesign --verify --deep --strict --verbose=2 "$app"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes:0' "$app/Contents/Info.plist"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JSON-Atlas-macOS-arm64-preview
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14

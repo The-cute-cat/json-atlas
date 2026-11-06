@@ -32,9 +32,12 @@ export async function guardEditedClose(hasChanges, confirmDiscard) {
 }
 const indexRequest = (op, id, args = {}, path = null) => invoke('indexed_document', { op, id, args, path })
   .catch(error => { throw error instanceof Error ? error : new Error(String(error)); });
-export const statNativeFile = path => indexRequest('stat', crypto.randomUUID(), {}, path);
+// Unlike randomUUID, getRandomValues is available even on a custom WebView scheme.
+const indexId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
+  byte => byte.toString(16).padStart(2, '0')).join('');
+export const statNativeFile = path => indexRequest('stat', indexId(), {}, path);
 export async function openIndexedFile(file, { signal, progress, wrap, strict }) {
-  const id = crypto.randomUUID();
+  const id = indexId();
   signal.throwIfAborted();
   const unlisten = await listen('index-progress', event => {
     if (event.payload.id !== id) return;

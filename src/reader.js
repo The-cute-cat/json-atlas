@@ -188,8 +188,8 @@ function syncDocumentMenu(){
     {id:'close',text:'关闭当前文件',shortcut:shortcutText('close'),enabled:!!activeDoc()},
     {id:'reset',text:'重置视图',shortcut:shortcutText('resetView'),enabled:!!activeDoc() && !activeDoc().error},
     {id:'settings',text:'设置…',shortcut:shortcutText('settings'),enabled:true},
-    {id:'about',text:'关于 JSON Atlas',shortcut:shortcutText('about'),enabled:true}
-  ]));
+    {id:'about',text:'关于 JSON Atlas',shortcut:macPlatform ? null : shortcutText('about'),enabled:true}
+  ], macPlatform ? [copyNodeMenuState()] : []));
 }
 
 function resizeNodeEditor(){
@@ -328,10 +328,16 @@ const searchOptions = { caseSensitive: false, wholeWord: false, regex: false, sc
 const searchScopeBtn = document.getElementById('searchScopeBtn');
 let selectedSearchPath = null;
 let selectedCopyNode = null;
+function copyNodeMenuState(){
+  return {id:'copy-node',text:'复制选中节点内容',shortcut:shortcutText('copyNode'),
+    enabled:!ideActive && !!selectedCopyNode?.isConnected};
+}
 function selectCopyNode(node){
+  const changed = selectedCopyNode !== node;
   selectedCopyNode?.classList.remove('selected-node');
   selectedCopyNode = node;
   node?.classList.add('selected-node');
+  if(changed && desktop && macPlatform) updateDocumentMenu([copyNodeMenuState()]);
 }
 let lastSearchSignature = null;
 
@@ -3416,6 +3422,7 @@ installTooltips(document, window);
     else if(action === 'switch-view') document.getElementById('switchViewBtn').click();
     else if(action === 'edit-mode') document.getElementById('editModeBtn').click();
     else if(action === 'undo-edit') document.getElementById('undoEditBtn').click();
+    else if(action === 'copy-node' && !ideActive) copyNodeContent(selectedCopyNode);
     else if(action === 'save') document.getElementById('saveBtn').click();
     else if(action === 'save-copy') document.getElementById('saveCopyBtn').click();
     else if(action === 'format-json') formatIde();

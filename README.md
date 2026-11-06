@@ -43,6 +43,12 @@ Explore JSON and JSONL on an interactive tree canvas. Find fields, inspect neste
 - 从 EXE 切换到 MSI 时，先卸载旧安装方式，再安装新包。MSI 保留对原有文件类型标识的兼容；如果 Windows 已将格式设为其他应用，请在“设置 → 应用 → 默认应用 → JSON Atlas”中确认默认打开方式。
 - MSI 普通及静默卸载自动清除当前用户的本地设置、阅读历史与缓存，不再询问；升级不会清理。清除不可撤销，不会删除应用数据目录之外的 JSON / JSONL 文件。其他 Windows 用户的数据不在清理范围内。
 
+### macOS 测试版
+
+面向搭载 Apple 芯片（M 系列）的 Mac，测试范围从 macOS 15 开始。到 [GitHub Actions](https://github.com/The-cute-cat/json-atlas/actions/workflows/macos-preview.yml) 打开一次成功的运行，登录后在 **Artifacts** 下载 `JSON-Atlas-macOS-arm64-preview`。解压并打开 DMG，把 JSON Atlas 拖入「应用程序」。测试包使用临时签名，未经过 Apple 公证，可能被 Gatekeeper 拦截。
+
+把 JSON Atlas 从「应用程序」移到废纸篓即可卸载。卸载不会自动清理用户数据；`~/Library/Application Support/io.hopecat.jsonatlas` 和 `~/Library/Caches/io.hopecat.jsonatlas` 等应用专用目录如果存在，可能会保留。
+
 ## 快速上手
 
 1. 拖入文件、使用“文件 → 打开文件…”（Ctrl+O），或双击已关联的 JSON / JSONL 文件。

@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod documents;
 mod indexed;
@@ -165,6 +165,20 @@ async fn indexed_document(
 #[derive(Default)]
 struct OpenRequests(Mutex<Vec<String>>);
 
+fn enqueue_open_requests(app: &tauri::AppHandle, paths: Vec<String>) {
+    app.state::<OpenRequests>()
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend(paths);
+    let _ = app.emit("open-files-pending", ());
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[tauri::command]
 fn take_open_requests(state: tauri::State<OpenRequests>) -> Vec<String> {
     std::mem::take(&mut *state.0.lock().unwrap_or_else(|e| e.into_inner()))
@@ -280,24 +294,16 @@ fn main() {
     }
     let cwd = std::env::current_dir().unwrap_or_default();
     let initial = documents::argument_paths(std::env::args_os().skip(1), &cwd);
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(OpenRequests(Mutex::new(initial)))
-        .manage(indexed::IndexState::default())
-        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-            let paths =
-                documents::argument_paths(args.into_iter().skip(1), std::path::Path::new(&cwd));
-            app.state::<OpenRequests>()
-                .0
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .extend(paths);
-            let _ = app.emit("open-files-pending", ());
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }))
+        .manage(indexed::IndexState::default());
+    // Finder delivers open events to the running application through Launch Services.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        let paths = documents::argument_paths(args.into_iter().skip(1), std::path::Path::new(&cwd));
+        enqueue_open_requests(app, paths);
+    }));
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             window::create(app)?;
@@ -314,6 +320,17 @@ fn main() {
             menu_theme::sync_menu_theme,
             set_document_title
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run JSON Atlas");
+        .build(tauri::generate_context!())
+        .expect("failed to build JSON Atlas");
+    #[cfg(not(target_os = "macos"))]
+    app.run(|_, _| {});
+    #[cfg(target_os = "macos")]
+    app.run(|app, event| {
+        if let tauri::RunEvent::Opened { urls } = event {
+            let paths = documents::file_url_paths(urls);
+            if !paths.is_empty() {
+                enqueue_open_requests(app, paths);
+            }
+        }
+    });
 }

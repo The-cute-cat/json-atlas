@@ -195,6 +195,15 @@ pub fn argument_paths(
         .collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
+pub fn file_url_paths(urls: impl IntoIterator<Item = tauri::Url>) -> Vec<String> {
+    urls.into_iter()
+        .filter(|url| url.scheme() == "file" && url.host_str().is_none())
+        .filter_map(|url| url.to_file_path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+
 // canonicalize() 在 Windows 上返回 \\?\ 逐字路径。它能正常读写，但会出现在
 // 界面提示与本地存储里，所以对外只使用去掉前缀的常见写法。
 pub fn display_path(path: &Path) -> String {
@@ -310,11 +319,33 @@ mod tests {
 
     #[test]
     fn arguments_preserve_spaces_unicode_and_resolve_relative_paths() {
-        let cwd = Path::new("C:\\数据目录");
-        let paths = argument_paths(["--", "样本 文件.JSON", "D:\\其他\\样本.json"], cwd);
+        let cwd = std::env::temp_dir().join("数据目录");
+        let absolute = std::env::temp_dir().join("其他").join("样本.json");
+        let paths = argument_paths(
+            [
+                "--".into(),
+                "样本 文件.JSON".into(),
+                absolute.clone().into_os_string(),
+            ],
+            &cwd,
+        );
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0], cwd.join("样本 文件.JSON").to_string_lossy());
-        assert_eq!(paths[1], "D:\\其他\\样本.json");
+        assert_eq!(paths[1], absolute.to_string_lossy());
+    }
+
+    #[test]
+    fn finder_open_paths_decode_names_and_ignore_remote_urls() {
+        let directory = std::env::temp_dir();
+        let first = directory.join("测试 文件 #1.json");
+        let second = directory.join("-sample.jsonl");
+        let paths = file_url_paths([
+            tauri::Url::from_file_path(&first).unwrap(),
+            tauri::Url::parse("https://example.com/test.json").unwrap(),
+            tauri::Url::parse("file://example.com/test.json").unwrap(),
+            tauri::Url::from_file_path(&second).unwrap(),
+        ]);
+        assert_eq!(paths, [first.to_string_lossy(), second.to_string_lossy()]);
     }
 
     #[test]
