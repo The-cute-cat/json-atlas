@@ -32,6 +32,17 @@ test('offline bundle embeds both workers as Unicode-safe data URLs without exter
   assert.equal((html.match(/<\/script>/g) || []).length, 1, 'worker text must not close the entry script');
 });
 
+test('offline bundle inlines the nested worker reference emitted by Vite 8', t => {
+  const f = fixture(t);
+  writeFileSync(join(f.assets, 'index-test.js'), ['parser', 'search'].map(name =>
+    `new Worker(new URL(new URL(\`${name}.worker-test.js\`,import.meta.url).href,\`\`+import.meta.url),{type:"module"});`).join('\n'));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  const html = readFileSync(f.output, 'utf8');
+  assert.doesNotMatch(html, /import\.meta\.url|(?:src|href)="\.\/assets\//);
+  assert.equal((html.match(/data:text\/javascript;base64,/g) || []).length, 2);
+});
+
 test('offline build fails when a worker is missing or Vite changes its reference format', t => {
   const f = fixture(t);
   rmSync(join(f.assets, 'search.worker-test.js'));

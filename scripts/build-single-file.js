@@ -51,12 +51,18 @@ const workerUrls = Object.fromEntries(workerFiles.map(file => [file,
 const prelude = `const __inlineWorkerUrls = ${JSON.stringify(workerUrls)};\n`;
 
 function inlineWorkers(js) {
-  let out = js;
+  // Vite 8 在 Worker 地址外面又套了一层 new URL(..., import.meta.url)。
+  // 外层对已经是绝对 URI 的入参是恒等变换，先归一成 Vite 7 的平铺形式。
+  let out = js.replace(
+    /new URL\(new URL\(([^()]*),import\.meta\.url\)\.href,``\+import\.meta\.url\)/g,
+    'new URL($1,import.meta.url).href'
+  );
   for (const file of workerFiles) {
-    const reference = `new URL("${file}",import.meta.url).href`;
-    if (!out.includes(reference)) throw new Error(`无法内联 Worker ${file}，Vite 输出格式可能已改变`);
+    // Vite 7 用双引号包住文件名，Vite 8 改用模板字符串。
+    const pattern = new RegExp(`new URL\\((["'\`])${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\1,import\\.meta\\.url\\)\\.href`, 'g');
+    if (!out.match(pattern)) throw new Error(`无法内联 Worker ${file}，Vite 输出格式可能已改变`);
     // new URL("<worker>", import.meta.url).href -> 内联的 data URL
-    out = out.replaceAll(reference, `__inlineWorkerUrls["${file}"]`);
+    out = out.replace(pattern, `__inlineWorkerUrls["${file}"]`);
     // 外层包装 new URL("" + <data url>, import.meta.url) 对绝对 URI 是恒等变换，直接去掉
     out = out.replace(/new URL\(""\+(__inlineWorkerUrls\["[^"]+"\]),import\.meta\.url\)/g, '$1');
   }

@@ -35,7 +35,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
 
       - name: 安装依赖
@@ -75,9 +75,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ env.RELEASE_TAG }}
-          releaseName: 'JSON Atlas ${{ env.RELEASE_TAG }}'
+          releaseName: '${{ env.RELEASE_TAG }}'
           releaseBody: |
             下载 `*-setup.exe` 或 `.msi` 安装包，选择一种安装即可。当前安装包未配置代码签名，安装前请核对下载来源。
+
+            免安装版 `*-portable.zip` 解压后直接运行 `json-atlas.exe`，无需安装，也不会注册文件关联、没有卸载入口，设置与阅读历史仍写入用户数据目录。
 
             Windows 10/11 需要 WebView2 Runtime（通常已随系统预装）。
 
@@ -86,6 +88,23 @@ jobs:
           prerelease: false
           includeUpdaterJson: false
           args: -- --locked
+
+      # 免安装版：release 里的裸 exe 自身已内嵌前端资源，可直接运行。
+      # 不注册文件关联、不带卸载器，WebView2 需系统自备。
+      - name: 打包免安装版
+        shell: pwsh
+        run: |
+          $exe = 'src-tauri/target/release/json-atlas.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw '没有生成免安装可执行文件' }
+          $zip = "JSON-Atlas-${env:RELEASE_TAG}-portable.zip"
+          Compress-Archive -LiteralPath $exe -DestinationPath $zip -Force
+          Write-Output "已生成 $zip（$((Get-Item -LiteralPath $zip).Length) 字节）"
+
+      - name: 上传免安装版
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${env:RELEASE_TAG} "JSON-Atlas-${env:RELEASE_TAG}-portable.zip" --clobber
 
       - name: 校验 MSI 文件关联
         shell: pwsh

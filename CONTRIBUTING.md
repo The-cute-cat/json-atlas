@@ -4,7 +4,7 @@
 
 ## 开发环境
 
-当前桌面构建面向 Windows x64。需要 Node.js 22.12+、Rust MSVC 工具链、Visual Studio C++ Build Tools（包含 Windows SDK）和 WebView2 运行时。
+当前桌面构建面向 Windows x64。需要 Node.js 26+、Rust MSVC 工具链、Visual Studio C++ Build Tools（包含 Windows SDK）和 WebView2 运行时。
 
 仓库的 `rust-toolchain.toml` 为本项目选择 `stable-x86_64-pc-windows-msvc`，不需要修改系统的默认工具链。执行格式和静态检查前，请确保此工具链已安装 `rustfmt`、`clippy` 组件。
 
@@ -99,4 +99,4 @@ $env:RELEASE_TAG = 'v0.3.0'
 node scripts/check-release.js
 ```
 
-发布工作流由 `vX.Y.Z` 标签触发，也支持手动选择已有标签。工作流检查通过后生成草稿 Release；维护者验证安装包和发布说明后再公开发布。不要向仓库提交签名证书或其他凭据。
+发布工作流由 `vX.Y.Z` 标签触发，也支持手动选择已有标签。工作流检查通过后生成草稿 Release，除 NSIS 与 MSI 安装包外还上传 `JSON-Atlas-<tag>-portable.zip`（免安装版，解压直接运行 `json-atlas.exe`）。免安装版不注册文件关联、不提供卸载入口，依赖系统已安装 WebView2 Runtime，草稿确认时一并验证。维护者验证安装包和发布说明后再公开发布。不要向仓库提交签名证书或其他凭据。
