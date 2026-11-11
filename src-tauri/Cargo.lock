@@ -1839,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "json-atlas"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "indexmap 1.9.3",
  "memchr",
