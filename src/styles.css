@@ -278,6 +278,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   display:flex;
 }
 .file-rail{
+  --rail-expanded-width:276px;
   position:absolute;
   left:0;
   top:0;
@@ -287,23 +288,20 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   padding:14px 12px 14px 10px;
   transition:width .34s cubic-bezier(.22,1,.36,1);
 }
-.file-rail:hover{width:276px}
+.file-rail:hover{width:var(--rail-expanded-width)}
 /* 毛玻璃底只在展开时浮出：折叠状态下侧栏完全透明，只剩那几根色条 */
 .rail-glass{
   position:absolute;
   inset:0;
   border-radius:0 16px 16px 0;
-  background:var(--panel);
+  background:var(--card);
   border:1px solid var(--border);
   border-left:0;
   box-shadow:0 16px 40px rgba(0,0,0,.14);
-  backdrop-filter:blur(22px) saturate(180%);
-  -webkit-backdrop-filter:blur(22px) saturate(180%);
-  opacity:0;
+  visibility:hidden;
   pointer-events:none;
-  transition:opacity .2s ease .04s;
 }
-.file-rail:hover .rail-glass{opacity:1}
+.file-rail:hover .rail-glass{visibility:visible}
 .rail-list{
   position:relative;
   display:flex;
@@ -561,7 +559,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   height:42px;
   padding:0 10px;
   border-radius:11px;
-  background:var(--panel);
+  background:var(--card);
   box-shadow:0 6px 18px rgba(0,0,0,.16), 0 0 0 1px var(--border);
 }
 .file-rail.rail-dial .file-slot:hover .file-tab::before{
@@ -956,21 +954,28 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   text-overflow:ellipsis;
   white-space:nowrap;
 }
+#editModeStatus{
+  flex:none;
+  padding:2px 7px;
+  border-radius:4px;
+  background:var(--accent-soft);
+  color:var(--text);
+  font-weight:600;
+  white-space:nowrap;
+}
 .help{white-space:nowrap}
 
 /* ---------- 右键菜单 ---------- */
 #ctxMenu{
   display:none;
   position:fixed;
-  z-index:100;
+  z-index:15; /* The file rail sits at 16 and can cover this menu. */
   min-width:160px;
   padding:6px;
   border:1px solid var(--border);
   border-radius:12px;
-  background:var(--panel);
+  background:var(--card);
   box-shadow:0 12px 34px rgba(0,0,0,.14);
-  backdrop-filter:blur(12px);
-  -webkit-backdrop-filter:blur(12px);
 }
 #ctxMenu button{
   display:block;
@@ -986,14 +991,10 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 }
 #ctxMenu button:hover:not(:disabled){background:var(--control)}
 #ctxMenu button:disabled{opacity:.35;cursor:not-allowed}
-.ctx-sep{
-  height:1px;
-  margin:5px 6px;
-  background:var(--hover);
-}
+#ctxMenu button[hidden]{display:none}
 
 /* ---------- 内容弹窗 ---------- */
-#modalMask,#settingsMask,#editorMask{
+#modalMask,#settingsMask{
   display:none;
   position:fixed;
   inset:0;
@@ -1005,7 +1006,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   backdrop-filter:none;
   -webkit-backdrop-filter:none;
 }
-#modalMask.open,#settingsMask.open,#editorMask.open{display:flex}
+#modalMask.open,#settingsMask.open{display:flex}
 .modal-box{
   width:min(560px,92vw);
   max-height:78vh;
@@ -1020,11 +1021,6 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 }
 /* 编辑器弹窗：内容为绝对定位画布，容器必须有确定高度，
    否则 flex:1 的画布在 auto 高度的盒子里会被算成 0 高，内容不可见 */
-.modal-box.editor-box{
-  width:min(920px,94vw);
-  height:min(84vh,780px);
-  max-height:86vh;
-}
 @keyframes modalIn{
   from{opacity:0;transform:scale(.97) translateY(6px)}
   to{opacity:1;transform:none}
@@ -1054,7 +1050,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   text-overflow:ellipsis;
   white-space:nowrap;
 }
-#modalClose,#settingsClose,#editorClose{
+#modalClose,#settingsClose{
   flex:0 0 28px;
   width:28px;
   height:28px;
@@ -1110,6 +1106,29 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .modal-foot button.primary:hover{filter:brightness(.96)}
 
 /* ---------- 关于应用 ---------- */
+.update-notice{
+  position:fixed;right:16px;bottom:40px;z-index:150;
+  display:flex;align-items:center;gap:10px;max-width:calc(100% - 32px);padding:8px 10px 8px 14px;
+  border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--text);
+  box-shadow:var(--shadow);font-size:13px;
+}
+.update-notice[hidden]{display:none}
+.update-notice button{
+  padding:5px 9px;border:0;border-radius:6px;background:var(--control);color:var(--text);cursor:pointer;
+}
+.update-notice button:hover{background:var(--hover)}
+#updateNoticeOpen{color:var(--accent)}
+#updateDialog{
+  width:min(380px,calc(100vw - 32px));margin:auto;padding:22px;
+  border:1px solid var(--border);border-radius:16px;background:var(--card);color:var(--text);
+  box-shadow:0 24px 80px rgba(0,0,0,.22);font-size:13px;
+}
+#updateDialog::backdrop{background:rgba(0,0,0,.28)}
+#updateDialog h2{margin:0;font-size:18px}
+#updateVersion{margin:6px 0 16px;color:var(--muted)}
+#updateStatus{margin:0 0 18px;line-height:1.5}
+.update-preference{display:inline-flex;align-items:center;gap:6px;margin:0 0 18px}
+#updateDialog .about-actions{flex-wrap:wrap}
 #aboutDialog{
   width:min(440px,calc(100vw - 32px));
   max-height:calc(100vh - 40px);
@@ -1282,20 +1301,15 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .settings-body select:disabled{opacity:.45;cursor:not-allowed}
 
 /* ---------- 结构模板编辑器（画布模式） ---------- */
-.editor-canvas{
-  flex:1;
-  min-height:0;
-  position:relative;
-  overflow:clip;
-  cursor:grab;
-  user-select:none;
-  background-color:var(--surface);
-  background-image:
-    linear-gradient(var(--grid) 1px, transparent 1px),
-    linear-gradient(90deg,var(--grid) 1px,transparent 1px);
-  background-size:24px 24px;
+#viewer:not(.template-editing) .template-only,
+#viewer.template-editing :is(#fileRail,#viewport,#ideView,#openAnotherBtn,#documentSearch,#moreBtn,#pathText,#editModeStatus,.statusbar .help){
+  display:none;
 }
-.editor-canvas.dragging{cursor:grabbing}
+#editorSaveBtn{background:var(--accent);color:white}
+#editorClose{flex:none;background:#b42332;color:#fff}
+.toolbar #editorClose:hover:not(:disabled){background:#931d29;color:#fff}
+#editorSearchCount{position:absolute;right:38px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:11px;pointer-events:none}
+#editorNextMatch{position:absolute;right:4px;top:50%;transform:translateY(-50%)}
 /* 编辑器节点：复用主视图卡片，卡片自带勾选框 */
 .ed-card{cursor:pointer;gap:8px}
 .ed-card:hover{border-color:rgba(0,113,227,.28);box-shadow:0 4px 14px rgba(0,0,0,.06)}
@@ -1346,13 +1360,6 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   font-size:10px;
   white-space:nowrap;
 }
-.ed-count{
-  margin-right:auto;
-  color:var(--muted);
-  font-size:12px;
-  white-space:nowrap;
-}
-
 /* ---------- 「更多」菜单 ---------- */
 #moreMenu{
   display:none;
@@ -1535,8 +1542,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   .node-card{max-width:78vw}
   .node-value{max-width:68vw}
   .help{display:none}
-  .file-rail{width:44px;padding-right:10px}
-  .file-rail:hover{width:242px}
+  .file-rail{--rail-expanded-width:242px;width:44px;padding-right:10px}
   .file-rail.rail-dial .file-slot:hover .file-tab{width:200px}
 }
 
@@ -1588,6 +1594,9 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .find-panel .search-nav{gap:1px;height:32px;margin-left:auto}
 .find-panel .search-nav button{display:flex;align-items:center;justify-content:center;width:28px;height:30px;flex-shrink:0;font-size:18px}
 .find-panel .search-nav button[hidden]{display:none}
+.find-panel .search-nav button:disabled{opacity:.4;cursor:not-allowed}
+#editorVisibilityBtn .eye-slash{display:none}
+#editorVisibilityBtn[data-hidden="true"] .eye-slash{display:inline}
 .find-panel .search-nav button:hover:not(:disabled),.find-panel .search-options button:hover{background:var(--hover);color:var(--text)}
 .find-panel .search-options button[aria-pressed="true"]:hover{background:var(--accent-soft);color:var(--accent)}
 .find-panel .search-nav button[aria-pressed="true"]{color:var(--accent);background:var(--accent-soft)}
@@ -1700,5 +1709,37 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 #settingsMask .s-label{font-size:14px}
 #settingsMask .s-hint{font-size:12px;line-height:1.7;margin-top:5px}
 #settingsMask .modal-foot{padding:12px 26px;border-top:1px solid var(--line)}
+#settingsFooter[hidden]{display:none}
+.template-rules{padding:12px 0;border-bottom:1px solid var(--line)}
+.template-rules ul,.context-options{list-style:none;margin:8px 0 12px;padding:0}
+.template-rules li,.context-options li{
+  display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);
+}
+.template-rules li:last-child,.context-options li:last-child{border-bottom:0}
+.template-rules code{flex:1;min-width:0;overflow-wrap:anywhere}
+.context-options label{display:flex;align-items:center;gap:8px;flex:1;font-size:13px}
+.context-options .tf-btn{min-width:30px}
 .ide-scope-cap{position:absolute;left:calc(var(--scope-indent) * 1ch);width:calc(var(--scope-width) * 1ch);bottom:0;border-bottom:1px solid currentColor;pointer-events:none;opacity:.8}
-@media(max-width:700px){.settings-nav{width:128px;padding:14px 8px}.settings-nav button{font-size:12px;padding:12px 10px}#settingsMask .settings-body{padding:16px 12px}#settingsMask .settings-group{padding-inline:14px}#settingsMask .settings-row{flex-wrap:wrap;gap:12px}#settingsMask .settings-row>div:first-child{flex-basis:100%}#settingsMask .settings-group-title{font-size:16px}}
+@media(max-width:1000px){
+  #settingsMask>.modal-box{width:min(700px,84vw)}
+}
+@media(max-width:700px){
+  .settings-layout{flex-direction:column}
+  .settings-nav{
+    width:auto;flex-direction:row;padding:6px 10px;
+    border-right:0;border-bottom:1px solid var(--line);scrollbar-width:thin;
+  }
+  .settings-nav button{width:auto;flex-shrink:0;white-space:nowrap;font-size:12px;padding:8px 10px}
+  .settings-nav button[aria-selected="true"]{box-shadow:inset 0 -2px var(--accent)}
+  #settingsMask .settings-body{padding:10px 12px;scrollbar-width:thin}
+  #settingsMask .settings-group{padding-inline:12px}
+  #settingsMask .settings-row{flex-wrap:wrap;gap:8px}
+  #settingsMask .settings-row>div:first-child{flex:1 1 230px}
+}
+@media(max-width:700px),(max-height:540px){
+  #settingsMask>.modal-box{
+    height:min(600px,calc(100vh - 24px));max-height:calc(100vh - 24px);
+  }
+  #settingsMask .modal-head{padding:10px 14px}
+  #settingsMask .modal-foot{padding:8px 14px}
+}

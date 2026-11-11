@@ -165,8 +165,9 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
+    let check_update = MenuItem::with_id(app, "check-update", "检查更新…", true, None::<&str>)?;
     #[cfg(not(target_os = "macos"))]
-    let help = Submenu::with_items(app, "帮助(&H)", true, &[&about])?;
+    let help = Submenu::with_items(app, "帮助(&H)", true, &[&check_update, &about])?;
     #[cfg(target_os = "macos")]
     {
         let app_menu = Submenu::with_items(
@@ -175,6 +176,7 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
             true,
             &[
                 &about,
+                &check_update,
                 &PredefinedMenuItem::separator(app)?,
                 &PredefinedMenuItem::services(app, Some("服务"))?,
                 &PredefinedMenuItem::separator(app)?,
@@ -216,7 +218,7 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
 #[derive(serde::Deserialize)]
 pub struct DocumentMenuItem {
     id: String,
-    text: String,
+    text: Option<String>,
     enabled: bool,
     shortcut: Option<String>,
 }
@@ -259,6 +261,9 @@ pub fn sync_document_menu(
                 "reset",
                 "settings",
                 "about",
+                "open",
+                "find",
+                "check-update",
             ]
             .contains(&state.id.as_str())
             {
@@ -268,8 +273,10 @@ pub fn sync_document_menu(
                 .get(&state.id)
                 .and_then(|item| item.as_menuitem().cloned())
             {
-                item.set_text(menu_label(&state.text, state.shortcut.as_deref()))
-                    .map_err(|e| e.to_string())?;
+                if let Some(text) = &state.text {
+                    item.set_text(menu_label(text, state.shortcut.as_deref()))
+                        .map_err(|e| e.to_string())?;
+                }
                 item.set_enabled(state.enabled).map_err(|e| e.to_string())?;
             }
         }

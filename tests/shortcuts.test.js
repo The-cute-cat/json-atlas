@@ -43,3 +43,23 @@ test('custom menu shortcuts work on both platforms without AltGr or composition 
   }
   assert.equal(shortcutAction({key:'√',code:'KeyV',metaKey:true,altKey:true},true),'switchView');
 });
+
+test('document shortcuts resolve on both platforms and distinguish the numeric keypad', () => {
+  for(const mac of [false,true]){
+    const mod = mac ? {metaKey:true} : {ctrlKey:true};
+    for(const [key, action] of [['o','open'],['s','save'],['f','find'],['z','undo'],['c','copyNode']]){
+      assert.equal(shortcutAction({...mod,key},mac),action);
+    }
+    assert.equal(shortcutAction({...mod,key:'s',shiftKey:true},mac),'saveCopy');
+    assert.equal(shortcutAction({...mod,key:mac?'w':'F4'},mac),'close');
+    assert.equal(shortcutAction(mac ? {...mod,key:'g'} : {key:'F3'},mac),'nextMatch');
+    assert.equal(shortcutAction(mac ? {...mod,key:'g',shiftKey:true} : {key:'F3',shiftKey:true},mac),'previousMatch');
+    assert.equal(shortcutAction(mac ? {...mod,key:'[',shiftKey:true} : {altKey:true,key:'ArrowLeft'},mac),'previousFile');
+    assert.equal(shortcutAction({...mod,key:'+',location:3,shiftKey:true},mac),'expandAll');
+    assert.equal(shortcutAction({...mod,key:'-',location:3,shiftKey:true},mac),'collapseAll');
+    assert.equal(shortcutAction({...mod,key:'+',location:0,shiftKey:true},mac),null);
+  }
+  assert.equal(shortcutAction({ctrlKey:true,shiftKey:true,key:'F6'},false),'switchView');
+  assert.equal(shortcutAction({ctrlKey:true,shiftKey:true,key:'E'},false),'editMode');
+  assert.equal(shortcutAction({ctrlKey:true,shiftKey:true,key:'F6'},true),null);
+});

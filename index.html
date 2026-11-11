@@ -45,16 +45,23 @@
     </div>
 
     <button id="openAnotherBtn">打开文件</button>
+    <button id="editorSaveBtn" class="template-only" type="button">应用模板</button>
     <span class="sep"></span>
     <button id="expandAllBtn" title="展开全部节点，最多显示约 5000 个节点">展开全部</button>
     <button id="collapseAllBtn">全部收起</button>
     <button id="resetViewBtn">重置视图</button>
 
-    <div class="quick-search" role="search" aria-label="快速搜索当前文件">
+    <div id="documentSearch" class="quick-search" role="search" aria-label="快速搜索当前文件">
       <input id="quickSearchInput" type="search" placeholder="搜索键名或值…" aria-label="快速搜索键名或值" autocomplete="off" spellcheck="false" />
       <span id="quickSearchCount"></span>
       <button id="quickNextMatchBtn" type="button" disabled title="下一个匹配" aria-label="快速搜索的下一个匹配">›</button>
     </div>
+    <div class="quick-search template-only" role="search" aria-label="搜索模板键名">
+      <input id="editorSearchInput" type="search" placeholder="搜索键名…" aria-label="搜索模板键名" autocomplete="off" />
+      <span id="editorSearchCount" role="status"></span>
+      <button id="editorNextMatch" type="button" disabled title="下一个匹配" aria-label="下一个模板匹配">›</button>
+    </div>
+    <button id="editorClose" class="template-only" type="button">退出模板编辑</button>
 
     <button id="moreBtn" class="icon-btn" title="更多">⋯</button>
 
@@ -94,14 +101,24 @@
           <button id="zoomInBtn" title="放大">＋</button>
         </div>
       </main>
+      <main id="editorViewport" class="viewport template-only" tabindex="0" aria-label="结构模板编辑画布">
+        <div id="editorWorld" class="world"><div id="editorTree" class="tree"></div></div>
+        <div id="editorZoomDock" class="zoom-dock-inline">
+          <button id="editorZoomOutBtn" title="缩小">−</button>
+          <span id="editorZoomLabel" class="zoom-label">100%</span>
+          <button id="editorZoomInBtn" title="放大">＋</button>
+        </div>
+      </main>
       <div id="docError" class="doc-error"></div>
     </div>
   </div>
 
   <footer class="statusbar">
+    <span id="editModeStatus" hidden>编辑模式 · Esc 退出</span>
     <span id="pathText">路径：$</span>
     <span id="ideStatus" role="status" hidden></span>
     <span class="help">空白处拖动 · 滚轮平移 · 右键节点展开/收起子树</span>
+    <span id="editorCount" class="template-only"></span>
   </footer>
 </section>
 
@@ -124,6 +141,7 @@
         <button id="prevMatchBtn" type="button" disabled title="上一个匹配（Shift+Enter）" aria-label="上一个匹配"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16V4m-5 5 5-5 5 5"/></svg></button>
         <button id="nextMatchBtn" type="button" disabled title="下一个匹配（Enter）" aria-label="下一个匹配"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12m-5-5 5 5 5-5"/></svg></button>
         <button id="searchScopeBtn" type="button" aria-pressed="false" title="仅在选中节点内查找：先点击一个节点" aria-label="仅在选中节点内查找"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h8M4 15h12"/></svg></button>
+        <button id="editorVisibilityBtn" type="button" aria-label="隐藏匹配节点" title="隐藏匹配节点" disabled hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5Z"/><circle cx="10" cy="10" r="2"/><path class="eye-slash" d="m3 3 14 14"/></svg></button>
         <button id="clearSearchBtn" type="button" title="清除搜索" aria-label="清除搜索" hidden>×</button>
         <button id="pinFindBtn" type="button" aria-label="固定位置" aria-pressed="false" title="固定位置"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 3 6 0-1 5 3 3v2H5v-2l3-3-1-5ZM10 13v4"/></svg></button>
         <button id="closeFindBtn" type="button" aria-label="关闭查找" title="关闭查找（Esc）"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button>
@@ -143,10 +161,9 @@
 <div id="ctxMenu">
   <button id="ctxCopyPath">复制路径</button>
   <button id="ctxExpandSubtree">展开全部下级</button>
-  <div class="ctx-sep"></div>
   <button id="ctxCollapse">收起该节点（含下级）</button>
-  <div class="ctx-sep"></div>
   <button id="ctxEditNode">编辑节点…</button>
+  <button id="ctxHideNode">隐藏节点</button>
   <button id="ctxViewFull">查看完整内容</button>
   <button id="ctxCopy">复制节点内容</button>
 </div>
@@ -160,14 +177,23 @@
       </div>
       <button id="settingsClose" title="关闭">✕</button>
     </div>
-    <div class="settings-layout"><nav class="settings-nav" aria-label="设置分类" role="tablist" aria-orientation="vertical"><button type="button" id="settingsNav0" role="tab" aria-controls="settingsPage0" aria-selected="true" tabindex="0">阅读与布局</button><button type="button" id="settingsNav1" role="tab" aria-controls="settingsPage1" aria-selected="false" tabindex="-1">字段内容</button><button type="button" id="settingsNav2" role="tab" aria-controls="settingsPage2" aria-selected="false" tabindex="-1">JSONL</button><button type="button" id="settingsNav3" role="tab" aria-controls="settingsPage3" aria-selected="false" tabindex="-1">模板与备份</button><button type="button" id="settingsNav4" role="tab" aria-controls="settingsPage4" aria-selected="false" tabindex="-1">键盘快捷键</button></nav><div class="settings-body" id="settingsContent">
+    <div class="settings-layout">
+      <nav id="settingsNav" class="settings-nav" aria-label="设置分类" role="tablist" aria-orientation="vertical">
+        <button type="button" id="settingsNav0" role="tab" aria-controls="settingsPage0" aria-selected="true" tabindex="0">阅读与布局</button>
+        <button type="button" id="settingsNav1" role="tab" aria-controls="settingsPage1" aria-selected="false" tabindex="-1">字段内容</button>
+        <button type="button" id="settingsNav2" role="tab" aria-controls="settingsPage2" aria-selected="false" tabindex="-1">JSONL</button>
+        <button type="button" id="settingsNav3" role="tab" aria-controls="settingsPage3" aria-selected="false" tabindex="-1">模板与备份</button>
+        <button type="button" id="settingsNav4" role="tab" aria-controls="settingsPage4" aria-selected="false" tabindex="-1">键盘快捷键</button>
+        <button type="button" id="settingsNav5" role="tab" aria-controls="settingsPage5" aria-selected="false" tabindex="-1">右键菜单</button>
+      </nav>
+      <div class="settings-body" id="settingsContent">
       <div class="settings-group" id="settingsPage0" role="tabpanel" aria-labelledby="settingsNav0">
       <div class="settings-group-title">阅读与布局</div>
       <div class="settings-row"><div><label class="s-label" for="optTheme">外观主题</label><div class="s-hint">白天模式适合明亮环境，夜间模式减少暗处的屏幕亮度。默认跟随系统，系统切换外观时会自动更新。</div></div><select id="optTheme"><option value="system">跟随系统</option><option value="light">白天模式</option><option value="dark">夜间模式</option></select></div>
       <div class="settings-row"><div><label class="s-label" for="optViewMode">文件查看方式</label><div class="s-hint">小文件可使用带行号和语法高亮的 IDE 视图，支持编辑、折叠与格式化。较大或复杂文件自动使用树形视图，两种视图共享修改内容。</div></div><select id="optViewMode"><option value="tree">树形视图</option><option value="auto">简单结构自动使用 IDE</option><option value="ide">优先使用 IDE</option></select></div>
       <div class="settings-row"><div><label class="s-label" for="optIdeFoldAlwaysVisible">IDE 折叠箭头常驻显示</label><div class="s-hint">默认只在鼠标移到行号区域或用键盘聚焦按钮时显示；开启后始终显示。切换和悬停均无动画。</div></div><label class="switch"><input type="checkbox" id="optIdeFoldAlwaysVisible" /><span class="slider"></span></label></div>
       <div class="settings-row"><div><label class="s-label" for="optNodeSelectionStyle">显示节点选中描边</label><div class="s-hint">默认关闭。关闭仅隐藏描边，点击选中节点后仍可按 Ctrl/⌘+C 复制内容。</div></div><label class="switch"><input type="checkbox" id="optNodeSelectionStyle" /><span class="slider"></span></label></div>
-      <div class="settings-row"><div><label class="s-label" for="optVimEditing">Vim 风格编辑快捷键</label><div class="s-hint">默认关闭。开启后，在画布空白处按 i 进入编辑模式，按 Esc 退出；输入框内不触发。右键编辑节点始终可用。索引大文件暂只读。</div></div><label class="switch"><input type="checkbox" id="optVimEditing" /><span class="slider"></span></label></div>
+      <div class="settings-row"><div><label class="s-label" for="optVimEditing">Vim 风格编辑快捷键</label><div class="s-hint">默认关闭。开启后，点击画布空白处，按 i 进入编辑模式。状态栏会显示当前模式，按 Esc 退出。输入框内不触发，索引大文件暂只读。</div></div><label class="switch"><input type="checkbox" id="optVimEditing" /><span class="slider"></span></label></div>
       <div class="settings-row">
         <div>
           <label class="s-label" for="optLargeFileThreshold">大文件处理阈值</label>
@@ -306,13 +332,17 @@
       <div class="settings-row">
         <div>
           <div class="s-label">结构模板</div>
-          <div class="s-hint">记录常用的展开层级，也可通过模板编辑器隐藏字段。“立即应用”用于当前文件，“清除”会恢复隐藏字段。</div>
+          <div class="s-hint">记录常用的展开层级，并管理隐藏的节点。隐藏规则按结构匹配所有文件，数组元素共用同一路径规则。</div>
           <div class="s-hint" id="templateStatus">未记录</div>
         </div>
         <div style="display:flex;gap:8px">
           <button id="applyTemplateBtn" class="tf-btn">立即应用</button>
           <button id="clearTemplateBtn" class="tf-btn">清除</button>
         </div>
+      </div>
+      <div id="hiddenTemplateRules" class="template-rules" hidden>
+        <div class="s-label">隐藏规则</div>
+        <ul id="hiddenTemplateList"></ul>
       </div>
       <div class="settings-row">
         <div>
@@ -331,9 +361,15 @@
         <p class="s-hint">参考 IDEA 的常用键位，按当前系统显示。展开与收起仅作用于树形视图；在普通输入框中保留原有文字编辑行为。也可继续使用 Shift+Alt+F 格式化。</p>
         <dl id="shortcutHelp" class="shortcut-help"></dl>
       </div>
+      <div class="settings-group" id="settingsPage5" role="tabpanel" aria-labelledby="settingsNav5" hidden>
+        <div class="settings-group-title">右键菜单</div>
+        <p class="s-hint">选择节点右键菜单中显示的项目，并调整顺序。</p>
+        <ol id="contextMenuOptions" class="context-options"></ol>
+        <button id="resetContextMenu" type="button" class="tf-btn">恢复默认</button>
+      </div>
     </div>
     </div>
-    <div class="modal-foot">
+    <div id="settingsFooter" class="modal-foot" hidden>
       <button id="recordTemplateBtn2" class="tf-btn">记录当前展开为模板</button>
     </div>
   </div>
@@ -357,6 +393,11 @@
 
 <div class="notice-stack" aria-label="任务进度和提示">
 <div id="toast" role="status"></div>
+<aside id="updateNotice" class="update-notice" aria-label="应用更新" hidden>
+  <span id="updateNoticeMessage" role="status"></span>
+  <button id="updateNoticeOpen" type="button">查看更新</button>
+  <button id="updateNoticeDismiss" type="button" aria-label="关闭更新提醒" title="关闭更新提醒">×</button>
+</aside>
 <div id="nodeBudgetNotice" class="node-budget-notice" hidden>
   <span role="status">显示节点较多，可精简远处未阅读的内容。</span>
   <button id="reclaimNodesBtn" type="button">精简远处节点</button>
@@ -371,38 +412,17 @@
 </div>
 </div>
 
-<div id="editorMask">
-  <div class="modal-box editor-box">
-    <div class="modal-head">
-      <div class="modal-titles">
-        <div style="font-size:14px;font-weight:600;letter-spacing:-.01em">结构模板编辑器</div>
-        <div style="margin-top:2px;color:var(--muted);font-size:11px">
-          勾选 = 显示，取消 = 隐藏该字段及其子级 · 数组仅展示第一项结构，配置对所有元素生效
-        </div>
-      </div>
-      <button id="editorClose" title="关闭">✕</button>
-    </div>
-
-    <div id="editorViewport" class="editor-canvas">
-      <div id="editorWorld" class="world" style="padding:20px 40px 60px 20px">
-        <div id="editorTree" class="tree"></div>
-      </div>
-      <div id="editorZoomDock" class="zoom-dock-inline">
-        <button id="editorZoomOutBtn" title="缩小">−</button>
-        <span id="editorZoomLabel" class="zoom-label">100%</span>
-        <button id="editorZoomInBtn" title="放大">＋</button>
-      </div>
-    </div>
-
-    <div class="modal-foot">
-      <span id="editorCount" class="ed-count"></span>
-      <button id="editorExpandAllBtn" class="tf-btn">展开全部</button>
-      <button id="editorCollapseAllBtn" class="tf-btn">全部收起</button>
-      <button id="editorShowAllBtn" class="tf-btn">全部显示</button>
-      <button id="editorSaveBtn" class="primary">保存并应用</button>
-    </div>
+<dialog id="updateDialog" aria-labelledby="updateTitle" aria-describedby="updateVersion">
+  <h2 id="updateTitle">检查更新</h2>
+  <p id="updateVersion"></p>
+  <p id="updateStatus" role="status"></p>
+  <label class="update-preference"><input type="checkbox" id="autoCheckUpdates" /> 自动检查更新</label>
+  <div class="about-actions">
+    <button id="updateCheckAgain" type="button">重新检查</button>
+    <button id="updateOpenRelease" type="button" hidden>查看发布页</button>
+    <form method="dialog"><button type="submit" class="primary" autofocus>关闭</button></form>
   </div>
-</div>
+</dialog>
 
 <dialog id="aboutDialog" aria-labelledby="aboutTitle" aria-describedby="aboutDescription">
   <button id="aboutClose" class="about-close" aria-label="关闭关于窗口" title="关闭" autofocus>✕</button>

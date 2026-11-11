@@ -17,6 +17,10 @@ const macBindings = {
   nextFile: ['Meta', 'Shift', ']'], previousFile: ['Meta', 'Shift', '['],
   nextMatch: ['Meta', 'G'], previousMatch: ['Meta', 'Shift', 'G']
 };
+const nonMacAlternatives = {
+  switchView: ['Ctrl', 'Shift', 'F6'],
+  editMode: ['Ctrl', 'Shift', 'E']
+};
 const keysFor = (action, mac) => (mac && macBindings[action]) || bindings[action];
 
 export function shortcutLabel(action, mac = isMacPlatform()) {
@@ -28,13 +32,24 @@ export function shortcutLabel(action, mac = isMacPlatform()) {
 export function shortcutAction(event, mac = isMacPlatform()) {
   if(event.isComposing || event.repeat || event.getModifierState?.('AltGraph')) return null;
   for(const action of Object.keys(bindings)) {
-    const keys = keysFor(action, mac).map(key => key === 'Mod' ? (mac ? 'Meta' : 'Ctrl') : key);
-    if(!!event.ctrlKey !== keys.includes('Ctrl') || !!event.metaKey !== keys.includes('Meta') ||
-      !!event.altKey !== keys.includes('Alt') || !!event.shiftKey !== keys.includes('Shift')) continue;
-    const key = keys.at(-1);
-    const code = key.length === 1 && /[a-z]/i.test(key) ? 'Key' + key.toUpperCase() : /^\d$/.test(key) ? 'Digit' + key :
-      ({',':'Comma', '[':'BracketLeft', ']':'BracketRight'})[key] || key;
-    if(event.code === code || String(event.key).toLowerCase() === key.toLowerCase()) return action;
+    const primary = keysFor(action, mac).map(key => key === 'Mod' ? (mac ? 'Meta' : 'Ctrl') : key);
+    const alternative = !mac && nonMacAlternatives[action];
+    if(matchesShortcut(event, primary) || (alternative && matchesShortcut(event, alternative))) return action;
   }
   return null;
+}
+
+function matchesShortcut(event, keys) {
+  if(!!event.ctrlKey !== keys.includes('Ctrl') || !!event.metaKey !== keys.includes('Meta') ||
+    !!event.altKey !== keys.includes('Alt') || !!event.shiftKey !== keys.includes('Shift')) return false;
+  const key = keys.at(-1);
+  const code = /^[a-z]$/i.test(key) ? 'Key' + key.toUpperCase() : /^\d$/.test(key) ? 'Digit' + key :
+    ({',':'Comma', '[':'BracketLeft', ']':'BracketRight'})[key] || key;
+  const numpadSymbol = {NumpadAdd:'+', NumpadSubtract:'-'}[key];
+  return event.code === code || String(event.key).toLowerCase() === key.toLowerCase()
+    || (event.location === 3 && numpadSymbol !== undefined && event.key === numpadSymbol);
+}
+
+export function shortcutAlternativeLabel(action, mac = isMacPlatform()) {
+  return mac ? '' : nonMacAlternatives[action]?.join('+') || '';
 }

@@ -10,11 +10,14 @@ import { normalizeTheme, watchTheme } from './theme.js';
 import { updateWindowTheme } from './desktop.js';
 import { installTooltips } from './tooltips.js';
 import { openAbout } from './about.js';
-import { isMacPlatform, shortcutLabel, shortcutAction } from './shortcuts.js';
+import { openUpdateCheck } from './update-dialog.js';
+import { isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel } from './shortcuts.js';
 import { MAX_FILE_BYTES, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath } from './data.js';
 import { updateDocumentMenu, saveNativeDocument, saveDocumentCopy, guardEditedClose, desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
 
 let expansionGeneration = 0;
+let templateEditing = false;
+let restoringExpansion = null;
 let searchTimer;
 let searchGeneration = 0;
 let focusGeneration = 0;
@@ -176,19 +179,24 @@ function formatIde(){
 }
 function syncDocumentMenu(){
   if(!desktop) return;
+  const doc = activeDoc();
   const actions = {'switch-view':'switchView','edit-mode':'editMode','undo-edit':'undo','format-json':'format'};
   updateDocumentMenu([
     ['switch-view','switchViewBtn'], ['edit-mode','editModeBtn'],
     ['undo-edit','undoEditBtn'], ['save','saveBtn'], ['save-copy','saveCopyBtn'], ['format-json','formatIdeBtn']
   ].map(([id, buttonId]) => {
     const button = document.getElementById(buttonId);
+    if(id === 'save' && templateEditing) return {id, text:'应用模板', enabled:true};
     return {id, text:button.textContent, shortcut:actions[id] ? shortcutText(actions[id]) : null,
-      enabled:!!activeDoc() && !button.disabled && !(id === 'edit-mode' && ideActive)};
+      enabled:!templateEditing && !!doc && !button.disabled && !(id === 'edit-mode' && ideActive)};
   }).concat([
-    {id:'close',text:'关闭当前文件',shortcut:shortcutText('close'),enabled:!!activeDoc()},
-    {id:'reset',text:'重置视图',shortcut:shortcutText('resetView'),enabled:!!activeDoc() && !activeDoc().error},
-    {id:'settings',text:'设置…',shortcut:shortcutText('settings'),enabled:true},
-    {id:'about',text:'关于 JSON Atlas',shortcut:macPlatform ? null : shortcutText('about'),enabled:true}
+    {id:'open',enabled:!templateEditing},
+    {id:'close',text:'关闭当前文件',shortcut:shortcutText('close'),enabled:!templateEditing && !!doc},
+    {id:'find',enabled:!!doc},
+    {id:'reset',text:'重置视图',shortcut:shortcutText('resetView'),enabled:!!doc && !doc.error},
+    {id:'settings',text:'设置…',shortcut:shortcutText('settings'),enabled:!templateEditing},
+    {id:'about',text:'关于 JSON Atlas',shortcut:macPlatform ? null : shortcutText('about'),enabled:!templateEditing},
+    {id:'check-update',enabled:!templateEditing}
   ], macPlatform ? [copyNodeMenuState()] : []));
 }
 
@@ -241,6 +249,7 @@ function syncEditing(){
   const doc = activeDoc();
   if(!doc || doc.error || doc.source?.indexed) editMode = false;
   viewer.classList.toggle('editing', editMode);
+  document.getElementById('editModeStatus').hidden = !editMode;
   document.getElementById('editModeBtn').setAttribute('aria-pressed', String(editMode));
   document.getElementById('editModeBtn').textContent = editMode ? '退出编辑' : '编辑模式';
   document.getElementById('editModeBtn').disabled = !doc || !!doc.error || !!doc.source?.indexed;
@@ -249,7 +258,16 @@ function syncEditing(){
   document.getElementById('saveCopyBtn').disabled = !doc?.dirty || !!doc?.saving;
   syncDocumentMenu();
 }
-function setEditMode(on){ editMode = !!on; syncEditing(); }
+function setEditMode(on, notify = false){
+  const previous = editMode;
+  editMode = !!on;
+  syncEditing();
+  if(!notify) return;
+  if(previous !== editMode) showToast(editMode ? '已进入编辑模式' : '已返回阅读模式');
+  else if(on && !editMode){
+    showToast(activeDoc()?.source?.indexed ? '索引大文件暂只读' : '当前文档无法进入编辑模式');
+  }
+}
 function canEditNode(node){
   const doc = activeDoc();
   return !!doc && !doc.error && !doc.source?.indexed && node?._source === doc.source;
@@ -330,7 +348,7 @@ let selectedSearchPath = null;
 let selectedCopyNode = null;
 function copyNodeMenuState(){
   return {id:'copy-node',text:'复制选中节点内容',shortcut:shortcutText('copyNode'),
-    enabled:!ideActive && !!selectedCopyNode?.isConnected};
+    enabled:!templateEditing && !ideActive && !!selectedCopyNode?.isConnected};
 }
 function selectCopyNode(node){
   const changed = selectedCopyNode !== node;
@@ -500,8 +518,10 @@ function snapshotDoc(){
     return;
   }
 
-  doc.openPaths = [...tree.querySelectorAll('.tree-node.open')]
-    .map(n => n.dataset.path);
+  if(restoringExpansion !== expansionGeneration){
+    doc.openPaths = [...tree.querySelectorAll('.tree-node.open')]
+      .map(n => n.dataset.path);
+  }
   if(lastViewState) doc.view = { x: lastViewState.x, y: lastViewState.y, scale: lastViewState.scale };
   doc.searchQuery = searchInput.value || '';
   doc.data = parsedData;
@@ -513,14 +533,13 @@ function activateDoc(id){
   const doc = docs.find(d => d.id === id);
   if(!doc) return;
 
+  closeMenu();
   if(activeDocId && activeDocId !== id) snapshotDoc();
   activeDocId = id;
   expansionGeneration++;
   viewportWindow.clear();
   discardPagedTree(tree);
-  const oldEditor = document.getElementById('editorTree');
-  discardPagedTree(oldEditor);
-  document.getElementById('editorMask').classList.remove('open');
+  closeEditor();
   closeModal();
   editingNode = null; document.getElementById('valueEditDialog').close();
   updateWindowTitle(doc.name);
@@ -566,11 +585,16 @@ function activateDoc(id){
   }
 
   const activation = expansionGeneration;
+  if(Array.isArray(doc.openPaths)) restoringExpansion = activation;
   requestAnimationFrame(async () => {
     if(activation !== expansionGeneration) return;
     if(activeDocId !== doc.id) return;
     if(Array.isArray(doc.openPaths)){
-      await expandByPaths(doc.openPaths, { exact: true });
+      try{
+        await expandByPaths(doc.openPaths, { exact: true });
+      }finally{
+        if(restoringExpansion === activation) restoringExpansion = null;
+      }
       if(activeDocId !== doc.id || activation !== expansionGeneration) return;
       if(doc.view) applySessionView(doc.view); else resetView();
     }else{
@@ -887,8 +911,8 @@ function openPastedText(text){
 // Preserve native paste in editors, search fields, dialogs and editable controls.
 document.addEventListener('paste', e => {
   if(e.defaultPrevented || e.target?.closest?.('input,textarea,select,[contenteditable]')
-    || ['valueEditDialog','discardEditDialog','aboutDialog'].some(id => document.getElementById(id).open)
-    || ['settingsMask','editorMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'))) return;
+    || ['valueEditDialog','discardEditDialog','aboutDialog','updateDialog'].some(id => document.getElementById(id).open)
+    || templateEditing || ['settingsMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'))) return;
   const text = e.clipboardData?.getData('text/plain');
   if(!text?.trim()) return;
   e.preventDefault();
@@ -1131,6 +1155,7 @@ async function applyOpenPolicy(){
 
 /* 撤回阅读器视图，回到落地页（关掉最后一份文件时用） */
 function withdrawView(){
+  closeEditor();
   ideActive = false; ideLocations = new Map();
   document.getElementById('ideInput').value = '';
   document.getElementById('ideLines').replaceChildren();
@@ -1241,7 +1266,6 @@ function syncReadingActions(){
   expandAllBtn.textContent = indexed ? '展开当前页' : '展开全部';
   expandAllBtn.title = (indexed ? '展开当前页的节点，最多显示约 5000 个节点' : '展开全部节点，最多显示约 5000 个节点') + `（${shortcutText('expandAll')}）`;
   document.getElementById('ctxExpandSubtree').textContent = indexed ? '展开当前页的下级' : '展开全部下级';
-  document.getElementById('editorExpandAllBtn').textContent = indexed ? '展开当前页' : '展开全部';
 }
 
 // Keep only identity and geometry off screen. Branches retain their lightweight
@@ -1326,8 +1350,9 @@ function attachChildren(node, card, toggle, source, sourcePath, path){
   children.className = 'children';
   node.appendChild(children);
 
+  const hidden = getHiddenSet();
   const ensureChildren = pagedChildren(node, children, source, sourcePath, item => {
-    if(getHiddenSet().has(normalizePath(encodePath(path.concat(item.key))))) return null;
+    if(hidden.size && hidden.has(normalizePath(encodePath(path.concat(item.key))))) return null;
     return createNode(item.arrayItem ? arrayIndexLabel(item.key) : String(item.key), item,
       path.concat(item.key), false, item.arrayItem, source);
   }, () => { updateVirtualization(); scheduleOverflowSweep(); });
@@ -1620,6 +1645,26 @@ function collapseAll(){
 
 /* ---------- 选中节点的子树展开 / 收起 ---------- */
 const ctxMenu = document.getElementById('ctxMenu');
+const contextMenuItems = [
+  'ctxCopyPath', 'ctxExpandSubtree', 'ctxCollapse', 'ctxEditNode',
+  'ctxHideNode', 'ctxViewFull', 'ctxCopy'
+].map(id => {
+  const button = document.getElementById(id);
+  return { id, button, label: button.textContent };
+});
+const contextMenuHiddenByDefault = new Set(['ctxViewFull', 'ctxCopy']);
+
+function normalizeContextMenu(value){
+  const remaining = new Set(contextMenuItems.map(item => item.id));
+  const items = [];
+  if(Array.isArray(value)){
+    for(const item of value){
+      if(item && remaining.delete(item.id)) items.push({id:item.id, enabled:item.enabled !== false});
+    }
+  }
+  for(const id of remaining) items.push({id, enabled:!contextMenuHiddenByDefault.has(id)});
+  return items;
+}
 const ctxCopyPath = document.getElementById('ctxCopyPath');
 const ctxExpandSubtreeBtn = document.getElementById('ctxExpandSubtree');
 const ctxCollapseBtn = document.getElementById('ctxCollapse');
@@ -1654,6 +1699,7 @@ function isBranchEl(node){
 }
 
 function openMenu(x, y){
+  if(!settings.contextMenu.some(item => item.enabled)) return;
   ctxMenu.style.display = 'block';
 
   /* 叶子节点禁用展开项 */
@@ -1662,18 +1708,30 @@ function openMenu(x, y){
   ctxExpandSubtreeBtn.disabled = !branch;
   ctxCollapseBtn.disabled = !branch || !ctxTarget.classList.contains('open');
   document.getElementById('ctxEditNode').disabled = !canEditNode(ctxTarget);
+  document.getElementById('ctxHideNode').disabled = ctxTarget.dataset.path === '$';
   document.getElementById('ctxEditNode').title = canEditNode(ctxTarget) ? '修改当前工作副本中的节点值' : '索引大文件与字符串内嵌的虚拟节点暂不支持编辑';
 
-  /* 防止菜单超出窗口 */
   const mw = ctxMenu.offsetWidth;
   const mh = ctxMenu.offsetHeight;
-  ctxMenu.style.left = Math.min(x, window.innerWidth - mw - 8) + 'px';
-  ctxMenu.style.top = Math.min(y, window.innerHeight - mh - 8) + 'px';
+  ctxMenu.style.left = Math.max(8, Math.min(x, window.innerWidth - mw - 8)) + 'px';
+  ctxMenu.style.top = Math.max(8, Math.min(y, window.innerHeight - mh - 8)) + 'px';
 }
 
 function closeMenu(){
   ctxMenu.style.display = 'none';
 }
+
+window.addEventListener('resize', closeMenu);
+
+document.getElementById('ctxHideNode').addEventListener('click', () => {
+  const path = ctxTarget?.dataset.path;
+  closeMenu();
+  if(!path || path === '$' || !activeDoc()) return;
+  const hidden = getHiddenSet();
+  hidden.add(normalizePath(path));
+  saveHiddenRules(hidden);
+  showToast('节点已隐藏，可在「模板与备份」中恢复');
+});
 
 tree.addEventListener('contextmenu', e => {
   const card = e.target.closest('.node-card');
@@ -1846,7 +1904,8 @@ let settings = {
   strictJsonl: false,
   limitValueHeight: false,   /* 限制字段内容的最大高度 */
   valueMaxLines: 6,          /* 最大高度（行） */
-  railStyle: 'default'       /* 多文件栏样式：default 贴左侧竖条 / dial 悬浮细线 */
+  railStyle: 'default',      /* 多文件栏样式：default 贴左侧竖条 / dial 悬浮细线 */
+  contextMenu: normalizeContextMenu()
 };
 let template = null;
 
@@ -1861,6 +1920,7 @@ try{
 settings.largeFileThresholdMiB = normalizeThreshold(settings.largeFileThresholdMiB);
 settings.viewMode = normalizeViewMode(settings.viewMode);
 settings.theme = normalizeTheme(settings.theme);
+settings.contextMenu = normalizeContextMenu(settings.contextMenu);
 const applyTheme = watchTheme(document.documentElement, window.matchMedia?.('(prefers-color-scheme: dark)'), settings.theme,
   (resolved, preference) => updateWindowTheme(preference, resolved));
 document.getElementById('optTheme').addEventListener('change', e => {
@@ -1889,7 +1949,25 @@ function isPathPrefix(prefix, path, normalize = true){
 
 /* 隐藏字段集合（模板.hidden） */
 function getHiddenSet(){
-  return new Set((template && template.hidden) || []);
+  return new Set(Array.isArray(template?.hidden) ? template.hidden.filter(path => typeof path === 'string' && path !== '$') : []);
+}
+
+function refreshTemplateVisibility(){
+  if(!activeDocId) return;
+  snapshotDoc();
+  activateDoc(activeDocId);
+}
+
+function saveHiddenRules(hidden){
+  template = {
+    paths: template?.paths || [],
+    hidden: [...hidden],
+    file: activeDoc()?.name || template?.file || '',
+    savedAt: Date.now()
+  };
+  saveTemplate();
+  updateTemplateStatus();
+  if(!ideActive) refreshTemplateVisibility();
 }
 
 /* 记录模板：当前所有处于展开态的节点路径（归一化后） */
@@ -2042,16 +2120,41 @@ const clearTemplateBtn = document.getElementById('clearTemplateBtn');
 const recordTemplateBtn = document.getElementById('recordTemplateBtn');
 const recordTemplateBtn2 = document.getElementById('recordTemplateBtn2');
 
+function renderHiddenRules(hidden){
+  const list = document.getElementById('hiddenTemplateList');
+  document.getElementById('hiddenTemplateRules').hidden = !hidden.size;
+  list.replaceChildren();
+  for(const path of hidden){
+    const row = document.createElement('li');
+    const code = document.createElement('code');
+    code.textContent = path;
+    const restore = document.createElement('button');
+    restore.type = 'button';
+    restore.className = 'tf-btn';
+    restore.textContent = '恢复';
+    restore.setAttribute('aria-label', `恢复 ${path}`);
+    restore.addEventListener('click', () => {
+      const rules = getHiddenSet();
+      rules.delete(path);
+      saveHiddenRules(rules);
+      document.getElementById('settingsNav3').focus();
+    });
+    row.append(code, restore);
+    list.appendChild(row);
+  }
+}
+
 function updateTemplateStatus(){
-  if(template && (template.paths.length || (template.hidden && template.hidden.length))){
+  const hidden = getHiddenSet();
+  renderHiddenRules(hidden);
+  if(template && (template.paths.length || hidden.size)){
     const d = new Date(template.savedAt);
     const hh = String(d.getHours()).padStart(2, '0');
     const mm = String(d.getMinutes()).padStart(2, '0');
-    const hiddenPart = (template.hidden && template.hidden.length)
-      ? ` · 隐藏 ${template.hidden.length} 个字段` : '';
+    const hiddenPart = hidden.size ? ` · ${hidden.size} 条隐藏规则` : '';
     templateStatus.textContent =
       `已记录 ${template.paths.length} 个节点${hiddenPart} · ${template.file || '未知文件'} · ${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
-    applyTemplateBtn.disabled = false;
+    applyTemplateBtn.disabled = !template.paths.length;
     clearTemplateBtn.disabled = false;
   }else{
     templateStatus.textContent = '未记录';
@@ -2060,10 +2163,75 @@ function updateTemplateStatus(){
   }
 }
 
+function applyContextMenuSettings(){
+  const buttons = new Map(contextMenuItems.map(({id, button}) => [id, button]));
+  ctxMenu.replaceChildren(...settings.contextMenu.map(({id, enabled}) => {
+    const button = buttons.get(id);
+    button.hidden = !enabled;
+    return button;
+  }));
+}
+
+function renderContextMenuSettings(focusedItem, direction){
+  const list = document.getElementById('contextMenuOptions');
+  list.replaceChildren();
+  let nextFocus;
+  settings.contextMenu.forEach((item, index) => {
+    const {label} = contextMenuItems.find(candidate => candidate.id === item.id);
+    const row = document.createElement('li');
+    const labelEl = document.createElement('label');
+    const enabled = document.createElement('input');
+    enabled.type = 'checkbox';
+    enabled.checked = item.enabled;
+    enabled.addEventListener('change', () => {
+      item.enabled = enabled.checked;
+      applyContextMenuSettings();
+      saveSettings();
+    });
+    labelEl.append(enabled, document.createTextNode(label));
+    row.appendChild(labelEl);
+    for(const step of [-1, 1]){
+      const move = document.createElement('button');
+      move.type = 'button';
+      move.className = 'tf-btn';
+      move.textContent = step < 0 ? '↑' : '↓';
+      move.setAttribute('aria-label', `${step < 0 ? '上移' : '下移'}${label}`);
+      const destination = index + step;
+      move.disabled = destination < 0 || destination >= settings.contextMenu.length;
+      move.addEventListener('click', () => {
+        settings.contextMenu.splice(index, 1);
+        settings.contextMenu.splice(destination, 0, item);
+        applyContextMenuSettings();
+        saveSettings();
+        renderContextMenuSettings(item.id, step);
+      });
+      row.appendChild(move);
+      if(focusedItem === item.id && direction === step) nextFocus = move.disabled ? enabled : move;
+    }
+    list.appendChild(row);
+  });
+  nextFocus?.focus();
+}
+
+document.getElementById('resetContextMenu').addEventListener('click', () => {
+  settings.contextMenu = normalizeContextMenu();
+  applyContextMenuSettings();
+  renderContextMenuSettings();
+  saveSettings();
+});
+applyContextMenuSettings();
+
+const settingsPageCount = 6;
+const settingsNavLayout = window.matchMedia?.('(max-width: 700px)');
+function updateSettingsNavOrientation(){
+  document.getElementById('settingsNav').setAttribute('aria-orientation', settingsNavLayout?.matches ? 'horizontal' : 'vertical');
+}
+settingsNavLayout?.addEventListener('change', updateSettingsNavOrientation);
+updateSettingsNavOrientation();
 let settingsPage = 0;
 function showSettingsPage(index, focus = false){
-  settingsPage = (index + 5) % 5;
-  for(let i = 0; i < 5; i++){
+  settingsPage = (index + settingsPageCount) % settingsPageCount;
+  for(let i = 0; i < settingsPageCount; i++){
     const button = document.getElementById(`settingsNav${i}`);
     button.setAttribute('aria-selected', String(i === settingsPage));
     button.tabIndex = i === settingsPage ? 0 : -1;
@@ -2072,12 +2240,16 @@ function showSettingsPage(index, focus = false){
   }
   document.getElementById('settingsContent').scrollTop = 0;
   document.getElementById('recordTemplateBtn2').hidden = settingsPage !== 3;
+  document.getElementById('settingsFooter').hidden = settingsPage !== 3;
 }
-for(let i = 0; i < 5; i++){
+for(let i = 0; i < settingsPageCount; i++){
   const button = document.getElementById(`settingsNav${i}`);
   button.addEventListener('click', () => showSettingsPage(i));
   button.addEventListener('keydown', e => {
-    const next = e.key === 'ArrowDown' ? i+1 : e.key === 'ArrowUp' ? i-1 : e.key === 'Home' ? 0 : e.key === 'End' ? 4 : null;
+    const horizontal = settingsNavLayout?.matches;
+    const next = e.key === (horizontal ? 'ArrowRight' : 'ArrowDown') ? i+1
+      : e.key === (horizontal ? 'ArrowLeft' : 'ArrowUp') ? i-1
+      : e.key === 'Home' ? 0 : e.key === 'End' ? settingsPageCount - 1 : null;
     if(next === null) return;
     e.preventDefault(); showSettingsPage(next, true);
   });
@@ -2101,6 +2273,7 @@ function openSettings(){
   syncValueHeightControls();
   syncReopenControls();
   updateTemplateStatus();
+  renderContextMenuSettings();
   settingsMask.classList.add('open');
 }
 function closeSettings(){
@@ -2398,7 +2571,8 @@ settingsImportInput.addEventListener('change', () => {
         strictJsonl: !!s.strictJsonl,
         limitValueHeight: !!s.limitValueHeight,
         valueMaxLines: parseInt(s.valueMaxLines, 10) || 6,
-        railStyle: s.railStyle === 'dial' ? 'dial' : 'default'
+        railStyle: s.railStyle === 'dial' ? 'dial' : 'default',
+        contextMenu: normalizeContextMenu(s.contextMenu)
       };
 
       if(payload.template && Array.isArray(payload.template.paths)){
@@ -2426,6 +2600,7 @@ settingsImportInput.addEventListener('change', () => {
       }
       applyValueHeightSetting();   /* 高度限制可能变了，立即生效 */
       applyRailStyle();   /* 多文件栏样式可能变了，立即生效 */
+      applyContextMenuSettings();
       applyTreeLayout();
       applyIdeFoldVisibility();
       showToast('设置已导入');
@@ -2538,22 +2713,18 @@ clearTemplateBtn.addEventListener('click', () => {
   try{ localStorage.removeItem(TEMPLATE_KEY); }catch(_){}
   updateTemplateStatus();
   /* 就地重建当前文档：模板隐藏掉的字段要当场恢复显示，而不是等下次切文件 */
-  if(activeDocId){ snapshotDoc(); activateDoc(activeDocId); }
+  if(!ideActive) refreshTemplateVisibility();
   showToast('模板已清除');
 });
 
 /* ---------- 结构模板编辑器（思维导图画布模式） ---------- */
-const editorMask = document.getElementById('editorMask');
 const editorClose = document.getElementById('editorClose');
 const editorBtn = document.getElementById('editorBtn');
 const editorTree = document.getElementById('editorTree');
 const editorViewport = document.getElementById('editorViewport');
 const editorWorld = document.getElementById('editorWorld');
 const editorCount = document.getElementById('editorCount');
-const editorShowAllBtn = document.getElementById('editorShowAllBtn');
 const editorSaveBtn = document.getElementById('editorSaveBtn');
-const editorExpandAllBtn = document.getElementById('editorExpandAllBtn');
-const editorCollapseAllBtn = document.getElementById('editorCollapseAllBtn');
 const editorZoomInBtn = document.getElementById('editorZoomInBtn');
 const editorZoomOutBtn = document.getElementById('editorZoomOutBtn');
 const editorZoomLabel = document.getElementById('editorZoomLabel');
@@ -2567,16 +2738,34 @@ function openEditor(){
   /* 用文档而不是 parsedData 判断：根值是 null / false / 0 也是合法数据 */
   const doc = activeDoc();
   if(!doc || doc.error){ showToast('请先打开文件'); return; }
-  editorHidden = new Set((template && template.hidden) || []);
+  if(templateEditing) return;
+  closeMenu();
+  if(!findPanel.hidden) closeFindPanel(false);
+  templateEditing = true;
+  syncDocumentMenu();
+  enterEditorFind();
+  viewer.classList.add('template-editing');
+  fileSub.textContent = '模板编辑模式 · 勾选显示字段';
+  editorHidden = getHiddenSet();
   renderEditorTree();
   editorView.reset();
-  editorMask.classList.add('open');
+  void expandOne(editorTree.firstElementChild);
+  editorViewport.focus({preventScroll:true});
 }
 
 function closeEditor(){
+  if(!templateEditing) return;
+  templateEditing = false;
+  syncDocumentMenu();
+  if(!findPanel.hidden) closeFindPanel(false);
+  resetEditorSearch();
+  leaveEditorFind();
   expansionGeneration++;
   discardPagedTree(editorTree);
-  editorMask.classList.remove('open');
+  editorTree.replaceChildren();
+  viewer.classList.remove('template-editing');
+  const doc = activeDoc();
+  if(doc) updateDocHeader(doc);
 }
 
 function renderEditorTree(){
@@ -2612,6 +2801,7 @@ function createEditorNode(key, descriptor, path, isRoot=false, isArrayItem=false
     + (isBranch ? ' branch' : '')
     + (isRoot ? ' root-node' : '');
   node._path = path;                 /* 与主视图一致：序号重标要按真实下标取标签 */
+  node.dataset.path = encodePath(path);
   node._childrenType = descriptor.type;
   node._isArrayItem = isArrayItem;   /* 数组元素：序号标签可随设置实时切换 */
 
@@ -2632,12 +2822,17 @@ function createEditorNode(key, descriptor, path, isRoot=false, isArrayItem=false
   cb.checked = !editorHidden.has(normPath);
   cb.disabled = isRoot;   /* 根节点不可隐藏 */
   cb.title = isRoot ? '根节点不可隐藏' : '取消勾选将在主视图中隐藏该字段及其子级';
+  node._setTemplateVisible = visible => {
+    cb.checked = visible;
+    card.classList.toggle('hidden-field', !visible);
+  };
   cb.addEventListener('click', e => e.stopPropagation());
   cb.addEventListener('change', () => {
     if(cb.checked) editorHidden.delete(normPath);
     else editorHidden.add(normPath);
-    card.classList.toggle('hidden-field', !cb.checked);
+    node._setTemplateVisible(cb.checked);
     updateEditorCount();
+    syncEditorVisibilityButton();
   });
   if(!cb.checked) card.classList.add('hidden-field');
   card.appendChild(cb);
@@ -2720,39 +2915,225 @@ function editorCollapseAll(){
 }
 
 editorBtn.addEventListener('click', () => { closeMoreMenu(); openEditor(); });
-editorClose.addEventListener('click', closeEditor);
-editorMask.addEventListener('click', e => {
-  if(e.target === editorMask) closeEditor();
-});
-editorExpandAllBtn.addEventListener('click', editorExpandAll);
-editorCollapseAllBtn.addEventListener('click', editorCollapseAll);
+editorClose.addEventListener('click', () => { closeEditor(); document.getElementById('moreBtn').focus(); });
 editorZoomInBtn.addEventListener('click', () => editorView.zoomAt(1.12));
 editorZoomOutBtn.addEventListener('click', () => editorView.zoomAt(0.89));
 
-editorShowAllBtn.addEventListener('click', () => {
-  editorHidden.clear();
-  renderEditorTree();
-});
-
-editorSaveBtn.addEventListener('click', async () => {
-  template = {
-    paths: (template && template.paths) || [],
-    hidden: [...editorHidden],
-    file: fileName.textContent || '',
-    savedAt: Date.now()
-  };
-  saveTemplate();
-  updateTemplateStatus();
+editorSaveBtn.addEventListener('click', () => {
+  if(!templateEditing) return;
   closeEditor();
-
-  /* 重渲染主视图，隐藏字段立即生效 */
-  renderTree(parsedData, currentRootLabel);
-  const focusNode = await applyOpenPolicy();
-  if(!focusNode) resetView();
-
+  saveHiddenRules(editorHidden);
   showToast(editorHidden.size
     ? `已应用：隐藏 ${editorHidden.size} 个字段`
     : '已应用：全部字段显示');
+  openAnotherBtn.focus();
+});
+
+const editorSearchInput = document.getElementById('editorSearchInput');
+const editorSearchCount = document.getElementById('editorSearchCount');
+const editorNextMatch = document.getElementById('editorNextMatch');
+const editorVisibilityBtn = document.getElementById('editorVisibilityBtn');
+const findOptionButtons = [['searchCaseBtn','caseSensitive'],['searchWordBtn','wholeWord'],['searchRegexBtn','regex']];
+const editorFindOptions = {caseSensitive:false, wholeWord:false, regex:false};
+let readerFindState;
+let editorSearchTimer;
+let editorSearchRequest;
+let editorSearchQuery = '';
+let editorHits = [];
+let editorHitRules = new Set();
+let editorResultsLimited = false;
+let editorHitIndex = -1;
+let editorFocusGeneration = 0;
+
+function syncFindOptionButtons(options){
+  for(const [id, key] of findOptionButtons){
+    document.getElementById(id).setAttribute('aria-pressed', String(options[key]));
+  }
+}
+
+function enterEditorFind(){
+  clearTimeout(searchTimer);
+  searchGeneration++;
+  focusGeneration++;
+  readerFindState = {value:searchInput.value, count:searchCount.textContent, title:searchCount.title, error:searchError.textContent};
+  searchInput.value = '';
+  searchInput.placeholder = '搜索键名…';
+  document.getElementById('findPanelTitle').textContent = '查找键名';
+  searchScopeBtn.hidden = true;
+  editorVisibilityBtn.hidden = false;
+  syncFindOptionButtons(editorFindOptions);
+  clearEditorMatches();
+}
+
+function leaveEditorFind(){
+  searchInput.value = readerFindState.value;
+  searchInput.placeholder = '搜索键名或值…';
+  searchCount.textContent = readerFindState.count === '搜索中…' ? '' : readerFindState.count;
+  searchCount.title = readerFindState.title;
+  nextMatchBtn.disabled = prevMatchBtn.disabled = !matches.length;
+  setSearchError(readerFindState.error || '');
+  document.getElementById('findPanelTitle').textContent = '查找';
+  searchScopeBtn.hidden = false;
+  editorVisibilityBtn.hidden = true;
+  syncFindOptionButtons(searchOptions);
+  readerFindState = null;
+}
+
+function editorResultsHidden(){
+  return editorHitRules.size > 0 && [...editorHitRules].every(path => editorHidden.has(path));
+}
+
+function syncEditorVisibilityButton(){
+  const hidden = editorResultsHidden();
+  const label = hidden ? '显示匹配节点' : '隐藏匹配节点';
+  editorVisibilityBtn.dataset.hidden = String(hidden);
+  editorVisibilityBtn.disabled = editorResultsLimited || !editorHitRules.size;
+  editorVisibilityBtn.title = editorResultsLimited ? '结果不完整，请缩小搜索范围后批量操作' : label;
+  editorVisibilityBtn.setAttribute('aria-label', label);
+}
+
+function setEditorSearchFeedback(value, error = '', hint = ''){
+  editorSearchCount.textContent = value;
+  editorSearchCount.title = hint;
+  editorNextMatch.disabled = !editorHits.length;
+  if(!templateEditing) return;
+  searchCount.textContent = value;
+  searchCount.title = hint;
+  nextMatchBtn.disabled = prevMatchBtn.disabled = !editorHits.length;
+  searchError.hidden = !error;
+  searchError.textContent = error;
+  searchInput.setAttribute('aria-invalid', String(!!error));
+  syncEditorVisibilityButton();
+}
+
+function clearEditorMatches(){
+  clearTimeout(editorSearchTimer);
+  editorSearchRequest?.abort();
+  editorFocusGeneration++;
+  editorSearchQuery = '';
+  editorHits = [];
+  editorHitRules = new Set();
+  editorResultsLimited = false;
+  editorHitIndex = -1;
+  setEditorSearchFeedback('');
+  editorTree.querySelectorAll('.current-match').forEach(node => node.classList.remove('current-match'));
+}
+
+function resetEditorSearch(){
+  clearEditorMatches();
+  editorSearchInput.value = '';
+}
+
+async function scanEditorKeys(source, matcher, signal){
+  const root = source.getRoot();
+  const results = [];
+  const pending = [{node:root, offset:0}];
+  let visited = 0;
+  let pages = 0;
+  while(pending.length){
+    signal.throwIfAborted();
+    const {node, offset} = pending.pop();
+    if(offset === 0 && node.path.length){
+      if(++visited > 50000) return {results, limited:true};
+      if(typeof node.key === 'string' && matcher.test(node.key)){
+        if(results.length === 1000) return {results, limited:true};
+        results.push(node.path);
+      }
+    }
+    if(node.type !== 'array' && node.type !== 'object') continue;
+    const page = await source.getChildren(node.path, {offset, firstArrayOnly:true, signal, cache:false});
+    if(page.end > offset && page.end < page.total) pending.push({node, offset:page.end});
+    for(let index = page.items.length - 1; index >= 0; index--){
+      pending.push({node:page.items[index], offset:0});
+    }
+    if(++pages % 32 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  return {results, limited:false};
+}
+
+async function focusEditorMatch(index){
+  if(!editorHits.length) return;
+  const generation = ++editorFocusGeneration;
+  editorHitIndex = (index + editorHits.length) % editorHits.length;
+  let node = editorTree.firstElementChild;
+  for(const key of editorHits[editorHitIndex]){
+    if(!node?._ensureChildren) return;
+    await expandOne(node, key);
+    if(generation !== editorFocusGeneration || !templateEditing) return;
+    node = [...(directChildrenContainer(node)?.children || [])].find(child => child._pageKey === key);
+  }
+  if(!node) return;
+  editorTree.querySelectorAll('.current-match').forEach(match => match.classList.remove('current-match'));
+  node.classList.add('current-match');
+  const target = node.firstElementChild.getBoundingClientRect();
+  const bounds = editorViewport.getBoundingClientRect();
+  editorView.state.x += bounds.left + bounds.width / 2 - (target.left + target.width / 2);
+  editorView.state.y += bounds.top + bounds.height / 2 - (target.top + target.height / 2);
+  editorView.apply();
+}
+
+async function searchEditorKeys(){
+  const query = editorSearchInput.value.trim();
+  clearEditorMatches();
+  if(!query || !templateEditing) return;
+  editorSearchQuery = query;
+  let matcher;
+  try{
+    matcher = compileSearch(query, editorFindOptions);
+  }catch(error){
+    setEditorSearchFeedback('表达式无效', error.message);
+    return;
+  }
+  const request = new AbortController();
+  editorSearchRequest = request;
+  setEditorSearchFeedback('搜索中…');
+  try{
+    const {results, limited} = await scanEditorKeys(activeDoc().source, matcher, request.signal);
+    if(request.signal.aborted) return;
+    editorHits = results;
+    editorHitRules = new Set(results.map(path => normalizePath(encodePath(path))));
+    editorResultsLimited = limited;
+    const count = limited ? (results.length ? `${results.length}+ 项` : '已达上限')
+      : results.length ? `${results.length} 项` : '无匹配';
+    setEditorSearchFeedback(count, '', limited ? '已达搜索上限，请缩小关键词范围' : '');
+    await focusEditorMatch(0);
+  }catch(error){
+    if(!request.signal.aborted) setEditorSearchFeedback('查找失败', error.message);
+  }
+}
+
+function queueEditorSearch(event){
+  clearEditorMatches();
+  if(event?.isComposing) return;
+  editorSearchTimer = setTimeout(searchEditorKeys, 180);
+}
+function syncEditorQuickSearch(event){
+  searchInput.value = editorSearchInput.value;
+  queueEditorSearch(event);
+}
+editorSearchInput.addEventListener('input', syncEditorQuickSearch);
+editorSearchInput.addEventListener('compositionend', syncEditorQuickSearch);
+editorSearchInput.addEventListener('keydown', event => {
+  if(event.isComposing || event.key !== 'Enter') return;
+  event.preventDefault();
+  if(editorSearchQuery !== editorSearchInput.value.trim()) void searchEditorKeys();
+  else void focusEditorMatch(editorHitIndex + (event.shiftKey ? -1 : 1));
+});
+editorNextMatch.addEventListener('click', () => { void focusEditorMatch(editorHitIndex + 1); });
+editorVisibilityBtn.addEventListener('click', () => {
+  if(!templateEditing || editorVisibilityBtn.disabled) return;
+  const show = editorResultsHidden();
+  for(const path of editorHitRules){
+    if(show) editorHidden.delete(path);
+    else editorHidden.add(path);
+  }
+  for(const node of editorTree.querySelectorAll('.ed-node')){
+    const path = normalizePath(encodePath(node._path));
+    if(editorHitRules.has(path)) node._setTemplateVisible(show);
+  }
+  updateEditorCount();
+  syncEditorVisibilityButton();
+  showToast(`已${show ? '显示' : '隐藏'} ${editorHitRules.size} 条匹配规则`);
 });
 
 
@@ -2779,16 +3160,23 @@ document.getElementById('optViewMode').addEventListener('change', e => {
   for(const doc of docs) delete doc.viewOverride;
   if(activeDocId){ snapshotDoc(); activateDoc(activeDocId); }
 });
-document.getElementById('switchViewBtn').addEventListener('click', () => {
+function switchDocumentView(){
   const doc = activeDoc(); if(!doc) return;
+  if(!ideActive && document.getElementById('switchViewBtn').disabled){
+    showToast(doc.source?.indexed || needsIndex(doc.size, settings.largeFileThresholdMiB)
+      ? '大文件仅支持树形视图' : '当前文档无法切换到 IDE 视图');
+    return;
+  }
   if(!leaveIde()) return;
   if(ideActive) doc.ideDraft = undefined;
   snapshotDoc(); doc.viewOverride = ideActive ? 'tree' : 'ide'; activateDoc(doc.id);
-});
+  (ideActive ? document.getElementById('ideInput') : viewport).focus({preventScroll:true});
+}
+document.getElementById('switchViewBtn').addEventListener('click', switchDocumentView);
 document.getElementById('optVimEditing').addEventListener('change', e => {
   settings.vimEditing = e.target.checked; saveSettings();
 });
-document.getElementById('editModeBtn').addEventListener('click', () => setEditMode(!editMode));
+document.getElementById('editModeBtn').addEventListener('click', () => setEditMode(!editMode, true));
 document.getElementById('ctxEditNode').addEventListener('click', () => beginNodeEdit(ctxTarget));
 tree.addEventListener('click', e => {
   if(!editMode || e.target.closest('button,input,select')) return;
@@ -2876,20 +3264,36 @@ window.addEventListener('contextmenu', e => {
 });
 document.addEventListener('keydown', e => {
   if(document.getElementById('valueEditDialog').open || document.getElementById('discardEditDialog').open) return;
-  if(document.getElementById('aboutDialog').open) return;
-  const canvasFocused = e.target === viewport;
-  if(canvasFocused && !ideActive && !e.isComposing && !e.ctrlKey && !e.metaKey && !e.altKey){
-    if(e.key === 'i' && settings.vimEditing === true){ e.preventDefault(); setEditMode(true); return; }
-    if(e.key === 'Escape' && editMode){ e.preventDefault(); setEditMode(false); return; }
-  }
+  if(document.getElementById('aboutDialog').open || document.getElementById('updateDialog').open) return;
   if(e.isComposing || e.getModifierState?.('AltGraph')) return;
-  if(e.key !== 'Escape' && ['settingsMask','editorMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'))) return;
+  const overlayOpen = ['settingsMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'));
+  if(e.key !== 'Escape' && overlayOpen) return;
   const modifier = macPlatform ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
   const key = e.key.toLowerCase();
   const inIde = ideActive && (e.target === document.getElementById('ideInput') || e.target === document.getElementById('ideView') || e.target?.closest?.('#ideView'));
   const typing = inIde || !!e.target?.closest?.('input,textarea,select,[contenteditable]');
   const action = shortcutAction(e, macPlatform);
   const consume = callback => { e.preventDefault(); callback(); };
+  if(!templateEditing && !ideActive && !overlayOpen && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat){
+    if(e.key === 'i' && e.target === viewport && settings.vimEditing === true){
+      consume(() => setEditMode(true, true)); return;
+    }
+    if(e.key === 'Escape' && !typing && editMode && findPanel.hidden){
+      consume(() => setEditMode(false, true)); return;
+    }
+  }
+  if(templateEditing){
+    if(e.key === 'Escape') consume(() => findPanel.hidden ? editorClose.click() : closeFindPanel());
+    else if(action === 'find') consume(openFindPanel);
+    else if(action === 'save') consume(() => editorSaveBtn.click());
+    else if(action === 'expandAll') consume(editorExpandAll);
+    else if(action === 'collapseAll') consume(editorCollapseAll);
+    else if(action === 'resetView') consume(() => editorView.reset());
+    else if(action === 'nextMatch' || action === 'previousMatch')
+      consume(() => focusEditorMatch(editorHitIndex + (action === 'nextMatch' ? 1 : -1)));
+    else if(action === 'open') e.preventDefault();
+    return;
+  }
   if(action === 'copyNode' && !ideActive && !typing && selectedCopyNode && selectedCopyNode.isConnected !== false
     && (window.getSelection?.()?.isCollapsed ?? true)){
     consume(() => copyNodeContent(selectedCopyNode)); return;
@@ -2898,7 +3302,7 @@ document.addEventListener('keydown', e => {
   if(action === 'open') { consume(chooseFiles); return; }
   if(action === 'settings') { consume(openSettings); return; }
   if(action === 'about') { consume(openAbout); return; }
-  if(action === 'switchView' && activeDoc()) { consume(() => document.getElementById('switchViewBtn').click()); return; }
+  if(action === 'switchView' && activeDoc()) { consume(switchDocumentView); return; }
   if(action === 'editMode' && activeDoc() && !ideActive) { consume(() => document.getElementById('editModeBtn').click()); return; }
   if(action === 'resetView' && activeDoc() && !activeDoc().error) { consume(() => ideActive ? setIdeZoom(100) : resetView()); return; }
   if(action === 'find' && activeDoc()) { consume(openFindPanel); return; }
@@ -2941,7 +3345,6 @@ document.addEventListener('keydown', e => {
     closeMenu();
     closeModal();
     closeSettings();
-    closeEditor();
   }
 });
 
@@ -2980,7 +3383,7 @@ function closeFindPanel(restoreFocus = true){
   findPanel.hidden = true;
   findDrag = null;
   saveFindPlacement();
-  if(restoreFocus) quickSearchInput.focus();
+  if(restoreFocus) (templateEditing ? editorSearchInput : quickSearchInput).focus();
 }
 document.getElementById('findBtn').addEventListener('click', openFindPanel);
 document.getElementById('closeFindBtn').addEventListener('click', () => closeFindPanel());
@@ -3032,7 +3435,7 @@ function setSearchCount(value){
 function useQuickSearch(){
   searchInput.value = quickSearchInput.value;
   // A new toolbar query uses plain matching, even after an advanced search.
-  for(const [id, option] of [['searchCaseBtn','caseSensitive'],['searchWordBtn','wholeWord'],['searchRegexBtn','regex']]){
+  for(const [id, option] of findOptionButtons){
     searchOptions[option] = false; document.getElementById(id).setAttribute('aria-pressed', 'false');
   }
   searchOptions.scopePath = null;
@@ -3062,20 +3465,30 @@ function setSearchError(message){
 }
 function searchSignature(){ return JSON.stringify([searchInput.value, searchOptions]); }
 function clearSearch(){
+  if(templateEditing){
+    resetEditorSearch();
+    searchInput.value = '';
+    searchInput.focus();
+    return;
+  }
   resetSearchState();
   if(activeDoc()) activeDoc().searchQuery = '';
   searchInput.focus();
 }
-for(const [id, option] of [['searchCaseBtn','caseSensitive'],['searchWordBtn','wholeWord'],['searchRegexBtn','regex']]){
+for(const [id, option] of findOptionButtons){
   const button = document.getElementById(id);
   button.addEventListener('click', () => {
-    searchOptions[option] = !searchOptions[option];
-    button.setAttribute('aria-pressed', String(searchOptions[option]));
-    clearTimeout(searchTimer); searchTree(searchInput.value); searchInput.focus();
+    const options = templateEditing ? editorFindOptions : searchOptions;
+    options[option] = !options[option];
+    button.setAttribute('aria-pressed', String(options[option]));
+    if(templateEditing) void searchEditorKeys();
+    else { clearTimeout(searchTimer); searchTree(searchInput.value); }
+    searchInput.focus();
   });
 }
 clearSearchBtn.addEventListener('click', clearSearch);
 searchScopeBtn.addEventListener('click', () => {
+  if(templateEditing) return;
   const scope = selectedSearchPath || matches[currentMatchIndex];
   if(searchOptions.scopePath === null && !scope){ showToast('请先点击要查找的节点'); return; }
   searchOptions.scopePath = searchOptions.scopePath === null ? [...scope] : null;
@@ -3089,12 +3502,23 @@ searchInput.addEventListener('keydown', async e => {
   if(e.isComposing) return;
   if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeFindPanel(); }
   if(e.key === 'Enter'){
-    e.preventDefault(); e.stopPropagation(); clearTimeout(searchTimer);
+    e.preventDefault(); e.stopPropagation();
+    if(templateEditing){
+      if(editorSearchQuery !== editorSearchInput.value.trim()) await searchEditorKeys();
+      else await focusEditorMatch(editorHitIndex + (e.shiftKey ? -1 : 1));
+      return;
+    }
+    clearTimeout(searchTimer);
     if(lastSearchSignature !== searchSignature()) await searchTree(searchInput.value);
     else if(matches.length) focusMatch((currentMatchIndex + (e.shiftKey ? -1 : 1) + matches.length) % matches.length);
   }
 });
 function queueSearch(e){
+  if(templateEditing){
+    editorSearchInput.value = searchInput.value;
+    queueEditorSearch(e);
+    return;
+  }
   quickSearchInput.value = searchInput.value;
   searchGeneration++; focusGeneration++;
   matches = []; nextMatchBtn.disabled = true; prevMatchBtn.disabled = true; setSearchError('');
@@ -3200,16 +3624,18 @@ async function focusMatch(index){
 }
 
 nextMatchBtn.addEventListener('click', () => {
+  if(templateEditing){ void focusEditorMatch(editorHitIndex + 1); return; }
   if(!matches.length) return;
   currentMatchIndex = (currentMatchIndex + 1) % matches.length;
   focusMatch(currentMatchIndex);
 });
 prevMatchBtn.addEventListener('click', () => {
+  if(templateEditing){ void focusEditorMatch(editorHitIndex - 1); return; }
   if(matches.length) focusMatch((currentMatchIndex - 1 + matches.length) % matches.length);
 });
 
-expandAllBtn.addEventListener('click', expandAll);
-collapseAllBtn.addEventListener('click', collapseAll);
+expandAllBtn.addEventListener('click', () => templateEditing ? editorExpandAll() : expandAll());
+collapseAllBtn.addEventListener('click', () => templateEditing ? editorCollapseAll() : collapseAll());
 
 /* ---------- 画布平移 / 缩放（主视图与编辑器共用） ---------- */
 function createCanvasView(viewportEl, worldEl, labelEl, onChange){
@@ -3300,7 +3726,7 @@ function onMainViewChange(state){
 
 zoomInBtn.addEventListener('click', () => mainView.zoomAt(1.12));
 zoomOutBtn.addEventListener('click', () => mainView.zoomAt(0.89));
-resetViewBtn.addEventListener('click', resetView);
+resetViewBtn.addEventListener('click', () => templateEditing ? editorView.reset() : resetView());
 
 function zoomAtCenter(factor){ mainView.zoomAt(factor); }
 
@@ -3396,7 +3822,10 @@ function initializeShortcutHints(){
   help.replaceChildren();
   for(const [action,label] of Object.entries({open:'打开文件',save:'保存',saveCopy:'另存为副本',close:'关闭当前文件',undo:'撤销修改',copyNode:'复制选中节点内容',find:'查找',nextMatch:'下一个匹配',previousMatch:'上一个匹配',format:'格式化文档',settings:'打开设置',switchView:'切换树形 / IDE 视图',editMode:'切换树形编辑模式',resetView:'重置视图 / IDE 字号',about:'关于 JSON Atlas',expandAll:'展开全部 / 当前页',collapseAll:'全部收起',nextFile:'下一个文件',previousFile:'上一个文件'})){
     const name = document.createElement('dt'), value = document.createElement('dd'), keys = document.createElement('kbd');
-    name.textContent = label; keys.textContent = shortcutText(action); value.appendChild(keys); help.append(name,value);
+    const alternative = shortcutAlternativeLabel(action, macPlatform);
+    name.textContent = label;
+    keys.textContent = alternative ? `${shortcutText(action)} / ${alternative}` : shortcutText(action);
+    value.appendChild(keys); help.append(name,value);
   }
   document.querySelector('.statusbar .help').textContent = `空白处拖动 · 滚轮平移 · ${primaryModifier} + 滚轮缩放 · 右键节点展开/收起子树`;
 }
@@ -3412,14 +3841,22 @@ installTooltips(document, window);
   }
   await connectDesktop(openPaths, error => showToast('桌面文件入口失败：' + error), action => {
     if(document.getElementById('valueEditDialog').open || document.getElementById('discardEditDialog').open) return;
-    if(document.getElementById('aboutDialog').open || ['settingsMask','editorMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'))) return;
+    if(['aboutDialog','updateDialog'].some(id => document.getElementById(id).open)
+      || ['settingsMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'))) return;
+    if(templateEditing){
+      if(action === 'find') openFindPanel();
+      else if(action === 'save') editorSaveBtn.click();
+      else if(action === 'reset') editorView.reset();
+      return;
+    }
     if(action === 'open') chooseFiles();
     else if(action === 'close' && activeDocId) closeDoc(activeDocId);
     else if(action === 'find') openFindPanel();
     else if(action === 'reset' && activeDocId) { if(ideActive) setIdeZoom(100); else resetView(); }
     else if(action === 'settings') openSettings();
     else if(action === 'about') openAbout();
-    else if(action === 'switch-view') document.getElementById('switchViewBtn').click();
+    else if(action === 'check-update') openUpdateCheck();
+    else if(action === 'switch-view') switchDocumentView();
     else if(action === 'edit-mode') document.getElementById('editModeBtn').click();
     else if(action === 'undo-edit') document.getElementById('undoEditBtn').click();
     else if(action === 'copy-node' && !ideActive) copyNodeContent(selectedCopyNode);

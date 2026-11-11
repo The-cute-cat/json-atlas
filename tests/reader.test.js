@@ -12,7 +12,7 @@ import { compileSearch } from '../src/search-pattern.js';
 import { ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit } from '../src/ide-view.js';
 import { normalizeTheme, watchTheme } from '../src/theme.js';
 import { installTooltips } from '../src/tooltips.js';
-import { isMacPlatform, shortcutLabel, shortcutAction } from '../src/shortcuts.js';
+import { isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel } from '../src/shortcuts.js';
 
 // A small DOM harness for reader state transitions; this does not test layout/WebView2.
 class Element {
@@ -99,7 +99,7 @@ function reader(storage = new Map(), native = {}) {
     MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
     valueAt, replaceValue, parseEdit, serializeDocument, ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit, normalizeTheme, watchTheme,
     encodePath: encodeDataPath, normalizePath: normalizeDataPath, compileSearch,
-    console, Blob, File, isMacPlatform, shortcutLabel, shortcutAction, installTooltips, ...native
+    console, Blob, File, isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel, installTooltips, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
     ;({ buildDoc, resolveDoc, activateDoc, collectSession, expandByPaths, expandLevels, expandOne, positionFindPanel,
@@ -181,6 +181,20 @@ test('native menu updates retain shortcuts when view labels and enabled states c
   assert.equal(menu.find(item=>item.id==='switch-view').text,'树形视图');
   assert.equal(menu.find(item=>item.id==='switch-view').shortcut,'Ctrl+Alt+V');
   assert.equal(menu.find(item=>item.id==='edit-mode').enabled,false);
+  elements.get('switchViewBtn').click();
+  api.openEditor();
+  const item = id => menu.find(entry => entry.id === id);
+  for(const id of ['open','close','save-copy','switch-view','edit-mode','undo-edit','format-json','settings','about','check-update']){
+    assert.equal(item(id).enabled, false, id);
+  }
+  assert.equal(item('save').text,'应用模板');
+  assert.equal(item('save').enabled,true);
+  assert.equal(item('find').enabled,true);
+  assert.equal(item('reset').enabled,true);
+  elements.get('editorClose').click();
+  assert.equal(item('open').enabled,true);
+  assert.equal(item('settings').enabled,true);
+  assert.equal(item('save').enabled,false);
 });
 
 test('find shortcut opens a modeless window; dragging, pinning and remembered placement cooperate', () => {
@@ -522,7 +536,7 @@ test('a document whose root value is null can still open the template editor', (
   const doc = api.buildDoc('null', 'null.json', 4);
   api.add(doc); api.activateDoc(doc.id);
   api.openEditor();
-  assert.equal(elements.get('editorMask').classList.contains('open'), true);
+  assert.equal(elements.get('viewer').classList.contains('template-editing'), true);
 });
 
 test('clearing the template rebuilds the tree so hidden fields come back', async () => {
@@ -539,6 +553,51 @@ test('clearing the template rebuilds the tree so hidden fields come back', async
   elements.get('clearTemplateBtn').listeners.get('click')();
   await tree.firstElementChild._ensureChildren();
   assert.equal(nodeKeys(tree).includes('secret'), true);
+});
+
+test('hiding and restoring a node uses the template without collapsing open branches', async () => {
+  const { api, elements, flush } = reader();
+  const raw = '{"secret":1,"other":2,"keep":{"nested":{"value":3}}}';
+  const doc = api.buildDoc(raw, 'data.json', raw.length);
+  api.add(doc);
+  api.activateDoc(doc.id);
+  await flush();
+  const paths = ['$', '$.keep', '$.keep.nested'];
+  await api.expandByPaths(paths, { exact: true });
+  const tree = elements.get('tree');
+  const openPaths = () => tree.querySelectorAll('.tree-node.open').map(node => node.dataset.path);
+  const hide = path => {
+    const node = tree.querySelectorAll('.tree-node').find(child => child.dataset.path === path);
+    assert.ok(node);
+    elements.get('tree').listeners.get('contextmenu')({
+      target: { closest: () => ({ closest: () => node }) },
+      clientX: 300, clientY: 100, preventDefault() {}, stopPropagation() {}
+    });
+    elements.get('ctxHideNode').click();
+  };
+  Object.assign(elements.get('ctxMenu'), { offsetWidth: 170, offsetHeight: 220 });
+  hide('$.secret');
+  await flush();
+  hide('$.other');
+  await flush();
+  assert.deepEqual(Array.from(api.template().hidden), ['$.secret', '$.other']);
+  assert.equal(nodeKeys(tree).includes('secret'), false);
+  assert.deepEqual(openPaths(), paths);
+
+  api.openEditor();
+  elements.get('editorSaveBtn').click();
+  await flush();
+  assert.deepEqual(openPaths(), paths);
+
+  const list = elements.get('hiddenTemplateList');
+  list.firstElementChild.children[1].click();
+  list.firstElementChild.children[1].click();
+  await flush();
+  assert.equal(api.template().hidden.length, 0);
+  assert.ok(nodeKeys(tree).includes('secret'));
+  assert.ok(nodeKeys(tree).includes('other'));
+  assert.deepEqual(openPaths(), paths);
+  assert.equal(doc.text, raw);
 });
 
 test('recording the current expansion keeps the hidden-field configuration', () => {
@@ -691,7 +750,7 @@ test('reading action labels follow the active file mode and small files have no 
   large.source = new IndexedDataSource(async()=>{},'labels',{root:{path:[],type:'array',childCount:0},kind:'json'});
   api.add(large); api.activateDoc(large.id);
   assert.equal(elements.get('expandAllBtn').textContent, '展开当前页');
-  api.activateDoc(doc.id); assert.equal(elements.get('editorExpandAllBtn').textContent, '展开全部');
+  api.activateDoc(doc.id); assert.equal(elements.get('expandAllBtn').textContent, '展开全部');
 });
 
 test('cancelling an index load leaves the current document active and hides the loading indicator', async () => {
@@ -734,12 +793,16 @@ test('editing updates search source, undo restores the original and shortcuts st
   const press=key=>keyListeners.get('keydown')({key,target:viewport,preventDefault(){}});
   press('i'); assert.equal(elements.get('viewer').classList.contains('editing'),false);
   api.configure({vimEditing:true}); press('i'); assert.equal(elements.get('viewer').classList.contains('editing'),true);
+  assert.equal(elements.get('editModeStatus').hidden,false);
+  assert.equal(elements.get('toast').textContent,'已进入编辑模式');
   press('Escape'); assert.equal(elements.get('viewer').classList.contains('editing'),false);
+  assert.equal(elements.get('editModeStatus').hidden,true);
+  assert.equal(elements.get('toast').textContent,'已返回阅读模式');
 });
 
 
 test('IDE settings, search, manual switching and edits share the active revision', async () => {
-  const {api,elements}=reader();
+  const {api,elements,keyListeners}=reader();
   api.configure({viewMode:'auto'});
   const doc=api.buildDoc('{"count":1,"message":"hello"}','simple.json',30);
   api.add(doc);api.activateDoc(doc.id);
@@ -761,6 +824,9 @@ test('IDE settings, search, manual switching and edits share the active revision
   doc.size=65*1024*1024;api.activateDoc(doc.id);
   assert.equal(elements.get('ideView').hidden,true);
   assert.equal(elements.get('switchViewBtn').disabled,true);
+  keyListeners.get('keydown')({key:'F6',ctrlKey:true,shiftKey:true,target:elements.get('viewport'),preventDefault(){}});
+  assert.equal(elements.get('toast').textContent,'大文件仅支持树形视图');
+  assert.equal(elements.get('ideView').hidden,true);
 });
 
 test('IDE drafts survive invalid syntax and file switches, formatting and zoom remain undoable and scoped', async () => {
@@ -959,13 +1025,17 @@ test('IDE fold icon visibility is optional, immediate and retained after reopeni
 
 test('copy path works on leaf nodes and copies the exact encoded JSON path', async () => {
   const copied=[];
-  const {api,elements}=reader(new Map(),{navigator:{platform:'Win32',clipboard:{writeText:async text=>copied.push(text)}}});
+  const {api,elements}=reader(new Map(),{
+    navigator:{platform:'Win32',clipboard:{writeText:async text=>copied.push(text)}}
+  });
   const doc=api.buildDoc('{"a.b":1}','path.json',9);api.add(doc);api.activateDoc(doc.id);
+  Object.assign(elements.get('ctxMenu'),{offsetWidth:160,offsetHeight:220});
   const root=elements.get('tree').firstElementChild; await root._ensureChildren();
   const leaf=elements.get('tree').querySelectorAll('.tree-node').find(node=>node.dataset.path==='$["a.b"]');
   assert(leaf);
   elements.get('tree').listeners.get('contextmenu')({target:{closest:()=>({closest:()=>leaf})},clientX:20,clientY:20,preventDefault(){},stopPropagation(){}});
   assert.equal(elements.get('ctxCopyPath').disabled,false);
+  assert.equal(elements.get('ctxMenu').style.left,'20px');
   await elements.get('ctxCopyPath').listeners.get('click')();
   assert.deepEqual(copied,['$["a.b"]']);
 });

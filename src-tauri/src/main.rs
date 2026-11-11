@@ -288,6 +288,56 @@ fn set_document_title(window: tauri::WebviewWindow, name: Option<String>) -> Res
     window.set_title(&title).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn open_release_page() -> Result<(), String> {
+    const URL: &str = "https://github.com/The-cute-cat/json-atlas/releases/latest";
+    #[cfg(windows)]
+    {
+        use std::ptr::null;
+        #[link(name = "shell32")]
+        unsafe extern "system" {
+            fn ShellExecuteW(
+                hwnd: *mut std::ffi::c_void,
+                operation: *const u16,
+                file: *const u16,
+                parameters: *const u16,
+                directory: *const u16,
+                show: i32,
+            ) -> isize;
+        }
+        let url: Vec<u16> = URL.encode_utf16().chain(Some(0)).collect();
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                null(),
+                url.as_ptr(),
+                null(),
+                null(),
+                1,
+            )
+        };
+        if result <= 32 {
+            return Err(format!("无法打开发布页（{result}）"));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let program = if cfg!(target_os = "macos") {
+            "/usr/bin/open"
+        } else {
+            "xdg-open"
+        };
+        let status = std::process::Command::new(program)
+            .arg(URL)
+            .status()
+            .map_err(|error| error.to_string())?;
+        if !status.success() {
+            return Err(format!("无法打开发布页（{status}）"));
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     if let Some(code) = installer_cleanup::run() {
         std::process::exit(code);
@@ -318,7 +368,8 @@ fn main() {
             save_document,
             window::sync_document_menu,
             menu_theme::sync_menu_theme,
-            set_document_title
+            set_document_title,
+            open_release_page
         ])
         .build(tauri::generate_context!())
         .expect("failed to build JSON Atlas");

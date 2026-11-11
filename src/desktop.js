@@ -21,6 +21,7 @@ export function updateDocumentMenu(items) {
 }
 export const readNativeFile = path => invoke('read_document', { path });
 export const selectNativeFiles = () => invoke('select_documents');
+export const openReleasePage = () => invoke('open_release_page');
 export const saveDocumentCopy = (name, text, originalPath, protectedPaths = []) => invoke('save_document_copy', { name, text, originalPath, protectedPaths });
 export const saveNativeDocument = (path, text, expectedText) => invoke('save_document', { path, text, expectedText });
 export async function guardEditedClose(hasChanges, confirmDiscard) {
