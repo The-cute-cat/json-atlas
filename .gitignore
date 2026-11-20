@@ -18,6 +18,7 @@ src-tauri/gen/
 # Maintainer notes and raw benchmark logs stay local.
 # Public-facing docs are README.md, CHANGELOG.md and CONTRIBUTING.md at the repo root.
 /docs/
+!/docs/README.*.md
 
 # Local references and design sources
 /reference/
