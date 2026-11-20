@@ -16,6 +16,7 @@
     <div class="workspace-brand"><img src="/src/assets/app-icon.png" alt="" /><div><strong>JSON Atlas</strong><span>数据阅读器</span></div></div>
     <div class="sidebar-heading">工作区</div>
     <div class="sidebar-current"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="3"/><path d="M8 3v14M11 7h3M11 10h3"/></svg>开始使用</div>
+    <button id="sidebarNewBtn" class="sidebar-action" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>新建空白文档</button>
     <button id="sidebarOpenBtn" class="sidebar-action"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h3l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>打开文件…</button>
     <button id="landingSettingsBtn" class="sidebar-action sidebar-settings"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/><rect x="6" y="3" width="3" height="4" rx="1"/><rect x="12" y="8" width="3" height="4" rx="1"/><rect x="6" y="13" width="3" height="4" rx="1"/></svg>设置</button>
   </aside>
@@ -26,7 +27,10 @@
         <img class="empty-document" src="/src/assets/app-icon.png" alt="" />
         <h1>JSON Atlas</h1>
         <p>浏览结构，专注内容</p>
-        <button id="chooseBtn" class="desktop-open"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h3l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>打开文件…</button>
+        <div class="empty-actions">
+          <button id="newDocBtn" class="desktop-open" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>新建空白文档</button>
+          <button id="chooseBtn" class="desktop-open" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h3l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>打开文件…</button>
+        </div>
         <span class="empty-drop-hint">拖入文件，或按 <kbd id="openShortcutModifier"></kbd> <kbd>O</kbd></span>
         <input id="fileInput" type="file" multiple accept=".json,.jsonl,.ndjson,.jsonlines,application/json,application/x-ndjson,application/jsonl" />
       </div>
@@ -44,6 +48,7 @@
       <div id="fileSub" class="file-sub">-</div>
     </div>
 
+    <button id="newAnotherBtn" type="button">新建</button>
     <button id="openAnotherBtn">打开文件</button>
     <button id="editorSaveBtn" class="template-only" type="button">应用模板</button>
     <span class="sep"></span>
@@ -70,6 +75,7 @@
         <button id="switchViewBtn" title="切换当前文件的查看方式">IDE 视图</button>
         <button id="editModeBtn" aria-pressed="false">编辑模式</button>
         <button id="undoEditBtn" disabled>撤销修改</button>
+        <button id="redoEditBtn" disabled>重做修改</button>
         <button id="saveBtn" disabled title="保存修改">保存</button>
         <button id="saveCopyBtn" disabled title="另存为副本">另存为…</button>
         <button id="formatIdeBtn" disabled title="格式化文档">格式化文档</button>
@@ -99,6 +105,14 @@
           <button id="zoomOutBtn" title="缩小">−</button>
           <span id="zoomLabel" class="zoom-label">100%</span>
           <button id="zoomInBtn" title="放大">＋</button>
+        </div>
+        <div id="designDock" role="group" aria-label="主题编辑" hidden>
+          <button id="designChild" type="button" title="添加子主题（Tab）">子主题</button>
+          <button id="designSibling" type="button" title="添加同级主题（Enter）">同级主题</button>
+          <button id="designRename" type="button" title="重命名（F2）">重命名</button>
+          <button id="designDelete" type="button" title="删除分支（Delete）">删除分支</button>
+          <button id="designUndo" type="button">撤销</button>
+          <button id="designSave" type="button">保存</button>
         </div>
       </main>
       <main id="editorViewport" class="viewport template-only" tabindex="0" aria-label="结构模板编辑画布">
@@ -158,7 +172,37 @@
   <div class="edit-actions"><button id="valueEditCancel" type="button">取消</button><button type="submit">应用修改</button></div></form>
 </dialog>
 <dialog id="discardEditDialog" class="value-edit-dialog"><h2>有尚未保存的修改</h2><p>关闭后会丢弃工作副本中的修改。可先取消并保存或另存为。</p><div class="edit-actions"><button id="discardEditCancel">取消</button><button id="discardEditConfirm">丢弃修改并关闭</button></div></dialog>
+<dialog id="saveConflictDialog" class="value-edit-dialog" aria-labelledby="saveConflictTitle">
+  <h2 id="saveConflictTitle">原文件已被其他程序修改</h2>
+  <p>当前修改仍保留在工作副本中。可另存到其他位置，避免覆盖外部修改。</p>
+  <div class="edit-actions"><button id="saveConflictCancel">关闭</button><button id="saveConflictCopy">另存为…</button></div>
+</dialog>
+<dialog id="deleteTopicDialog" class="value-edit-dialog" aria-labelledby="deleteTopicTitle">
+  <h2 id="deleteTopicTitle">删除分支？</h2>
+  <p>该分支包含的所有下级内容也会删除。删除后可撤销。</p>
+  <div class="edit-actions"><button id="deleteTopicCancel" autofocus>取消</button><button id="deleteTopicConfirm">删除分支</button></div>
+</dialog>
+<dialog id="designTopicDialog" class="value-edit-dialog" aria-labelledby="designTopicTitle">
+  <form id="designTopicForm">
+    <h2 id="designTopicTitle"></h2>
+    <label for="designTopicName">主题名称</label>
+    <input id="designTopicName" type="text" autocomplete="off" required />
+    <p id="designTopicError" class="design-topic-error" role="alert"></p>
+    <div class="edit-actions"><button id="designTopicCancel" type="button">取消</button><button type="submit">确定</button></div>
+  </form>
+</dialog>
 <div id="ctxMenu">
+  <div id="topicMenu" hidden>
+    <button id="ctxTopicCopy" type="button">复制主题内容</button>
+    <button id="ctxTopicValue" type="button">编辑值…</button>
+    <div class="ctx-sep"></div>
+    <button id="ctxTopicChild" type="button"><span id="ctxTopicChildLabel">新增子主题</span><kbd>Tab</kbd></button>
+    <button id="ctxTopicSibling" type="button"><span id="ctxTopicSiblingLabel">新增同级主题</span><kbd>Enter</kbd></button>
+    <button id="ctxTopicRename" type="button">重命名主题 <kbd>F2</kbd></button>
+    <button id="ctxTopicCollapse" type="button">收起主题</button>
+    <div class="ctx-sep"></div>
+    <button id="ctxTopicDelete" type="button"><span id="ctxTopicDeleteLabel">删除分支</span><kbd>Del</kbd></button>
+  </div>
   <button id="ctxCopyPath">复制路径</button>
   <button id="ctxExpandSubtree">展开全部下级</button>
   <button id="ctxCollapse">收起该节点（含下级）</button>
@@ -192,12 +236,15 @@
       <div class="settings-row"><div><label class="s-label" for="optTheme">外观主题</label><div class="s-hint">白天模式适合明亮环境，夜间模式减少暗处的屏幕亮度。默认跟随系统，系统切换外观时会自动更新。</div></div><select id="optTheme"><option value="system">跟随系统</option><option value="light">白天模式</option><option value="dark">夜间模式</option></select></div>
       <div class="settings-row"><div><label class="s-label" for="optViewMode">文件查看方式</label><div class="s-hint">小文件可使用带行号和语法高亮的 IDE 视图，支持编辑、折叠与格式化。较大或复杂文件自动使用树形视图，两种视图共享修改内容。</div></div><select id="optViewMode"><option value="tree">树形视图</option><option value="auto">简单结构自动使用 IDE</option><option value="ide">优先使用 IDE</option></select></div>
       <div class="settings-row"><div><label class="s-label" for="optIdeFoldAlwaysVisible">IDE 折叠箭头常驻显示</label><div class="s-hint">默认只在鼠标移到行号区域或用键盘聚焦按钮时显示；开启后始终显示。切换和悬停均无动画。</div></div><label class="switch"><input type="checkbox" id="optIdeFoldAlwaysVisible" /><span class="slider"></span></label></div>
+      <div class="settings-row"><div><label class="s-label" for="optLimitIdeComplexity">限制复杂文件使用 IDE</label><div class="s-hint">默认开启，按文本长度、行数和结构复杂度限制 IDE 的使用。关闭后，阈值以内的复杂文件也可使用 IDE；超过大文件阈值的文件仅支持树形视图。</div></div><label class="switch"><input type="checkbox" id="optLimitIdeComplexity" checked /><span class="slider"></span></label></div>
       <div class="settings-row"><div><label class="s-label" for="optNodeSelectionStyle">显示节点选中描边</label><div class="s-hint">默认关闭。关闭仅隐藏描边，点击选中节点后仍可按 Ctrl/⌘+C 复制内容。</div></div><label class="switch"><input type="checkbox" id="optNodeSelectionStyle" /><span class="slider"></span></label></div>
-      <div class="settings-row"><div><label class="s-label" for="optVimEditing">Vim 风格编辑快捷键</label><div class="s-hint">默认关闭。开启后，点击画布空白处，按 i 进入编辑模式。状态栏会显示当前模式，按 Esc 退出。输入框内不触发，索引大文件暂只读。</div></div><label class="switch"><input type="checkbox" id="optVimEditing" /><span class="slider"></span></label></div>
+      <div class="settings-row"><div><label class="s-label" for="optVimEditing">Vim 风格快捷键</label><div class="s-hint">开启后，在树形画布上用 h、j、k、l 移动，用 / 查找。完整键位见「键盘快捷键」。</div></div><label class="switch"><input type="checkbox" id="optVimEditing" /><span class="slider"></span></label></div>
+      <div class="settings-row"><div><label class="s-label" for="optTopicDock">显示主题操作栏</label><div class="s-hint">在新建文档的画布左下角显示主题操作。</div></div><label class="switch"><input type="checkbox" id="optTopicDock" /><span class="slider"></span></label></div>
+      <div class="settings-row"><div><label class="s-label" for="optTopicDoubleClick">双击主题时</label><div class="s-hint">应用于新建文档的树形画布。根节点和数组元素可通过「编辑值」修改内容。</div></div><select id="optTopicDoubleClick"><option value="rename">修改主题名称</option><option value="value">编辑值</option></select></div>
       <div class="settings-row">
         <div>
           <label class="s-label" for="optLargeFileThreshold">大文件处理阈值</label>
-          <div class="s-hint" id="largeFileThresholdHint">超过此大小时，桌面版会在后台建立磁盘索引，展开节点时按页读取，减少内存占用。调整后对下次打开的文件生效。这里按 1 MB = 1024 × 1024 字节计算；浏览器预览仍使用内存解析。</div>
+          <div class="s-hint" id="largeFileThresholdHint">打开文件时，阈值以内使用内存解析，超过阈值时桌面版使用磁盘索引，浏览器预览会拒绝打开。调整后，下次打开文件会按新阈值选择读取方式。1 MB = 1024 × 1024 字节。</div>
         </div>
         <select id="optLargeFileThreshold" aria-describedby="largeFileThresholdHint">
           <option value="32">32 MB</option>
@@ -360,6 +407,18 @@
         <div class="settings-group-title">键盘快捷键</div>
         <p class="s-hint">参考 IDEA 的常用键位，按当前系统显示。展开与收起仅作用于树形视图；在普通输入框中保留原有文字编辑行为。也可继续使用 Shift+Alt+F 格式化。</p>
         <dl id="shortcutHelp" class="shortcut-help"></dl>
+        <div class="settings-group-title">Vim 风格快捷键</div>
+        <p class="s-hint">开启「阅读与布局」中的 Vim 风格快捷键后，点击树形画布使用。组合键依次按下。</p>
+        <dl class="shortcut-help">
+          <dt>父节点、下一个、上一个、首个子节点</dt><dd><kbd>h / j / k / l</kbd></dd>
+          <dt>根节点 / 最后一个可见节点</dt><dd><kbd>gg / G</kbd></dd>
+          <dt>展开 / 收起 / 切换当前分支</dt><dd><kbd>zo / zc / za</kbd></dd>
+          <dt>展开全部（当前页）/ 收起全部</dt><dd><kbd>zR / zM</kbd></dd>
+          <dt>查找 / 下一个 / 上一个匹配</dt><dd><kbd>/ &nbsp; n / N</kbd></dd>
+          <dt>复制节点内容 / 撤销修改</dt><dd><kbd>yy / u</kbd></dd>
+          <dt>进入值编辑模式 / 编辑选中值 / 退出</dt><dd><kbd>i / r / Esc</kbd></dd>
+          <dt>新建文档中重命名、添加子主题、添加同级主题、删除分支</dt><dd><kbd>i 或 r / a / o / dd</kbd></dd>
+        </dl>
       </div>
       <div class="settings-group" id="settingsPage5" role="tabpanel" aria-labelledby="settingsNav5" hidden>
         <div class="settings-group-title">右键菜单</div>

@@ -669,25 +669,15 @@ impl<'a> Matcher<'a> {
             Self::Advanced(m) => m.matched(),
         }
     }
-    fn feed_str(&mut self, text: &str) {
-        match self {
-            Self::Literal(m) => m.feed_str(text),
-            Self::Advanced(m) => m.feed_str(text),
-        }
-    }
     fn feed_checked(&mut self, text: &str, cancel: &AtomicBool) -> Result<()> {
-        if let Self::Advanced(m) = self {
-            for (i, c) in text.chars().enumerate() {
-                if i % 32 == 0 && cancel.load(Ordering::Relaxed) {
-                    return Err("已取消".into());
-                }
-                m.feed(c);
-                if m.matched() {
-                    break;
-                }
+        for (i, c) in text.chars().enumerate() {
+            if i % 32 == 0 && cancel.load(Ordering::Relaxed) {
+                return Err("已取消".into());
             }
-        } else {
-            self.feed_str(text);
+            self.feed(c);
+            if self.matched() {
+                break;
+            }
         }
         Ok(())
     }
@@ -721,14 +711,6 @@ impl<'a> LiteralMatcher<'a> {
     }
     fn matched(&self) -> bool {
         self.pending.map_or(self.state.hit, |(a, b)| a.hit && b.hit)
-    }
-    fn feed_str(&mut self, text: &str) {
-        for c in text.chars() {
-            self.feed(c);
-            if self.matched() {
-                break;
-            }
-        }
     }
     fn feed(&mut self, c: char) {
         if self.matched() {
@@ -925,7 +907,8 @@ mod tests {
         }
         let mut p = Pattern::new("ababac");
         let mut m = Matcher::new(&mut p);
-        m.feed_str("ababababac");
+        m.feed_checked("ababababac", &AtomicBool::new(false))
+            .unwrap();
         assert!(m.finish());
     }
     #[test]

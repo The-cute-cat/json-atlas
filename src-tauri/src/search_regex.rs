@@ -56,14 +56,6 @@ impl<'a> Matcher<'a> {
     pub fn matched(&self) -> bool {
         self.hit
     }
-    pub fn feed_str(&mut self, text: &str) {
-        for c in text.chars() {
-            self.feed(c);
-            if self.hit {
-                break;
-            }
-        }
-    }
     fn closure(&mut self, context: &[u8], at: usize, boundary: bool, current: Option<char>) {
         self.generation = self.generation.wrapping_add(1);
         if self.generation == 0 {

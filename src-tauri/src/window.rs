@@ -54,6 +54,13 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         config.center = false;
     }
     config.visible = false;
+    let new_document = MenuItem::with_id(
+        app,
+        "new-document",
+        menu_title("新建空白文档", "新建空白文档(&N)"),
+        true,
+        Some("CmdOrCtrl+N"),
+    )?;
     let open = MenuItem::with_id(
         app,
         "open",
@@ -95,13 +102,22 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         Some("CmdOrCtrl+S"),
     )?;
     let file_items: &[&dyn tauri::menu::IsMenuItem<_>] = if cfg!(target_os = "macos") {
-        &[&open, &close, &save_original, &save]
+        &[&new_document, &open, &close, &save_original, &save]
     } else {
-        &[&open, &close, &save_original, &save, &separator, &quit]
+        &[
+            &new_document,
+            &open,
+            &close,
+            &save_original,
+            &save,
+            &separator,
+            &quit,
+        ]
     };
     let file = Submenu::with_items(app, menu_title("文件", "文件(&F)"), true, file_items)?;
     let edit_mode = MenuItem::with_id(app, "edit-mode", "编辑模式", false, None::<&str>)?;
     let undo = MenuItem::with_id(app, "undo-edit", "撤销修改", false, None::<&str>)?;
+    let redo = MenuItem::with_id(app, "redo-edit", "重做修改", false, None::<&str>)?;
     let format = MenuItem::with_id(app, "format-json", "格式化文档", false, None::<&str>)?;
     #[cfg(target_os = "macos")]
     let edit = Submenu::with_items(
@@ -110,6 +126,7 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         true,
         &[
             &undo,
+            &redo,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::cut(app, Some("剪切"))?,
             // Copy and Undo have document-specific meanings. Leave ⌘C/⌘Z to the
@@ -129,7 +146,7 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         ],
     )?;
     #[cfg(not(target_os = "macos"))]
-    let edit = Submenu::with_items(app, "编辑(&E)", true, &[&edit_mode, &undo, &format])?;
+    let edit = Submenu::with_items(app, "编辑(&E)", true, &[&edit_mode, &undo, &redo, &format])?;
     let reset = MenuItem::with_id(
         app,
         "reset",
@@ -254,6 +271,7 @@ pub fn sync_document_menu(
                 "save",
                 "edit-mode",
                 "undo-edit",
+                "redo-edit",
                 "copy-node",
                 "switch-view",
                 "format-json",
@@ -262,6 +280,7 @@ pub fn sync_document_menu(
                 "settings",
                 "about",
                 "open",
+                "new-document",
                 "find",
                 "check-update",
             ]

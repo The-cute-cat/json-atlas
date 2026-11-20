@@ -4,7 +4,7 @@ import { normalizeThreshold, needsIndex } from './large-files.js';
 import { ViewportWindow } from './viewport-window.js';
 import { NodeBudget } from './node-budget.js';
 import { compileSearch } from './search-pattern.js';
-import { valueAt, replaceValue, parseEdit, serializeDocument } from './editing.js';
+import { valueAt, replaceValue, editObjectTopic, parseEdit, serializeDocument } from './editing.js';
 import { ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit } from './ide-view.js';
 import { normalizeTheme, watchTheme } from './theme.js';
 import { updateWindowTheme } from './desktop.js';
@@ -26,7 +26,11 @@ let activeLoad = null;
 let openQueue = Promise.resolve();
 let openBatchGeneration = 0;
 let editMode = false;
+let vimPrefix = null;
 let editingNode = null;
+let designTopic = null;
+let pendingTopicDeletion = null;
+let topicAddButton = null;
 let discardResolver = null;
 let ideActive = false;
 let ideLocations = new Map();
@@ -71,13 +75,21 @@ function updateIdeScope(){
 const macPlatform = isMacPlatform(navigator);
 const primaryModifier = macPlatform ? '⌘' : 'Ctrl';
 const shortcutText = action => shortcutLabel(action, macPlatform);
-function rememberEdit(doc){
+function editRevision(doc){
+  return {parsed:doc.parsed, records:doc.records, dirty:!!doc.dirty, text:doc.text,
+    ideDraft:doc.ideDraft, ideError:doc.ideError, bad:doc.bad, totalLines:doc.totalLines};
+}
+function rememberEdit(doc, inputType = null){
   doc.ideFolds?.clear();
   doc.savedText ??= doc.text;
   doc.diskText ??= doc.text;
-  (doc.editHistory ||= []).push({parsed:doc.parsed, records:doc.records, dirty:!!doc.dirty, text:doc.text,
-    ideDraft:doc.ideDraft, ideError:doc.ideError, bad:doc.bad, totalLines:doc.totalLines});
-  if(doc.editHistory.length > 10) doc.editHistory.shift();
+  const last = doc.ideEditGroup, now = Date.now();
+  if(!inputType || last?.type !== inputType || now - last.time > 500){
+    (doc.editHistory ||= []).push(editRevision(doc));
+    if(doc.editHistory.length > 10) doc.editHistory.shift();
+  }
+  doc.ideEditGroup = inputType ? {type:inputType, time:now} : null;
+  doc.redoHistory = [];
 }
 function syncIdeScroll(){
   const input = document.getElementById('ideInput'), highlight = document.getElementById('ideHighlight');
@@ -131,7 +143,7 @@ function toggleIdeFold(line){
   }
   input.setSelectionRange?.(caret, caret); input.scrollTop = scroll; syncIdeScroll();
 }
-function handleIdeInput(text){
+function handleIdeInput(text, inputType){
   const doc = activeDoc(), input = document.getElementById('ideInput');
   if(!doc) return;
   if(doc.ideFolds?.size && doc.ideProjection){
@@ -139,12 +151,12 @@ function handleIdeInput(text){
     doc.ideFolds.clear();
     if(!result){ renderIdeBuffer(doc); showToast('已展开折叠内容，请继续编辑'); return; }
     applyIdeChange(result.text); input.setSelectionRange?.(result.caret, result.caret);
-  } else applyIdeChange(text);
+  } else applyIdeChange(text, inputType);
 }
-function applyIdeChange(text){
+function applyIdeChange(text, inputType){
   const doc = activeDoc(); if(!doc || !ideActive || doc.source?.indexed || text === doc.text) return;
   const previousProblem = doc.ideError, previousCount = doc.records?.length;
-  rememberEdit(doc);
+  rememberEdit(doc, inputType);
   doc.ideFolds?.clear();
   doc.ideDraft = text; doc.text = text; doc.dirty = true;
   try {
@@ -152,6 +164,7 @@ function applyIdeChange(text){
     const resolved = resolveDoc(doc); doc.data = resolved.data; parsedData = doc.data;
     // Tree rendering refreshes its source when switching back; IDE search uses raw lines.
   } catch(error){ doc.ideError = error.message; }
+  persistDesignDraft(doc);
   searchGeneration++; focusGeneration++; matches = []; currentMatchIndex = -1;
   setSearchCount(''); nextMatchBtn.disabled = true; prevMatchBtn.disabled = true;
   renderIdeBuffer(doc); updateDocHeader(doc); syncEditing();
@@ -180,10 +193,10 @@ function formatIde(){
 function syncDocumentMenu(){
   if(!desktop) return;
   const doc = activeDoc();
-  const actions = {'switch-view':'switchView','edit-mode':'editMode','undo-edit':'undo','format-json':'format'};
+  const actions = {'switch-view':'switchView','edit-mode':'editMode','undo-edit':'undo','redo-edit':'redo','format-json':'format'};
   updateDocumentMenu([
     ['switch-view','switchViewBtn'], ['edit-mode','editModeBtn'],
-    ['undo-edit','undoEditBtn'], ['save','saveBtn'], ['save-copy','saveCopyBtn'], ['format-json','formatIdeBtn']
+    ['undo-edit','undoEditBtn'], ['redo-edit','redoEditBtn'], ['save','saveBtn'], ['save-copy','saveCopyBtn'], ['format-json','formatIdeBtn']
   ].map(([id, buttonId]) => {
     const button = document.getElementById(buttonId);
     if(id === 'save' && templateEditing) return {id, text:'应用模板', enabled:true};
@@ -191,6 +204,7 @@ function syncDocumentMenu(){
       enabled:!templateEditing && !!doc && !button.disabled && !(id === 'edit-mode' && ideActive)};
   }).concat([
     {id:'open',enabled:!templateEditing},
+    {id:'new-document',enabled:!templateEditing},
     {id:'close',text:'关闭当前文件',shortcut:shortcutText('close'),enabled:!templateEditing && !!doc},
     {id:'find',enabled:!!doc},
     {id:'reset',text:'重置视图',shortcut:shortcutText('resetView'),enabled:!!doc && !doc.error},
@@ -215,8 +229,11 @@ function resizeNodeEditor(){
 }
 
 function syncDocumentView(doc){
-  const lines = ideModel(doc, doc.viewOverride || settings.viewMode, settings.largeFileThresholdMiB);
-  ideActive = !!lines || (typeof doc.ideDraft === 'string' && !doc.source?.indexed && !needsIndex(doc.size, settings.largeFileThresholdMiB));
+  const large = doc.source?.indexed || needsIndex(doc.size, settings.largeFileThresholdMiB);
+  const mode = doc.viewOverride || (doc.design ? 'tree' : settings.viewMode);
+  const available = view => !doc.error && !large && view !== 'tree'
+    && ((!settings.limitIdeComplexity && view !== 'auto') || !!ideModel(doc, view, settings.largeFileThresholdMiB));
+  ideActive = !large && (typeof doc.ideDraft === 'string' || available(mode));
   const panel = document.getElementById('ideView');
   panel.hidden = !ideActive; viewport.hidden = ideActive;
   if(ideActive){
@@ -225,14 +242,16 @@ function syncDocumentView(doc){
   }else{ document.getElementById('ideLines').replaceChildren(); ideLocations = new Map(); document.getElementById('ideStatus').hidden = true; }
   const switcher = document.getElementById('switchViewBtn');
   switcher.textContent = ideActive ? '树形视图' : 'IDE 视图';
-  switcher.disabled = !ideActive && !ideModel(doc, 'ide', settings.largeFileThresholdMiB);
-  switcher.title = switcher.disabled ? '文件超过内存阈值或结构过于复杂，使用树形视图' : `切换当前文件的查看方式（${shortcutText('switchView')}）`;
+  switcher.disabled = !ideActive && !available('ide');
+  switcher.title = switcher.disabled ? (large ? '大文件仅支持树形视图' : '当前文档无法切换到 IDE 视图')
+    : `切换当前文件的查看方式（${shortcutText('switchView')}）`;
   for(const id of ['expandAllBtn','collapseAllBtn','resetViewBtn','recordTemplateBtn','editorBtn']) document.getElementById(id).hidden = ideActive;
-  document.getElementById('editModeBtn').hidden = ideActive;
+  document.getElementById('editModeBtn').hidden = ideActive || !!doc.design;
   document.querySelector('.statusbar .help').textContent = ideActive ? `直接编辑 · ${primaryModifier} + ＋ / − 缩放 · ${primaryModifier} + 0 重置 · ${shortcutText('format')} 格式化` : `空白处拖动 · 滚轮平移 · ${primaryModifier} + 滚轮缩放 · 右键节点展开/收起子树`;
   document.getElementById('formatIdeBtn').disabled = !ideActive;
   searchScopeBtn.disabled = ideActive;
   if(ideActive) setEditMode(false);
+  syncDesignControls();
   syncDocumentMenu();
 }
 
@@ -247,15 +266,17 @@ function finishDiscardEdits(ok){
 }
 function syncEditing(){
   const doc = activeDoc();
-  if(!doc || doc.error || doc.source?.indexed) editMode = false;
+  if(!doc || doc.error || doc.source?.indexed || doc.design) editMode = false;
   viewer.classList.toggle('editing', editMode);
   document.getElementById('editModeStatus').hidden = !editMode;
   document.getElementById('editModeBtn').setAttribute('aria-pressed', String(editMode));
   document.getElementById('editModeBtn').textContent = editMode ? '退出编辑' : '编辑模式';
-  document.getElementById('editModeBtn').disabled = !doc || !!doc.error || !!doc.source?.indexed;
+  document.getElementById('editModeBtn').disabled = !doc || !!doc.error || !!doc.source?.indexed || !!doc.design;
   document.getElementById('undoEditBtn').disabled = !doc?.editHistory?.length;
+  document.getElementById('redoEditBtn').disabled = !doc?.redoHistory?.length;
   document.getElementById('saveBtn').disabled = !doc?.dirty || !!doc?.saving;
   document.getElementById('saveCopyBtn').disabled = !doc?.dirty || !!doc?.saving;
+  syncDesignControls();
   syncDocumentMenu();
 }
 function setEditMode(on, notify = false){
@@ -268,16 +289,173 @@ function setEditMode(on, notify = false){
     showToast(activeDoc()?.source?.indexed ? '索引大文件暂只读' : '当前文档无法进入编辑模式');
   }
 }
+
+function canDesign(doc){
+  return !!doc && doc.kind === 'json' && !doc.error && !doc.source?.indexed;
+}
+
+function designTarget(node = selectedCopyNode){
+  const doc = activeDoc();
+  if(!doc?.design || !canDesign(doc) || ideActive || templateEditing || !node || node.isConnected === false || node._source !== doc.source) return null;
+  const path = node._path;
+  const child = !node._jsonTreeReady && ['object','array'].includes(node._childrenType) ? node._childrenType : null;
+  return { doc, path, child, sibling:path.length > 0, delete:path.length > 0, rename:path.length > 0 && !node._isArrayItem };
+}
+
+function syncDesignControls(){
+  const doc = activeDoc(), target = designTarget();
+  const visible = !!doc?.design && canDesign(doc) && !ideActive && !templateEditing;
+  document.getElementById('designDock').hidden = !visible || settings.showTopicDock !== true;
+  viewer.classList.toggle('designing', visible);
+  const card = target?.child ? selectedCopyNode._card : null;
+  if(card){
+    if(!topicAddButton){
+      topicAddButton = document.createElement('button');
+      topicAddButton.type = 'button';
+      topicAddButton.className = 'topic-add';
+      topicAddButton.textContent = '+';
+      topicAddButton.addEventListener('click', () => {
+        const target = designTarget();
+        if(!target?.child) return;
+        commitTopicAction(target, 'child');
+      });
+    }
+    const label = target.child === 'array' ? '添加数组元素' : '新增子主题';
+    topicAddButton.title = label;
+    topicAddButton.setAttribute('aria-label', label);
+    if(topicAddButton.parentElement !== card) card.appendChild(topicAddButton);
+  }else topicAddButton?.remove();
+  for(const [id, action] of [['designChild','child'], ['designSibling','sibling'], ['designRename','rename'], ['designDelete','delete']]){
+    document.getElementById(id).disabled = !target?.[action];
+  }
+  document.getElementById('designChild').textContent = target?.child === 'array' ? '添加元素' : '子主题';
+  document.getElementById('designSibling').textContent = typeof target?.path.at(-1) === 'number' ? '插入元素' : '同级主题';
+  document.getElementById('designUndo').disabled = !doc?.editHistory?.length;
+  document.getElementById('designSave').disabled = !doc?.dirty || !!doc.saving;
+}
+
+function beginTopicEdit(action, node){
+  const target = designTarget(node);
+  if(!target?.[action]) return false;
+  if(action === 'delete' && target.child && Object.keys(valueAt(target.doc.parsed, target.path)).length){
+    pendingTopicDeletion = target;
+    closeMenu();
+    document.getElementById('deleteTopicDialog').showModal();
+    return true;
+  }
+  if(action === 'delete' || (action === 'child' && target.child === 'array')
+    || (action === 'sibling' && typeof target.path.at(-1) === 'number')){
+    commitTopicAction(target, action);
+    return true;
+  }
+  designTopic = { ...target, action };
+  document.getElementById('designTopicTitle').textContent = {
+    child:'添加子主题', sibling:'添加同级主题', rename:'重命名主题'
+  }[action];
+  const input = document.getElementById('designTopicName');
+  input.value = action === 'rename' ? target.path.at(-1) : '';
+  document.getElementById('designTopicError').textContent = '';
+  closeMenu();
+  document.getElementById('designTopicDialog').showModal();
+  input.focus(); input.select();
+  return true;
+}
+
+function commitTopicAction(target, action){
+  try{ commitTopicEdit(target, action); }
+  catch(error){ showToast(error.message); }
+}
+
+function commitTopicEdit({doc, path}, action, name){
+  if(doc !== activeDoc()) throw new Error('当前文档已切换');
+  const parent = action === 'child' ? path : path.slice(0, -1);
+  const key = path.at(-1), deleting = action === 'delete';
+  if(action === 'rename' && name === key){
+    document.getElementById('designTopicDialog').close();
+    viewport.focus({preventScroll:true});
+    return;
+  }
+  const container = valueAt(doc.parsed, parent);
+  let next, selection, remapOpenPath;
+  if(Array.isArray(container)){
+    const index = action === 'child' ? container.length : deleting ? key : key + 1;
+    const items = container.slice();
+    if(deleting) items.splice(index, 1);
+    else items.splice(index, 0, null);
+    next = replaceValue(doc.parsed, parent, items);
+    selection = deleting ? parent : parent.concat(index);
+    const prefix = encodePath(parent);
+    remapOpenPath = item => {
+      if(!item.startsWith(prefix)) return [item];
+      const match = /^\[(\d+)\]/.exec(item.slice(prefix.length));
+      if(!match || Number(match[1]) < index) return [item];
+      if(deleting && Number(match[1]) === index) return [];
+      const moved = Number(match[1]) + (deleting ? -1 : 1);
+      return [prefix + '[' + moved + ']' + item.slice(prefix.length + match[0].length)];
+    };
+  }else{
+    if(name === undefined && !deleting){
+      name = '子主题';
+      for(let i = 2; Object.hasOwn(container, name); i++) name = '子主题 ' + i;
+    }
+    next = editObjectTopic(doc.parsed, parent, deleting || action === 'rename' ? key : null, deleting ? null : name);
+    selection = deleting ? parent : parent.concat(name);
+    const before = encodePath(path), after = encodePath(selection);
+    remapOpenPath = item => {
+      if((!deleting && action !== 'rename') || (item !== before && !isPathPrefix(before, item, false))) return [item];
+      return deleting ? [] : [after + item.slice(before.length)];
+    };
+  }
+  snapshotDoc();
+  rememberEdit(doc);
+  Object.assign(doc.editHistory.at(-1), { topicSelection:path, openPaths:doc.openPaths });
+  const open = (doc.openPaths || []).flatMap(remapOpenPath);
+  for(let i = 0; i <= parent.length; i++) open.push(encodePath(parent.slice(0, i)));
+  doc.openPaths = [...new Set(open)];
+  doc.parsed = next;
+  doc.text = serializeDocument(doc);
+  doc.dirty = true;
+  doc.searchQuery = '';
+  persistDesignDraft(doc);
+  activateDoc(doc.id, selection);
+  viewport.focus({preventScroll:true});
+}
+
+async function selectDesignPath(path, generation){
+  let node = tree.firstElementChild;
+  for(const key of path){
+    const loaded = await node?._ensureChildren?.(key);
+    if(generation !== expansionGeneration || !loaded) return;
+    node.classList.add('open');
+    const children = directChildrenContainer(node)?.children;
+    node = [...(children || [])].find(child => child._pageKey === key);
+    if(!node) return;
+  }
+  if(!node) return;
+  selectedSearchPath = path;
+  selectCopyNode(node);
+  revealCanvasNode(node);
+}
+
+function revealCanvasNode(node){
+  const row = node.firstElementChild;
+  const rect = row.getBoundingClientRect(), bounds = viewport.getBoundingClientRect();
+  if(rect.left < bounds.left || rect.top < bounds.top || rect.right > bounds.right || rect.bottom > bounds.bottom){
+    centerNode(node, row);
+  }
+}
+
 function canEditNode(node){
   const doc = activeDoc();
-  return !!doc && !doc.error && !doc.source?.indexed && node?._source === doc.source;
+  return !!doc && !doc.error && !doc.source?.indexed && !!node && node.isConnected !== false && node._source === doc.source;
 }
 function beginNodeEdit(node){
   if(!canEditNode(node)) return;
   const doc = activeDoc(), value = valueAt(doc.data, node._sourcePath);
-  editingNode = { doc, path: [...node._sourcePath] };
+  const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  editingNode = { doc, path: [...node._sourcePath], type };
   document.getElementById('valueEditPath').textContent = encodePath(node._path);
-  document.getElementById('valueEditType').value = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  document.getElementById('valueEditType').value = type;
   document.getElementById('valueEditText').value = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   document.getElementById('valueEditError').textContent = '';
   closeMenu(); document.getElementById('valueEditDialog').showModal();
@@ -298,6 +476,12 @@ function applyNodeEdit(){
   const next = replaceValue(doc.data, state.path, value);
   snapshotDoc();
   rememberEdit(doc);
+  if(doc.design){
+    Object.assign(doc.editHistory.at(-1), { topicSelection:state.path, openPaths:doc.openPaths });
+    const changed = encodePath(state.path);
+    doc.openPaths = (doc.openPaths || []).filter(path => !isPathPrefix(changed, path, false));
+    if(value === null || typeof value !== 'object') doc.openPaths = doc.openPaths.filter(path => path !== changed);
+  }
   if(doc.kind !== 'jsonl') doc.parsed = next;
   else if(wrapped) doc.records = next;
   else { doc.records = doc.records.slice(); doc.records[0] = next; }
@@ -306,7 +490,9 @@ function applyNodeEdit(){
   // Export omits skipped JSONL lines; the loaded document retains its diagnostics.
   doc.searchQuery = '';
   editingNode = null; document.getElementById('valueEditDialog').close();
-  activateDoc(doc.id);
+  persistDesignDraft(doc);
+  activateDoc(doc.id, doc.design ? state.path : null);
+  if(doc.design) viewport.focus({preventScroll:true});
 }
 
 
@@ -355,6 +541,7 @@ function selectCopyNode(node){
   selectedCopyNode?.classList.remove('selected-node');
   selectedCopyNode = node;
   node?.classList.add('selected-node');
+  syncDesignControls();
   if(changed && desktop && macPlatform) updateDocumentMenu([copyNodeMenuState()]);
 }
 let lastSearchSignature = null;
@@ -468,7 +655,7 @@ function resolveDoc(doc){
   }
   if(doc.kind !== 'jsonl'){
     if(doc.error) return { error: doc.error };
-    return { data: doc.parsed, rootLabel: 'root', sub: '' };
+    return { data: doc.parsed, rootLabel: doc.design ? '根' : 'root', sub: '' };
   }
 
   const parseBad = doc.bad.filter(b => !b.comment);
@@ -529,10 +716,12 @@ function snapshotDoc(){
 }
 
 /* 激活某个文档：折算解析结果 → 铺到全局镜像 → 渲染 → 恢复它自己的阅读状态 */
-function activateDoc(id){
+function activateDoc(id, designPath = null){
   const doc = docs.find(d => d.id === id);
   if(!doc) return;
+  if(activeDoc()) activeDoc().ideEditGroup = null;
 
+  vimPrefix = null;
   closeMenu();
   if(activeDocId && activeDocId !== id) snapshotDoc();
   activeDocId = id;
@@ -542,6 +731,9 @@ function activateDoc(id){
   closeEditor();
   closeModal();
   editingNode = null; document.getElementById('valueEditDialog').close();
+  document.getElementById('designTopicDialog').close();
+  document.getElementById('deleteTopicDialog').close();
+  document.getElementById('saveConflictDialog').close();
   updateWindowTitle(doc.name);
 
   const r = resolveDoc(doc);
@@ -583,6 +775,10 @@ function activateDoc(id){
     scheduleSessionSave();
     return;
   }
+  if(doc.design && canDesign(doc)){
+    selectedSearchPath = [];
+    selectCopyNode(tree.firstElementChild);
+  }
 
   const activation = expansionGeneration;
   if(Array.isArray(doc.openPaths)) restoringExpansion = activation;
@@ -608,6 +804,7 @@ function activateDoc(id){
       quickSearchInput.value = doc.searchQuery;
       searchTree(doc.searchQuery);
     }
+    if(doc.design && designPath?.length) await selectDesignPath(designPath, activation);
   });
 
   scheduleSessionSave();
@@ -624,6 +821,7 @@ function closeDoc(id){
     confirmDiscardEdits().then(ok => { if(ok){ closing.dirty = false; closeDoc(id); } });
     return;
   }
+  persistDesignDraft(closing);
   closing.source?.dispose();
 
   if(wasActive) snapshotDoc();
@@ -855,6 +1053,9 @@ chooseBtn.addEventListener('click', e => {
 });
 document.getElementById('sidebarOpenBtn').addEventListener('click', () => chooseFiles());
 openAnotherBtn.addEventListener('click', () => chooseFiles());
+for(const id of ['sidebarNewBtn','newDocBtn','newAnotherBtn']){
+  document.getElementById(id).addEventListener('click', newBlankDocument);
+}
 
 fileInput.addEventListener('change', () => {
   openFiles(fileInput.files);
@@ -867,13 +1068,12 @@ fileInput.addEventListener('change', () => {
     dropZone.classList.add('dragover');
   });
 });
-['dragleave','drop'].forEach(type => {
-  dropZone.addEventListener(type, e => {
-    e.preventDefault();
-    dropZone.classList.remove('dragover');
-  });
+dropZone.addEventListener('dragleave', e => {
+  if(!dropZone.contains(e.relatedTarget)) dropZone.classList.remove('dragover');
 });
 dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
   if(!desktop && e.dataTransfer.files.length) openFiles(e.dataTransfer.files);
 });
 
@@ -898,6 +1098,20 @@ function openFiles(fileList){
 }
 
 let pastedSequence = 0;
+let blankSequence = 0;
+function newBlankDocument(){
+  if(templateEditing) return;
+  let name;
+  do { name = `未命名-${++blankSequence}.json`; } while(docs.some(doc => doc.name === name));
+  const text = '{}\n';
+  const doc = buildDoc(text, name, text.length);
+  Object.assign(doc, { temporary:true, dirty:true, design:true, openPaths:['$'] });
+  docs.push(doc);
+  persistDesignDraft(doc);
+  activateDoc(doc.id, []);
+  viewport.focus({preventScroll:true});
+}
+
 function openPastedText(text){
   if(!text?.trim()){ showToast('剪贴板中没有文本'); return Promise.resolve(); }
   let base;
@@ -911,7 +1125,7 @@ function openPastedText(text){
 // Preserve native paste in editors, search fields, dialogs and editable controls.
 document.addEventListener('paste', e => {
   if(e.defaultPrevented || e.target?.closest?.('input,textarea,select,[contenteditable]')
-    || ['valueEditDialog','discardEditDialog','aboutDialog','updateDialog'].some(id => document.getElementById(id).open)
+    || ['valueEditDialog','designTopicDialog','discardEditDialog','deleteTopicDialog','saveConflictDialog','aboutDialog','updateDialog'].some(id => document.getElementById(id).open)
     || templateEditing || ['settingsMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'))) return;
   const text = e.clipboardData?.getData('text/plain');
   if(!text?.trim()) return;
@@ -958,7 +1172,11 @@ function parseInBackground(payload, signal){
 }
 
 async function loadFile(file, sessions){
-  if(!file.path && file.size > MAX_FILE_BYTES){ showToast('当前版本支持最大 256 MiB 的文件'); return; }
+  const threshold = settings.largeFileThresholdMiB;
+  if(!file.path && needsIndex(file.size, threshold)){
+    showToast(`文件超过 ${threshold} MB，当前入口无法建立磁盘索引`);
+    return;
+  }
   if(!file.path && !/\.(json|jsonl|ndjson|jsonlines|txt)$/i.test(file.name)){
     showToast(`已跳过 ${file.name}：不支持的文件格式`); return;
   }
@@ -973,7 +1191,7 @@ async function loadFile(file, sessions){
     const metadata = file.path ? await statNativeFile(file.path) : file;
     if(controller.signal.aborted) return;
     let result, text, source = metadata;
-    if(file.path && needsIndex(metadata.size, settings.largeFileThresholdMiB)){
+    if(file.path && needsIndex(metadata.size, threshold)){
       loadingLabel.textContent = '正在后台建立索引 · 0% · ' + metadata.name;
       indexedSource = await openIndexedFile(metadata, {
         signal: controller.signal, wrap: settings.jsonlWrapArray !== false, strict: !!settings.strictJsonl,
@@ -985,7 +1203,7 @@ async function loadFile(file, sessions){
       });
       result = { kind: indexedSource.info.kind }; text = '';
     }else{
-      source = file.path ? await readNativeFile(metadata.path) : file;
+      source = file.path ? await readNativeFile(metadata.path, threshold * 1024 ** 2) : file;
       controller.signal.throwIfAborted();
       loadingLabel.textContent = '正在后台解析 ' + source.name + '…';
       ({ result, text } = await parseInBackground({
@@ -1013,6 +1231,8 @@ async function loadFile(file, sessions){
     if(duplicate){
       if(duplicate.dirty && !await confirmDiscardEdits()) return;
       duplicate.dirty = false; duplicate.editHistory = [];
+      duplicate.redoHistory = []; duplicate.ideEditGroup = null;
+      persistDesignDraft(duplicate);
       duplicate.ideDraft = undefined; duplicate.ideError = undefined;
       duplicate.ideFolds = undefined; duplicate.ideProjection = undefined;
       duplicate.savedText = undefined; duplicate.diskText = undefined;
@@ -1060,12 +1280,13 @@ function saveReopenCopy(){
     return;
   }
 
+  const reopenable = docs.filter(doc => !doc.design || !doc.dirty || doc.draftWriteFailed);
   const snapshot = active => ({
     version: 2,
     activeKey: docKey(active),
-    docs: docs.map(d => ({
+    docs: reopenable.map(d => ({
       name: d.name, size: d.size, kind: d.kind,
-      text: d.text, rootLabel: d.rootLabel, temporary:!!d.temporary, dirty:!!d.dirty
+      text: d.text, rootLabel: d.rootLabel, temporary:!!d.temporary, dirty:!!d.dirty, design:!!d.design
     })),
     savedAt: Date.now()
   });
@@ -1076,12 +1297,13 @@ function saveReopenCopy(){
   }catch(_){}
 
   /* 文件太多 / 太大：退化为只保留当前文件，保证核心的「刷新后继续打开」仍可用 */
-  const cur = activeDoc() || docs[0];
+  const cur = reopenable.find(doc => doc === activeDoc()) || reopenable[0];
+  if(!cur) return;
   try{
     localStorage.setItem(LASTFILE_KEY, JSON.stringify({
       version: 2,
       activeKey: docKey(cur),
-      docs: [{ name: cur.name, size: cur.size, kind: cur.kind, text: cur.text, rootLabel: cur.rootLabel, temporary:!!cur.temporary, dirty:!!cur.dirty }],
+      docs: [{ name: cur.name, size: cur.size, kind: cur.kind, text: cur.text, rootLabel: cur.rootLabel, temporary:!!cur.temporary, dirty:!!cur.dirty, design:!!cur.design }],
       savedAt: Date.now()
     }));
     showToast('打开的文件较多，刷新后只会恢复当前文件');
@@ -1109,6 +1331,7 @@ function collectSession(){
 
 /* 展开 / 平移后延迟落盘：拖动过程中不会每一帧都写 localStorage */
 let sessionSaveTimer = null;
+let sessionSaveFailed = false;
 function scheduleSessionSave(){
   if(!settings.reopenLast || !settings.restoreSession) return;
 
@@ -1123,7 +1346,13 @@ function saveSession(){
   const session = collectSession();
   if(!session) return;
 
-  try{ localStorage.setItem(SESSION_KEY, JSON.stringify(session)); }catch(_){}
+  try{
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    sessionSaveFailed = false;
+  }catch(_){
+    if(!sessionSaveFailed) showToast('未能保存阅读位置');
+    sessionSaveFailed = true;
+  }
 }
 
 /* 直接套用刷新前的平移 / 缩放（此时不再把某个节点居中） */
@@ -1350,7 +1579,7 @@ function attachChildren(node, card, toggle, source, sourcePath, path){
   children.className = 'children';
   node.appendChild(children);
 
-  const hidden = getHiddenSet();
+  const hidden = activeDoc()?.design ? new Set() : getHiddenSet();
   const ensureChildren = pagedChildren(node, children, source, sourcePath, item => {
     if(hidden.size && hidden.has(normalizePath(encodePath(path.concat(item.key))))) return null;
     return createNode(item.arrayItem ? arrayIndexLabel(item.key) : String(item.key), item,
@@ -1369,7 +1598,7 @@ function attachChildren(node, card, toggle, source, sourcePath, path){
   };
 
   toggle.addEventListener('click', toggleNode);
-  card.addEventListener('click', toggleNode);
+  card.addEventListener('click', e => { if(!activeDoc()?.design) toggleNode(e); });
 }
 
 /* 字符串的原文仍由原数据源读取；解析出的结构使用独立的数据源。 */
@@ -1552,6 +1781,7 @@ function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, sour
 
   const card = document.createElement('div');
   card.className = 'node-card';
+  node._card = card;
 
   const keyEl = document.createElement('span');
   keyEl.className = 'node-key';
@@ -1561,7 +1791,7 @@ function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, sour
   if(isBranch){
     card.appendChild(keyEl);
     const badge = document.createElement('span');
-    badge.className = 'badge';
+    badge.className = descriptor.type === 'object' ? 'badge object-badge' : 'badge';
     badge.textContent = `${descriptor.type === 'array' ? 'Array' : 'Object'} · ${descriptor.childCount}`;
     card.appendChild(badge);
   }else{
@@ -1645,6 +1875,11 @@ function collapseAll(){
 
 /* ---------- 选中节点的子树展开 / 收起 ---------- */
 const ctxMenu = document.getElementById('ctxMenu');
+const topicMenu = document.getElementById('topicMenu');
+const topicMenuActions = [
+  ['ctxTopicChild','child'], ['ctxTopicSibling','sibling'],
+  ['ctxTopicRename','rename'], ['ctxTopicDelete','delete']
+];
 const contextMenuItems = [
   'ctxCopyPath', 'ctxExpandSubtree', 'ctxCollapse', 'ctxEditNode',
   'ctxHideNode', 'ctxViewFull', 'ctxCopy'
@@ -1699,7 +1934,10 @@ function isBranchEl(node){
 }
 
 function openMenu(x, y){
-  if(!settings.contextMenu.some(item => item.enabled)) return;
+  const topic = designTarget(ctxTarget);
+  if(!topic && !settings.contextMenu.some(item => item.enabled)) return;
+  topicMenu.hidden = !topic;
+  ctxMenu.classList.toggle('topic-menu', !!topic);
   ctxMenu.style.display = 'block';
 
   /* 叶子节点禁用展开项 */
@@ -1707,8 +1945,16 @@ function openMenu(x, y){
   ctxCopyPath.disabled = !ctxTarget?.dataset.path;
   ctxExpandSubtreeBtn.disabled = !branch;
   ctxCollapseBtn.disabled = !branch || !ctxTarget.classList.contains('open');
+  document.getElementById('ctxTopicCollapse').disabled = ctxCollapseBtn.disabled;
+  const arrayItem = typeof topic?.path.at(-1) === 'number';
+  document.getElementById('ctxTopicChildLabel').textContent = topic?.child === 'array' ? '添加数组元素' : '新增子主题';
+  document.getElementById('ctxTopicSiblingLabel').textContent = arrayItem ? '在下方插入元素' : '新增同级主题';
+  document.getElementById('ctxTopicDeleteLabel').textContent = arrayItem ? '删除元素' : '删除分支';
+  for(const [id, action] of topicMenuActions){
+    document.getElementById(id).disabled = !topic?.[action];
+  }
   document.getElementById('ctxEditNode').disabled = !canEditNode(ctxTarget);
-  document.getElementById('ctxHideNode').disabled = ctxTarget.dataset.path === '$';
+  document.getElementById('ctxHideNode').disabled = ctxTarget.dataset.path === '$' || !!activeDoc()?.design;
   document.getElementById('ctxEditNode').title = canEditNode(ctxTarget) ? '修改当前工作副本中的节点值' : '索引大文件与字符串内嵌的虚拟节点暂不支持编辑';
 
   const mw = ctxMenu.offsetWidth;
@@ -1759,6 +2005,14 @@ ctxCollapseBtn.addEventListener('click', () => {
   if(ctxTarget) collapseSubtree(ctxTarget);
   closeMenu();
 });
+document.getElementById('ctxTopicCollapse').addEventListener('click', () => ctxCollapseBtn.click());
+for(const [id, action] of topicMenuActions){
+  document.getElementById(id).addEventListener('click', () => {
+    closeMenu();
+    beginTopicEdit(action, ctxTarget);
+    if(action === 'delete') viewport.focus({preventScroll:true});
+  });
+}
 
 /* ---------- 内容弹窗 & 复制 ---------- */
 const modalMask = document.getElementById('modalMask');
@@ -1855,15 +2109,77 @@ async function copyNodeContent(node){
   const ok = await copyText(content);
   showToast(ok ? '已复制到剪贴板' : '复制失败，请手动选择文本复制');
 }
-ctxCopy.addEventListener('click', () => {
-  closeMenu();
-  copyNodeContent(ctxTarget);
-});
+for(const button of [ctxCopy, document.getElementById('ctxTopicCopy')]){
+  button.addEventListener('click', () => {
+    closeMenu();
+    copyNodeContent(ctxTarget);
+  });
+}
 
 /* ---------- 设置 & 结构模板 ---------- */
 const SETTINGS_KEY = 'json-atlas_settings_v1';
 const TEMPLATE_KEY = 'json-atlas_template_v1';
 const LASTFILE_KEY = 'json-atlas_lastfile_v1';
+const DESIGN_DRAFT_PREFIX = 'json-atlas_design-draft_v1:';
+
+function persistDesignDraft(doc, discard = false){
+  if(!doc.design) return;
+  const keep = doc.dirty && !discard;
+  if(!keep && !doc.draftKey) return;
+  try{
+    if(keep){
+      doc.draftKey ??= DESIGN_DRAFT_PREFIX + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+      localStorage.setItem(doc.draftKey, JSON.stringify({
+        name:doc.name, text:doc.text, openPaths:doc.openPaths,
+        ideError:doc.ideError || undefined,
+        validText:doc.ideError ? JSON.stringify(doc.parsed) : undefined
+      }));
+    }else{
+      localStorage.removeItem(doc.draftKey);
+      delete doc.draftKey;
+    }
+    doc.draftWriteFailed = false;
+  }catch(_){
+    if(!doc.draftWriteFailed) showToast(keep ? '暂存设计失败，请手动保存' : '未能清理设计草稿');
+    doc.draftWriteFailed = true;
+  }
+}
+
+function restoreDesignDrafts(){
+  let restored = 0, latest = null;
+  try{
+    for(let i = 0; i < localStorage.length; i++){
+      const key = localStorage.key(i);
+      if(!key?.startsWith(DESIGN_DRAFT_PREFIX)) continue;
+      let draft;
+      try{ draft = JSON.parse(localStorage.getItem(key)); }catch(_){ continue; }
+      if(typeof draft?.name !== 'string' || typeof draft.text !== 'string') continue;
+      let doc = docs.find(item => item.design && item.dirty && !item.draftKey && item.name === draft.name && item.text === draft.text);
+      if(!doc){
+        const size = new Blob([draft.text]).size;
+        if(needsIndex(size, settings.largeFileThresholdMiB)) continue;
+        const validText = typeof draft.ideError === 'string' ? draft.validText : draft.text;
+        if(typeof validText !== 'string') continue;
+        doc = buildDoc(validText, draft.name, size);
+        if(doc.error || doc.kind !== 'json') continue;
+        if(draft.ideError){
+          doc.text = doc.ideDraft = draft.text;
+          doc.ideError = draft.ideError;
+          doc.viewOverride = 'ide';
+        }
+        docs.push(doc);
+      }
+      Object.assign(doc, { design:true, temporary:true, dirty:true, draftKey:key,
+        openPaths:Array.isArray(draft.openPaths) ? draft.openPaths.filter(path => typeof path === 'string') : ['$'] });
+      latest = doc;
+      restored++;
+    }
+  }catch(_){ /* Local storage is unavailable. */ }
+  if(latest){
+    activateDoc(latest.id);
+    showToast(`已恢复 ${restored} 份未保存的设计`);
+  }
+}
 /* 阅读会话（展开状态 + 视图位置）单独存一个键：
    它变化频繁，不能每次都把文件原文一起重写 */
 const SESSION_KEY = 'json-atlas_session_v1';
@@ -1893,6 +2209,9 @@ let settings = {
   ideFoldAlwaysVisible: false,
   nodeSelectionStyle: false,
   vimEditing: false,
+  showTopicDock: false,
+  topicDoubleClick: 'rename',
+  limitIdeComplexity: true,
   largeFileThresholdMiB: 64,
   legacyTreeLayout: false,
   autoTemplate: true,
@@ -1919,6 +2238,7 @@ try{
 }catch(_){}
 settings.largeFileThresholdMiB = normalizeThreshold(settings.largeFileThresholdMiB);
 settings.viewMode = normalizeViewMode(settings.viewMode);
+settings.topicDoubleClick = settings.topicDoubleClick === 'value' ? 'value' : 'rename';
 settings.theme = normalizeTheme(settings.theme);
 settings.contextMenu = normalizeContextMenu(settings.contextMenu);
 const applyTheme = watchTheme(document.documentElement, window.matchMedia?.('(prefers-color-scheme: dark)'), settings.theme,
@@ -2101,7 +2421,15 @@ function syncThresholdControl(){
   document.getElementById('optViewMode').value = settings.viewMode;
   document.getElementById('optIdeFoldAlwaysVisible').checked = settings.ideFoldAlwaysVisible;
   document.getElementById('optNodeSelectionStyle').checked = settings.nodeSelectionStyle;
+  document.getElementById('optLimitIdeComplexity').checked = settings.limitIdeComplexity;
 }
+document.getElementById('optLimitIdeComplexity').addEventListener('change', e => {
+  if(!leaveIde()){ syncThresholdControl(); return; }
+  if(activeDoc()) activeDoc().ideDraft = undefined;
+  settings.limitIdeComplexity = e.target.checked;
+  saveSettings();
+  if(activeDocId){ snapshotDoc(); activateDoc(activeDocId); }
+});
 optLargeFileThreshold.addEventListener('change', () => {
   if(!leaveIde()){ syncThresholdControl(); return; }
   if(activeDoc()) activeDoc().ideDraft = undefined;
@@ -2165,7 +2493,7 @@ function updateTemplateStatus(){
 
 function applyContextMenuSettings(){
   const buttons = new Map(contextMenuItems.map(({id, button}) => [id, button]));
-  ctxMenu.replaceChildren(...settings.contextMenu.map(({id, enabled}) => {
+  ctxMenu.replaceChildren(topicMenu, ...settings.contextMenu.map(({id, enabled}) => {
     const button = buttons.get(id);
     button.hidden = !enabled;
     return button;
@@ -2258,6 +2586,8 @@ function openSettings(){
   showSettingsPage(settingsPage);
   document.getElementById('optTheme').value = settings.theme;
   document.getElementById('optVimEditing').checked = settings.vimEditing === true;
+  document.getElementById('optTopicDock').checked = settings.showTopicDock === true;
+  document.getElementById('optTopicDoubleClick').value = settings.topicDoubleClick;
   syncThresholdControl();
   optLegacyTreeLayout.checked = settings.legacyTreeLayout === true;
   optAutoTemplate.checked = settings.autoTemplate;
@@ -2339,6 +2669,7 @@ document.getElementById('optNodeSelectionStyle').addEventListener('change', e =>
 });
 function applyIdeFoldVisibility(){
   tree.classList.toggle('show-node-selection', settings.nodeSelectionStyle === true);
+  tree.classList.toggle('vim-node-selection', settings.vimEditing === true);
   document.getElementById('ideView').classList.toggle('ide-fold-always-visible', settings.ideFoldAlwaysVisible === true);
 }
 document.getElementById('optIdeFoldAlwaysVisible').addEventListener('change', e => {
@@ -2560,6 +2891,9 @@ settingsImportInput.addEventListener('change', () => {
         ideFoldAlwaysVisible: s.ideFoldAlwaysVisible === true,
         nodeSelectionStyle: s.nodeSelectionStyle === true,
         vimEditing: s.vimEditing === true,
+        showTopicDock: s.showTopicDock === true,
+        topicDoubleClick: s.topicDoubleClick === 'value' ? 'value' : 'rename',
+        limitIdeComplexity: s.limitIdeComplexity !== false,
         largeFileThresholdMiB: normalizeThreshold(s.largeFileThresholdMiB),
         legacyTreeLayout: s.legacyTreeLayout === true,
         autoTemplate: !!s.autoTemplate,
@@ -2644,8 +2978,10 @@ let nativeRestore = null;
     if(!item || typeof item.text !== 'string' || !item.name) return;
 
     const size = Number(item.size) || new Blob([item.text]).size;
+    if(needsIndex(size, settings.largeFileThresholdMiB)) return;
     const doc = buildDoc(item.text, item.name, size);
     doc.temporary = !!item.temporary; doc.dirty = !!item.dirty;
+    doc.design = item.design === true && doc.kind === 'json';
     if(item.rootLabel) doc.rootLabel = item.rootLabel;
 
     const s = sessionFor(doc, sessions);
@@ -2742,6 +3078,7 @@ function openEditor(){
   closeMenu();
   if(!findPanel.hidden) closeFindPanel(false);
   templateEditing = true;
+  syncDesignControls();
   syncDocumentMenu();
   enterEditorFind();
   viewer.classList.add('template-editing');
@@ -2756,6 +3093,7 @@ function openEditor(){
 function closeEditor(){
   if(!templateEditing) return;
   templateEditing = false;
+  syncDesignControls();
   syncDocumentMenu();
   if(!findPanel.hidden) closeFindPanel(false);
   resetEditorSearch();
@@ -3103,11 +3441,12 @@ async function searchEditorKeys(){
 }
 
 function queueEditorSearch(event){
-  clearEditorMatches();
   if(event?.isComposing) return;
+  clearEditorMatches();
   editorSearchTimer = setTimeout(searchEditorKeys, 180);
 }
 function syncEditorQuickSearch(event){
+  if(event?.isComposing) return;
   searchInput.value = editorSearchInput.value;
   queueEditorSearch(event);
 }
@@ -3139,8 +3478,20 @@ editorVisibilityBtn.addEventListener('click', () => {
 
 /* Value editing works on an independent document revision. */
 document.getElementById('documentActions').hidden = desktop;
-document.getElementById('ideInput').addEventListener('input', e => { if(!e.isComposing) handleIdeInput(e.target.value); });
+document.getElementById('ideInput').addEventListener('input', e => {
+  if(e.isComposing) return;
+  const group = ['insertText','deleteContentBackward','deleteContentForward'].includes(e.inputType) ? e.inputType : null;
+  handleIdeInput(e.target.value, group);
+});
 document.getElementById('ideInput').addEventListener('compositionend', e => handleIdeInput(e.target.value));
+for(const event of ['blur','pointerdown']) document.getElementById('ideInput').addEventListener(event, () => {
+  if(activeDoc()) activeDoc().ideEditGroup = null;
+});
+document.getElementById('ideInput').addEventListener('keydown', e => {
+  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown'].includes(e.key) && activeDoc()){
+    activeDoc().ideEditGroup = null;
+  }
+});
 document.getElementById('ideInput').addEventListener('scroll', syncIdeScroll);
 for(const event of ['click','keyup','select','focus']) document.getElementById('ideInput').addEventListener(event, updateIdeScope);
 window.addEventListener('resize', syncIdeScroll);
@@ -3151,7 +3502,15 @@ document.getElementById('ideInput').addEventListener('wheel', e => {
   e.preventDefault(); setIdeZoom((activeDoc()?.ideZoom || 100) + (e.deltaY > 0 ? -10 : 10));
 }, {passive:false});
 document.getElementById('valueEditText').addEventListener('input', resizeNodeEditor);
-document.getElementById('valueEditType').addEventListener('change', resizeNodeEditor);
+document.getElementById('valueEditType').addEventListener('change', e => {
+  if(editingNode?.doc.design){
+    const defaults = {string:'', number:'0', boolean:'false', null:'null', object:'{}', array:'[]'};
+    const text = document.getElementById('valueEditText');
+    if(text.value === defaults[editingNode.type]) text.value = defaults[e.target.value];
+    editingNode.type = e.target.value;
+  }
+  resizeNodeEditor();
+});
 window.addEventListener('resize', resizeNodeEditor);
 document.getElementById('optViewMode').addEventListener('change', e => {
   if(!leaveIde()){ e.target.value = settings.viewMode; return; }
@@ -3173,11 +3532,53 @@ function switchDocumentView(){
   (ideActive ? document.getElementById('ideInput') : viewport).focus({preventScroll:true});
 }
 document.getElementById('switchViewBtn').addEventListener('click', switchDocumentView);
+for(const action of ['child','sibling','rename','delete']){
+  const id = 'design' + action[0].toUpperCase() + action.slice(1);
+  document.getElementById(id).addEventListener('click', () => beginTopicEdit(action));
+}
+document.getElementById('designUndo').addEventListener('click', () => {
+  document.getElementById('undoEditBtn').click();
+  viewport.focus({preventScroll:true});
+});
+document.getElementById('designSave').addEventListener('click', () => saveCurrentDocument());
+document.getElementById('designTopicCancel').addEventListener('click', () => document.getElementById('designTopicDialog').close());
+document.getElementById('designTopicDialog').addEventListener('close', () => {
+  if(!document.getElementById('designTopicDialog').open) designTopic = null;
+});
+document.getElementById('designTopicForm').addEventListener('submit', event => {
+  event.preventDefault();
+  if(!designTopic) return;
+  try {
+    const name = document.getElementById('designTopicName').value.trim();
+    if(!name) throw new Error('请输入主题名称');
+    commitTopicEdit(designTopic, designTopic.action, name);
+  } catch(error){ document.getElementById('designTopicError').textContent = error.message; }
+});
+tree.addEventListener('dblclick', event => {
+  if(event.target.closest('button') || !event.target.closest('.node-card')) return;
+  const node = event.target.closest('.tree-node');
+  if(settings.topicDoubleClick === 'value'){
+    if(designTarget(node)) beginNodeEdit(node);
+  }else beginTopicEdit('rename', node);
+});
+document.getElementById('optTopicDoubleClick').addEventListener('change', e => {
+  settings.topicDoubleClick = e.target.value === 'value' ? 'value' : 'rename';
+  saveSettings();
+});
 document.getElementById('optVimEditing').addEventListener('change', e => {
-  settings.vimEditing = e.target.checked; saveSettings();
+  settings.vimEditing = e.target.checked;
+  vimPrefix = null;
+  applyIdeFoldVisibility();
+  saveSettings();
+});
+document.getElementById('optTopicDock').addEventListener('change', e => {
+  settings.showTopicDock = e.target.checked;
+  syncDesignControls();
+  saveSettings();
 });
 document.getElementById('editModeBtn').addEventListener('click', () => setEditMode(!editMode, true));
 document.getElementById('ctxEditNode').addEventListener('click', () => beginNodeEdit(ctxTarget));
+document.getElementById('ctxTopicValue').addEventListener('click', () => beginNodeEdit(ctxTarget));
 tree.addEventListener('click', e => {
   if(!editMode || e.target.closest('button,input,select')) return;
   const card = e.target.closest('.node-card');
@@ -3192,22 +3593,44 @@ document.getElementById('valueEditForm').addEventListener('submit', e => {
 document.getElementById('discardEditCancel').addEventListener('click', () => finishDiscardEdits(false));
 document.getElementById('discardEditConfirm').addEventListener('click', () => finishDiscardEdits(true));
 document.getElementById('discardEditDialog').addEventListener('cancel', e => { e.preventDefault(); finishDiscardEdits(false); });
-document.getElementById('undoEditBtn').addEventListener('click', () => {
-  const doc = activeDoc(), previous = doc?.editHistory?.pop();
+function stepEditHistory(redo = false){
+  const doc = activeDoc(), previous = (redo ? doc?.redoHistory : doc?.editHistory)?.pop();
   if(!previous) return;
-  snapshotDoc(); doc.ideFolds?.clear(); Object.assign(doc, previous);
+  const { topicSelection, ...revision } = previous;
+  snapshotDoc();
+  const opposite = redo ? (doc.editHistory ||= []) : (doc.redoHistory ||= []);
+  const current = editRevision(doc);
+  if(topicSelection) Object.assign(current, {topicSelection:selectedCopyNode?._path, openPaths:doc.openPaths});
+  opposite.push(current);
+  doc.ideEditGroup = null;
+  doc.ideFolds?.clear(); Object.assign(doc, revision);
   if(doc.savedText !== undefined) doc.dirty = doc.temporary || doc.text !== doc.savedText;
-  doc.searchQuery = ''; activateDoc(doc.id);
+  doc.searchQuery = '';
+  persistDesignDraft(doc);
+  activateDoc(doc.id, topicSelection);
+}
+document.getElementById('deleteTopicDialog').addEventListener('close', () => {
+  if(!document.getElementById('deleteTopicDialog').open) pendingTopicDeletion = null;
 });
+document.getElementById('deleteTopicCancel').addEventListener('click', () => document.getElementById('deleteTopicDialog').close());
+document.getElementById('deleteTopicConfirm').addEventListener('click', () => {
+  const target = pendingTopicDeletion;
+  document.getElementById('deleteTopicDialog').close();
+  if(target?.doc === activeDoc()) commitTopicAction(target, 'delete');
+});
+document.getElementById('undoEditBtn').addEventListener('click', () => stepEditHistory());
+document.getElementById('redoEditBtn').addEventListener('click', () => stepEditHistory(true));
 async function saveCurrentDocument(copy = false){
   const doc = activeDoc(); if(!doc?.dirty || doc.saving || doc.source?.indexed) return;
   if(doc.ideError){ showToast('请先修正 JSON 语法，再保存'); return; }
+  doc.ideEditGroup = null;
   if(!copy && desktop && doc.path && doc.kind === 'jsonl' && doc.bad?.length){
     showToast('文件中有被跳过的行，请使用另存为，避免覆盖原始记录'); return;
   }
   const revision = doc.text;
   const extension = doc.kind === 'jsonl' ? 'jsonl' : 'json';
-  const name = doc.temporary ? doc.name : doc.name.replace(/\.[^.]+$/, '') + '-edited.' + extension;
+  const name = doc.temporary || (!desktop && doc.design) ? doc.name : doc.name.replace(/\.[^.]+$/, '') + '-edited.' + extension;
+  const wasTemporary = doc.temporary;
   doc.saving = true; syncEditing();
   try {
     if(desktop && doc.path && !copy){
@@ -3225,18 +3648,33 @@ async function saveCurrentDocument(copy = false){
     else {
       const url = URL.createObjectURL(new Blob([revision], {type:'application/json;charset=utf-8'}));
       const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+      if(doc.design) doc.temporary = false;
     }
     doc.savedText = revision; doc.dirty = doc.text !== revision;
+    persistDesignDraft(doc);
     renderRail(); saveReopenCopy(); saveSession();
     if(doc === activeDoc()){ updateDocHeader(doc); syncEditing(); updateWindowTitle(doc.name); }
-    showToast(desktop && doc.path && !copy ? '已保存' : '已导出修改副本');
-  } catch(error){ showToast((copy ? '另存为失败：' : '保存失败：') + error); }
+    showToast(desktop && doc.path && (!copy || wasTemporary) ? '已保存' : '已导出修改副本');
+  } catch(error){
+    if(!copy && doc === activeDoc() && String(error).includes('文件已被其他程序修改')){
+      document.getElementById('saveConflictDialog').showModal();
+    }else showToast((copy ? '另存为失败：' : '保存失败：') + error);
+  }
   finally { doc.saving = false; if(doc === activeDoc()) syncEditing(); }
 }
+document.getElementById('saveConflictCancel').addEventListener('click', () => document.getElementById('saveConflictDialog').close());
+document.getElementById('saveConflictCopy').addEventListener('click', () => {
+  document.getElementById('saveConflictDialog').close();
+  void saveCurrentDocument(true);
+});
 document.getElementById('saveBtn').addEventListener('click', () => saveCurrentDocument());
 document.getElementById('saveCopyBtn').addEventListener('click', () => saveCurrentDocument(true));
 window.addEventListener('beforeunload', e => { if(docs.some(d => d.dirty)){ e.preventDefault(); e.returnValue = ''; } });
-if(desktop) guardEditedClose(() => docs.some(d => d.dirty), confirmDiscardEdits).catch(console.error);
+if(desktop) guardEditedClose(() => docs.some(d => d.dirty), async () => {
+  if(!await confirmDiscardEdits()) return false;
+  for(const doc of docs) persistDesignDraft(doc, true);
+  return true;
+}).catch(console.error);
 
 /* ---------- 「更多」菜单 ---------- */
 const moreBtn = document.getElementById('moreBtn');
@@ -3262,22 +3700,142 @@ window.addEventListener('contextmenu', e => {
   e.preventDefault();
   closeMenu();
 });
+
+function canvasParent(node){
+  const parent = node.parentElement?.parentElement;
+  return parent?.classList.contains('tree-node') ? parent : null;
+}
+
+function visibleChildren(node){
+  return node.classList.contains('open') ? childNodesToVisit(node, false) : [];
+}
+
+function lastVisibleNode(node){
+  let child;
+  while((child = visibleChildren(node).at(-1))) node = child;
+  return node;
+}
+
+function visibleNeighbor(node, direction){
+  if(direction > 0){
+    const child = visibleChildren(node)[0];
+    if(child) return child;
+  }
+  for(let parent = canvasParent(node); parent; parent = canvasParent(node)){
+    const siblings = visibleChildren(parent);
+    const sibling = siblings[siblings.indexOf(node) + direction];
+    if(sibling) return direction > 0 ? sibling : lastVisibleNode(sibling);
+    if(direction < 0) return parent;
+    node = parent;
+  }
+  return null;
+}
+
+function selectVimNode(node){
+  if(!node || node.isConnected === false) return;
+  focusGeneration++;
+  nodeBudget.touch(node);
+  selectCopyNode(node);
+  selectedSearchPath = node._source === activeDoc()?.source ? [...node._path] : null;
+  pathText.textContent = '路径：' + node.dataset.path;
+  revealCanvasNode(node);
+}
+
+async function enterVimBranch(node){
+  if(!isBranchEl(node)) return;
+  const selection = selectedCopyNode, generation = ++expansionGeneration;
+  await expandOne(node);
+  if(generation === expansionGeneration && selection === selectedCopyNode) selectVimNode(visibleChildren(node)[0]);
+}
+
+function handleVimTreeKey(event){
+  // Uppercase fold commands require Shift between the two letter presses.
+  if(event.target === viewport && event.key === 'Shift') return false;
+  const prefix = vimPrefix;
+  vimPrefix = null;
+  const doc = activeDoc(), root = tree.firstElementChild;
+  if(!settings.vimEditing || !doc || doc.error || !root || event.target !== viewport || ideActive || templateEditing ||
+    event.ctrlKey || event.metaKey || event.altKey) return false;
+  const key = event.key;
+  if(key === 'Escape') return prefix !== null && Date.now() < prefix.expires;
+  if(editMode) return false;
+  if(event.repeat && !['h','j','k'].includes(key)) return false;
+
+  const node = selectedCopyNode && selectedCopyNode.isConnected !== false ? selectedCopyNode : root;
+  if(prefix && Date.now() < prefix.expires && !event.repeat){
+    switch(prefix.key + key){
+      case 'gg': selectVimNode(root); return true;
+      case 'yy': selectVimNode(node); void copyNodeContent(node); return true;
+      case 'dd': return beginTopicEdit('delete', node);
+      case 'zo':
+      case 'zc':
+      case 'za':
+        if(isBranchEl(node)){
+          if(key === 'c' || (key === 'a' && node.classList.contains('open'))) collapseSubtree(node);
+          else { expansionGeneration++; void expandOne(node); }
+          selectVimNode(node);
+        }
+        return true;
+      case 'zR': void expandAll(); return true;
+      case 'zM': collapseAll(); selectVimNode(root); return true;
+      default: return false;
+    }
+  }
+  switch(key){
+    case 'h': selectVimNode(canvasParent(node) || node); return true;
+    case 'j':
+    case 'k': selectVimNode(visibleNeighbor(node, key === 'j' ? 1 : -1) || node); return true;
+    case 'l': void enterVimBranch(node); return true;
+    case 'G': selectVimNode(lastVisibleNode(root)); return true;
+    case 'g':
+    case 'y':
+    case 'z':
+    case 'd':
+      if(key === 'd' && !doc.design) return false;
+      vimPrefix = { key, expires:Date.now() + 1200 };
+      return true;
+    case '/': openFindPanel(true); return true;
+    case 'n':
+    case 'N':
+      if(matches.length) void focusMatch((currentMatchIndex + (key === 'n' ? 1 : -1) + matches.length) % matches.length, true);
+      return true;
+    case 'u': document.getElementById('undoEditBtn').click(); return true;
+    case 'i':
+      if(doc.design) return beginTopicEdit('rename', node);
+      setEditMode(true, true); return true;
+    case 'r':
+      if(doc.design) return beginTopicEdit('rename', node);
+      if(!canEditNode(node)) return false;
+      beginNodeEdit(node); return true;
+    case 'a': return beginTopicEdit('child', node);
+    case 'o': return beginTopicEdit('sibling', node);
+    default: return false;
+  }
+}
+
+viewport.addEventListener('blur', () => { vimPrefix = null; });
+document.addEventListener('pointerdown', () => { vimPrefix = null; });
 document.addEventListener('keydown', e => {
-  if(document.getElementById('valueEditDialog').open || document.getElementById('discardEditDialog').open) return;
+  if(['valueEditDialog','designTopicDialog','discardEditDialog','deleteTopicDialog','saveConflictDialog'].some(id => document.getElementById(id).open)) return;
   if(document.getElementById('aboutDialog').open || document.getElementById('updateDialog').open) return;
-  if(e.isComposing || e.getModifierState?.('AltGraph')) return;
+  if(e.isComposing || e.getModifierState?.('AltGraph')) { vimPrefix = null; return; }
   const overlayOpen = ['settingsMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'));
-  if(e.key !== 'Escape' && overlayOpen) return;
+  if(e.key !== 'Escape' && overlayOpen) { vimPrefix = null; return; }
   const modifier = macPlatform ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
   const key = e.key.toLowerCase();
   const inIde = ideActive && (e.target === document.getElementById('ideInput') || e.target === document.getElementById('ideView') || e.target?.closest?.('#ideView'));
   const typing = inIde || !!e.target?.closest?.('input,textarea,select,[contenteditable]');
   const action = shortcutAction(e, macPlatform);
   const consume = callback => { e.preventDefault(); callback(); };
-  if(!templateEditing && !ideActive && !overlayOpen && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat){
-    if(e.key === 'i' && e.target === viewport && settings.vimEditing === true){
-      consume(() => setEditMode(true, true)); return;
+  if(!overlayOpen && handleVimTreeKey(e)){ e.preventDefault(); return; }
+  if(e.target === viewport && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat){
+    if(e.key === 'Escape' && findPanel.hidden && designTarget()){
+      consume(() => { selectCopyNode(null); selectedSearchPath = null; }); return;
     }
+    const topicAction = {Tab:'child', Enter:'sibling', F2:'rename', Delete:'delete'}[e.key];
+    if(topicAction && beginTopicEdit(topicAction)){ e.preventDefault(); return; }
+  }
+  if(!templateEditing && !ideActive && !overlayOpen && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat){
     if(e.key === 'Escape' && !typing && editMode && findPanel.hidden){
       consume(() => setEditMode(false, true)); return;
     }
@@ -3291,7 +3849,7 @@ document.addEventListener('keydown', e => {
     else if(action === 'resetView') consume(() => editorView.reset());
     else if(action === 'nextMatch' || action === 'previousMatch')
       consume(() => focusEditorMatch(editorHitIndex + (action === 'nextMatch' ? 1 : -1)));
-    else if(action === 'open') e.preventDefault();
+    else if(action === 'open' || action === 'newDocument') e.preventDefault();
     return;
   }
   if(action === 'copyNode' && !ideActive && !typing && selectedCopyNode && selectedCopyNode.isConnected !== false
@@ -3300,6 +3858,7 @@ document.addEventListener('keydown', e => {
   }
   if(action === 'save' || action === 'saveCopy') { consume(() => saveCurrentDocument(action === 'saveCopy')); return; }
   if(action === 'open') { consume(chooseFiles); return; }
+  if(action === 'newDocument') { consume(newBlankDocument); return; }
   if(action === 'settings') { consume(openSettings); return; }
   if(action === 'about') { consume(openAbout); return; }
   if(action === 'switchView' && activeDoc()) { consume(switchDocumentView); return; }
@@ -3308,6 +3867,7 @@ document.addEventListener('keydown', e => {
   if(action === 'find' && activeDoc()) { consume(openFindPanel); return; }
   if(action === 'format' && ideActive) { consume(formatIde); return; }
   if(action === 'undo' && (inIde || !typing)) { consume(() => document.getElementById('undoEditBtn').click()); return; }
+  if(action === 'redo' && (inIde || !typing)) { consume(() => document.getElementById('redoEditBtn').click()); return; }
   if(action === 'close' && activeDoc()) { consume(() => closeDoc(activeDocId)); return; }
   if((action === 'nextFile' || action === 'previousFile') && (!typing || inIde) && docs.length > 1) {
     consume(() => {
@@ -3370,8 +3930,10 @@ function updateFindPin(){
   pinFindBtn.title = findPlacement.pinned ? '取消固定后可拖动窗口' : '锁定窗口当前位置';
   pinFindBtn.setAttribute('aria-label', findPlacement.pinned ? '取消固定' : '固定位置');
 }
-function openFindPanel(){
+let returnFindToCanvas = false;
+function openFindPanel(fromCanvas = false){
   if(!activeDoc()) return;
+  returnFindToCanvas = fromCanvas === true;
   closeMoreMenu();
   findPanel.hidden = false;
   updateFindPin();
@@ -3383,7 +3945,9 @@ function closeFindPanel(restoreFocus = true){
   findPanel.hidden = true;
   findDrag = null;
   saveFindPlacement();
-  if(restoreFocus) (templateEditing ? editorSearchInput : quickSearchInput).focus();
+  const target = templateEditing ? editorSearchInput : returnFindToCanvas && !ideActive ? viewport : quickSearchInput;
+  returnFindToCanvas = false;
+  if(restoreFocus) target.focus({preventScroll:true});
 }
 document.getElementById('findBtn').addEventListener('click', openFindPanel);
 document.getElementById('closeFindBtn').addEventListener('click', () => closeFindPanel());
@@ -3551,7 +4115,7 @@ async function searchTree(query){
   if(!source || !activeDoc() || activeDoc().error){ temporarySource?.dispose(); setSearchCount('0'); return; }
   let result;
   try{ result = await source.search(q, {
-    rootLabel: currentRootLabel, indexBase: settings.indexBase, hidden: ideActive ? new Set() : getHiddenSet(),
+    rootLabel: currentRootLabel, indexBase: settings.indexBase, hidden: ideActive || activeDoc()?.design ? new Set() : getHiddenSet(),
     ...searchOptions,
     ...(ideActive ? {textLines:true, scopePath:null} : {}),
     cancelled: () => generation !== searchGeneration
@@ -3581,7 +4145,7 @@ function openAncestors(node){
   }
 }
 
-async function focusMatch(index){
+async function focusMatch(index, select = false){
   if(ideActive){
     if(!matches.length) return;
     if(activeDoc().ideFolds?.size) { activeDoc().ideFolds.clear(); renderIdeBuffer(activeDoc()); }
@@ -3606,7 +4170,8 @@ async function focusMatch(index){
   for(const key of path){
     if(!node) break;
     const loaded = await node._ensureChildren?.(key);
-    if(loaded === false || generation !== focusGeneration || search !== searchGeneration) return;
+    if(generation !== focusGeneration || search !== searchGeneration) return;
+    if(loaded === false){ node = null; break; }
     node.classList.add('open');
     node = [...(directChildrenContainer(node)?.children || [])]
       .find(child => child._path?.length === node._path.length + 1 && child._path.at(-1) === key);
@@ -3616,7 +4181,8 @@ async function focusMatch(index){
     if(generation !== focusGeneration || search !== searchGeneration) return;
     node.classList.add('current-match');
     openAncestors(node);
-    requestAnimationFrame(() => { if(node.isConnected) centerNode(node); });
+    if(select || returnFindToCanvas) selectVimNode(node);
+    else requestAnimationFrame(() => { if(node.isConnected) centerNode(node); });
   }
   setSearchCount(`${index + 1} / ${matches.length}${searchTruncated ? '+' : ''}`);
   searchCount.title = searchTruncated ? '仅列出前 1000 项匹配，请缩小搜索范围' : '';
@@ -3734,14 +4300,14 @@ function resetView(){ mainView.reset(); }
 
 function applyTransform(){ mainView.apply(); }
 
-function centerNode(node){
+function centerNode(node, anchor = node){
   nodeBudget.touch(node);
   const generation = focusGeneration;
   let expected;
   const align = attempt => {
     if(!node.isConnected || generation !== focusGeneration) return;
     if(expected && (mainView.state.x !== expected.x || mainView.state.y !== expected.y)) return;
-    const vp = viewport.getBoundingClientRect(), nd = node.getBoundingClientRect();
+    const vp = viewport.getBoundingClientRect(), nd = anchor.getBoundingClientRect();
     mainView.state.x += (vp.left + vp.width/2) - (nd.left + nd.width/2);
     mainView.state.y += (vp.top + vp.height/2) - (nd.top + nd.height/2);
     mainView.apply(); expected = { x: mainView.state.x, y: mainView.state.y };
@@ -3779,7 +4345,7 @@ function getTypeName(value){
 }
 
 function formatBytes(bytes){
-  if(bytes === 0) return '0 B';
+  if(!Number.isFinite(bytes) || bytes < 1) return '0 B';
   const units = ['B','KB','MB','GB'];
   const i = Math.min(
     Math.floor(Math.log(bytes)/Math.log(1024)),
@@ -3808,9 +4374,10 @@ function initializeShortcutHints(){
   document.getElementById('findShortcutLabel').textContent = shortcutText('find');
   const buttons = {
     chooseBtn:['open','打开文件'], openAnotherBtn:['open','打开文件'],
+    newDocBtn:['newDocument','新建空白文档'], newAnotherBtn:['newDocument','新建空白文档'],
     saveBtn:['save','保存修改'], saveCopyBtn:['saveCopy','另存为副本'],
     ctxCopy:['copyNode','复制节点内容'],
-    undoEditBtn:['undo','撤销修改'], formatIdeBtn:['format','格式化文档'],
+    undoEditBtn:['undo','撤销修改'], redoEditBtn:['redo','重做修改'], formatIdeBtn:['format','格式化文档'],
     collapseAllBtn:['collapseAll','全部收起'], settingsBtn:['settings','设置'],
     nextMatchBtn:['nextMatch','下一个匹配'], prevMatchBtn:['previousMatch','上一个匹配'],
     quickNextMatchBtn:['nextMatch','下一个匹配'],
@@ -3820,7 +4387,7 @@ function initializeShortcutHints(){
   for(const [id,[action,label]] of Object.entries(buttons)) document.getElementById(id).title = `${label}（${shortcutText(action)}）`;
   const help = document.getElementById('shortcutHelp');
   help.replaceChildren();
-  for(const [action,label] of Object.entries({open:'打开文件',save:'保存',saveCopy:'另存为副本',close:'关闭当前文件',undo:'撤销修改',copyNode:'复制选中节点内容',find:'查找',nextMatch:'下一个匹配',previousMatch:'上一个匹配',format:'格式化文档',settings:'打开设置',switchView:'切换树形 / IDE 视图',editMode:'切换树形编辑模式',resetView:'重置视图 / IDE 字号',about:'关于 JSON Atlas',expandAll:'展开全部 / 当前页',collapseAll:'全部收起',nextFile:'下一个文件',previousFile:'上一个文件'})){
+  for(const [action,label] of Object.entries({newDocument:'新建空白文档',open:'打开文件',save:'保存',saveCopy:'另存为副本',close:'关闭当前文件',undo:'撤销修改',redo:'重做修改',copyNode:'复制选中节点内容',find:'查找',nextMatch:'下一个匹配',previousMatch:'上一个匹配',format:'格式化文档',settings:'打开设置',switchView:'切换树形 / IDE 视图',editMode:'切换树形编辑模式',resetView:'重置视图 / IDE 字号',about:'关于 JSON Atlas',expandAll:'展开全部 / 当前页',collapseAll:'全部收起',nextFile:'下一个文件',previousFile:'上一个文件'})){
     const name = document.createElement('dt'), value = document.createElement('dd'), keys = document.createElement('kbd');
     const alternative = shortcutAlternativeLabel(action, macPlatform);
     name.textContent = label;
@@ -3839,8 +4406,9 @@ installTooltips(document, window);
     const active = docs.find(d => docKey(d) === nativeRestore.activeKey);
     if(active) activateDoc(active.id);
   }
+  restoreDesignDrafts();
   await connectDesktop(openPaths, error => showToast('桌面文件入口失败：' + error), action => {
-    if(document.getElementById('valueEditDialog').open || document.getElementById('discardEditDialog').open) return;
+    if(['valueEditDialog','designTopicDialog','discardEditDialog','deleteTopicDialog','saveConflictDialog'].some(id => document.getElementById(id).open)) return;
     if(['aboutDialog','updateDialog'].some(id => document.getElementById(id).open)
       || ['settingsMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'))) return;
     if(templateEditing){
@@ -3850,6 +4418,7 @@ installTooltips(document, window);
       return;
     }
     if(action === 'open') chooseFiles();
+    else if(action === 'new-document') newBlankDocument();
     else if(action === 'close' && activeDocId) closeDoc(activeDocId);
     else if(action === 'find') openFindPanel();
     else if(action === 'reset' && activeDocId) { if(ideActive) setIdeZoom(100); else resetView(); }
@@ -3859,6 +4428,7 @@ installTooltips(document, window);
     else if(action === 'switch-view') switchDocumentView();
     else if(action === 'edit-mode') document.getElementById('editModeBtn').click();
     else if(action === 'undo-edit') document.getElementById('undoEditBtn').click();
+    else if(action === 'redo-edit') document.getElementById('redoEditBtn').click();
     else if(action === 'copy-node' && !ideActive) copyNodeContent(selectedCopyNode);
     else if(action === 'save') document.getElementById('saveBtn').click();
     else if(action === 'save-copy') document.getElementById('saveCopyBtn').click();

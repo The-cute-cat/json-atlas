@@ -19,7 +19,7 @@ export function updateDocumentMenu(items) {
   if(!desktop) return;
   menuUpdate = menuUpdate.then(() => invoke('sync_document_menu', { items })).catch(console.error);
 }
-export const readNativeFile = path => invoke('read_document', { path });
+export const readNativeFile = (path, maxBytes) => invoke('read_document', { path, maxBytes });
 export const selectNativeFiles = () => invoke('select_documents');
 export const openReleasePage = () => invoke('open_release_page');
 export const saveDocumentCopy = (name, text, originalPath, protectedPaths = []) => invoke('save_document_copy', { name, text, originalPath, protectedPaths });

@@ -37,7 +37,8 @@ async fn indexed_document(
             .map_err(|e| e.to_string())?;
     }
     if op == "cancel" || op == "close" {
-        if let Some(cancel) = state.jobs.lock().map_err(|e| e.to_string())?.get(&id) {
+        let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
+        if let Some(cancel) = jobs.remove(&id) {
             cancel.store(true, Ordering::Relaxed);
         }
         state.close_session(&id)?;
@@ -115,10 +116,10 @@ async fn indexed_document(
         .map_err(|e| e.to_string())
         .and_then(|r| r);
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
-        jobs.remove(&id);
-        if cancel.load(Ordering::Relaxed) {
+        if !jobs.get(&id).is_some_and(|job| Arc::ptr_eq(job, &cancel)) {
             return Err("已取消".into());
         }
+        jobs.remove(&id);
         let (doc, info) = result?;
         state
             .sessions
@@ -185,8 +186,8 @@ fn take_open_requests(state: tauri::State<OpenRequests>) -> Vec<String> {
 }
 
 #[tauri::command]
-async fn read_document(path: String) -> Result<documents::Document, String> {
-    tauri::async_runtime::spawn_blocking(move || documents::read_document(&path))
+async fn read_document(path: String, max_bytes: u64) -> Result<documents::Document, String> {
+    tauri::async_runtime::spawn_blocking(move || documents::read_document(&path, max_bytes))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -242,7 +243,7 @@ async fn save_document_copy(
                 }
             }
         }
-        std::fs::write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
+        documents::save_document_copy(&path.to_string_lossy(), &text)?;
         // Return the actual saved location so a temporary document can become
         // a regular document without reopening and discarding its edit history.
         let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;

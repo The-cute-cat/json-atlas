@@ -23,6 +23,25 @@ export function replaceValue(root, path, replacement) {
   return result;
 }
 
+export function editObjectTopic(root, parentPath, key, nextKey) {
+  const parent = valueAt(root, parentPath);
+  if (parent === null || typeof parent !== 'object' || Array.isArray(parent)) {
+    throw new Error('主题只能在对象节点下编辑');
+  }
+  if (key !== null && !Object.hasOwn(parent, key)) throw new Error('主题已不存在');
+  if (nextKey !== null && nextKey !== key && Object.hasOwn(parent, nextKey)) {
+    throw new Error('同级主题已使用这个名称');
+  }
+  const entries = Object.entries(parent);
+  if (key === null) entries.push([nextKey, {}]);
+  else {
+    const index = entries.findIndex(([name]) => name === key);
+    if (nextKey === null) entries.splice(index, 1);
+    else entries[index][0] = nextKey;
+  }
+  return replaceValue(root, parentPath, Object.fromEntries(entries));
+}
+
 export function parseEdit(text, type) {
   if (type === 'string') return text;
   const value = JSON.parse(text);

@@ -1,4 +1,4 @@
-import { valueAt, replaceValue, parseEdit, serializeDocument } from '../src/editing.js';
+import { valueAt, replaceValue, editObjectTopic, parseEdit, serializeDocument } from '../src/editing.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -34,7 +34,7 @@ class Element {
   };
   get firstElementChild() { return this.children[0] || null; }
   set innerHTML(value) { this.replaceChildren(); this.textContent = value; }
-  appendChild(child) { this.children.push(child); child.parentElement = this; return child; }
+  appendChild(child) { if(child.parentElement) child.remove(); this.children.push(child); child.parentElement = this; return child; }
   append(...children) { children.forEach(child => this.appendChild(child)); }
   replaceChildren(...children) { this.children.forEach(child => { child.parentElement = null; }); this.children = []; this.append(...children); }
   addEventListener(name, handler) { this.listeners.set(name, handler); }
@@ -89,6 +89,8 @@ function reader(storage = new Map(), native = {}) {
   const context = {
     document, window: { innerWidth: 1440, innerHeight: 900, addEventListener() {} }, navigator: { platform: 'Win32' },
     localStorage: {
+      get length() { return storage.size; },
+      key: index => [...storage.keys()][index] ?? null,
       getItem: key => storage.get(key) ?? null,
       setItem: (key, value) => storage.set(key, value),
       removeItem: key => storage.delete(key)
@@ -97,7 +99,7 @@ function reader(storage = new Map(), native = {}) {
     setTimeout: (callback, delay) => delay === 0 ? setTimeout(callback, 0) : 1, clearTimeout() {},
     desktop: false, connectDesktop: async () => {}, updateWindowTitle() {}, updateWindowTheme() {},
     MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
-    valueAt, replaceValue, parseEdit, serializeDocument, ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit, normalizeTheme, watchTheme,
+    valueAt, replaceValue, editObjectTopic, parseEdit, serializeDocument, ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit, normalizeTheme, watchTheme,
     encodePath: encodeDataPath, normalizePath: normalizeDataPath, compileSearch,
     console, Blob, File, isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel, installTooltips, ...native
   };
@@ -111,6 +113,115 @@ function reader(storage = new Map(), native = {}) {
       state: () => ({ activeDocId, currentRootLabel, doc: activeDoc(), view: { ...mainView.state } }) });`, context);
   return { api, elements, storage, keyListeners, setToolbarBottom: value => {toolbarBottom=value;}, flush: async () => { while (frames.length) await frames.shift()(); } };
 }
+
+test('design drafts recover without session restore and are cleared on save or discard', async () => {
+  const storage = new Map();
+  const saved = [];
+  const native = {desktop:true, updateDocumentMenu(){}, guardEditedClose:async()=>{},
+    saveDocumentCopy:async (name, text) => { saved.push([name, JSON.parse(text)]); return 'C:/untitled.json'; }};
+  const first = reader(storage, native);
+  first.elements.get('newDocBtn').click();
+  await first.flush();
+  first.elements.get('tree').firstElementChild._card.children.find(child => child.className === 'topic-add').click();
+  await first.flush();
+  assert.equal([...storage.keys()].some(key => key.includes('lastfile')),false);
+
+  const reopened = reader(storage, native);
+  await reopened.flush();
+  assert.equal(reopened.api.state().doc.dirty,true);
+  assert.equal(reopened.api.state().doc.temporary,true);
+  assert.deepEqual(JSON.parse(reopened.api.state().doc.text),{'子主题':{}});
+  await reopened.api.saveCurrentDocument();
+  assert.deepEqual(saved[0][1],{'子主题':{}});
+  assert.equal(reader(storage, native).api.allDocs().length,0);
+
+  reopened.elements.get('newAnotherBtn').click();
+  await reopened.flush();
+  const id = reopened.api.state().doc.id;
+  reopened.api.closeDoc(id);
+  reopened.elements.get('discardEditCancel').click();
+  await Promise.resolve();
+  assert.equal(reader(storage, native).api.allDocs().length,1);
+  reopened.api.closeDoc(id);
+  reopened.elements.get('discardEditConfirm').click();
+  await Promise.resolve();
+  assert.equal(reader(storage, native).api.allDocs().length,0);
+});
+
+test('blank documents offer topic actions in the tree and save as ordinary JSON', async () => {
+  const saves = [];
+  const {api,elements,keyListeners,flush} = reader(new Map(), {
+    desktop:true, updateDocumentMenu(){}, guardEditedClose:async()=>{},
+    saveDocumentCopy:async(name,text) => { saves.push([name,JSON.parse(text)]); return 'C:\\plan.json'; }
+  });
+  api.configure({viewMode:'ide'});
+  elements.get('newDocBtn').click();
+  await flush();
+  assert.equal(elements.get('ideView').hidden,true);
+  assert.equal(elements.get('designDock').hidden,true);
+  assert.equal(elements.get('designRename').disabled,true);
+  assert.equal(api.state().doc.dirty,true);
+  const settingsToggle = elements.get('optTopicDock');
+  const setDock = checked => settingsToggle.listeners.get('change')({target:{checked}});
+  setDock(true);
+  assert.equal(elements.get('designDock').hidden,false);
+  setDock(false);
+  assert.equal(elements.get('designDock').hidden,true);
+
+  const tree = elements.get('tree');
+  const rootCard = () => tree.firstElementChild._card;
+  const plus = card => card.children.find(child => child.className === 'topic-add');
+  plus(rootCard()).click();
+  await flush();
+  assert.equal(Object.hasOwn(api.state().doc.parsed,'子主题'),true);
+  assert.equal(plus(rootCard()),undefined);
+  api.selectCopyNode(tree.firstElementChild);
+  plus(rootCard()).click();
+  await flush();
+  assert.equal(Object.hasOwn(api.state().doc.parsed,'子主题 2'),true);
+  elements.get('undoEditBtn').click();
+  await flush();
+  elements.get('undoEditBtn').click();
+  await flush();
+
+  const submit = name => {
+    elements.get('designTopicName').value = name;
+    elements.get('designTopicForm').listeners.get('submit')({preventDefault(){}});
+  };
+  const keydown = key => keyListeners.get('keydown')({key,target:elements.get('viewport'),preventDefault(){}});
+  const openRootMenu = () => tree.listeners.get('contextmenu')({
+    target:{closest:() => ({closest:() => tree.firstElementChild})},
+    preventDefault(){}, stopPropagation(){}, clientX:100, clientY:100
+  });
+  openRootMenu();
+  assert.equal(elements.get('topicMenu').hidden,false);
+  assert.equal(elements.get('ctxTopicSibling').disabled,true);
+  elements.get('ctxTopicChild').click(); submit('计划');
+  await flush();
+  assert.equal(elements.get('designRename').disabled,false);
+  keydown('Tab'); submit('调研');
+  await flush();
+  keydown('Enter'); submit('调研');
+  assert.match(elements.get('designTopicError').textContent,/同级主题/);
+  submit('开发');
+  await flush();
+  keydown('F2'); submit('__proto__');
+  await flush();
+  keydown('Delete');
+  await flush();
+  elements.get('designUndo').click();
+  await flush();
+  await api.saveCurrentDocument();
+  assert.equal(saves[0][0],'未命名-1.json');
+  assert.deepEqual(saves[0][1],{计划:{调研:{},['__proto__']:{}}});
+  assert.equal(api.state().doc.path,'C:\\plan.json');
+  assert.equal(api.state().doc.dirty,false);
+  const opened = api.buildDoc('{}','opened.json',2);
+  api.add(opened); api.activateDoc(opened.id);
+  openRootMenu();
+  assert.equal(elements.get('topicMenu').hidden,true);
+  assert.equal(plus(rootCard()),undefined);
+});
 
 test('IDE folding retains source for save, formatting and search and guards hidden deletions', async () => {
   const writes = [];
@@ -688,11 +799,15 @@ test('native opening chooses disk indexing above threshold and keeps that source
     readNativeFile: () => { throw new Error('must not read the complete file'); },
     openIndexedFile: async (metadata, options) => { options.progress(metadata.size / 2); return indexed; }
   });
-  api.configure({ largeFileThresholdMiB: 32 });
+  api.configure({ largeFileThresholdMiB: 32, limitIdeComplexity: false });
   await api.loadFile({ path: 'D:/large.json' });
   const doc = api.state().doc;
   assert.equal(doc.source, indexed); assert.equal(doc.parsed, undefined); assert.equal(doc.text, '');
   assert(doc.sub.includes('索引模式'));
+  assert.equal(elements.get('switchViewBtn').disabled, true);
+  api.configure({ largeFileThresholdMiB: 64 });
+  api.activateDoc(doc.id);
+  assert.equal(elements.get('switchViewBtn').disabled, true);
   await elements.get('tree').firstElementChild._ensureChildren();
   assert(nodeKeys(elements.get('tree')).includes('value'));
   assert.equal(elements.get('loadingStatus').hidden, true);
@@ -708,7 +823,7 @@ test('native opening at the threshold retains the ordinary worker parser', async
       postMessage(payload) { this.onmessage({ data: { result: parseDocument(payload.text, payload.name), text: '' } }); }
     },
     statNativeFile: async path => ({ path, name: 'normal.json', size: 32 * 1024 ** 2 }),
-    readNativeFile: async path => { read++; return { path, name: 'normal.json', size: 32 * 1024 ** 2, text: '{"ok":true}' }; },
+    readNativeFile: async (path, maxBytes) => { read++; assert.equal(maxBytes, 32 * 1024 ** 2); return { path, name: 'normal.json', size: maxBytes, text: '{"ok":true}' }; },
     openIndexedFile: () => { throw new Error('must not index at the threshold'); }
   });
   api.configure({ largeFileThresholdMiB: 32 });
@@ -779,6 +894,30 @@ test('threshold select saves the chosen size and reopens at the persisted value'
   assert.equal(restored.elements.get('optLargeFileThreshold').value, '128');
 });
 
+test('the IDE complexity switch allows complex memory files but respects the size threshold', async () => {
+  const {api,elements,storage} = reader();
+  api.configure({largeFileThresholdMiB:32, viewMode:'ide'});
+  let parsedInWorker = false;
+  const oversized = {name:'browser.json',size:32 * 1024 ** 2 + 1,text(){ parsedInWorker = true; }};
+  await api.loadFile(oversized);
+  assert.equal(api.allDocs().length,0);
+  assert.equal(parsedInWorker,false);
+
+  const doc = api.buildDoc(JSON.stringify(Array(10001).fill(0)), 'complex.json', 32 * 1024 ** 2);
+  api.add(doc); api.activateDoc(doc.id);
+  assert.equal(elements.get('switchViewBtn').disabled,true);
+  const toggle = elements.get('optLimitIdeComplexity');
+  toggle.listeners.get('change')({target:{checked:false}});
+  assert.equal(elements.get('ideView').hidden,false);
+  doc.size++;
+  api.activateDoc(doc.id);
+  assert.equal(elements.get('ideView').hidden,true);
+  assert.equal(elements.get('switchViewBtn').disabled,true);
+  const restored = reader(storage);
+  restored.elements.get('settingsBtn').click();
+  assert.equal(restored.elements.get('optLimitIdeComplexity').checked,false);
+});
+
 
 test('editing updates search source, undo restores the original and shortcuts stay opt-in', async () => {
   const {api,elements,keyListeners}=reader();
@@ -827,6 +966,33 @@ test('IDE settings, search, manual switching and edits share the active revision
   keyListeners.get('keydown')({key:'F6',ctrlKey:true,shiftKey:true,target:elements.get('viewport'),preventDefault(){}});
   assert.equal(elements.get('toast').textContent,'大文件仅支持树形视图');
   assert.equal(elements.get('ideView').hidden,true);
+});
+
+test('IDE typing groups keep the starting revision and allow redo', () => {
+  const {api,elements,keyListeners} = reader();
+  api.configure({viewMode:'ide'});
+  const original = '{"text":""}';
+  const doc = api.buildDoc(original,'typing.json',original.length);
+  api.add(doc); api.activateDoc(doc.id);
+  const input = elements.get('ideInput');
+  for(let count = 1; count <= 15; count++){
+    input.value = JSON.stringify({text:'a'.repeat(count)});
+    input.listeners.get('input')({target:input,inputType:'insertText'});
+  }
+  assert.equal(doc.editHistory.length,1);
+  const finished = doc.text;
+  const keydown = (key, extra = {}) => keyListeners.get('keydown')({
+    key, target:input, ctrlKey:true, preventDefault(){}, ...extra
+  });
+  keydown('z');
+  assert.equal(doc.text,original);
+  keydown('y');
+  assert.equal(doc.text,finished);
+  keydown('z');
+  input.value = '{"text":"b"}';
+  input.listeners.get('input')({target:input,inputType:'insertText'});
+  keydown('z',{shiftKey:true});
+  assert.equal(doc.text,'{"text":"b"}');
 });
 
 test('IDE drafts survive invalid syntax and file switches, formatting and zoom remain undoable and scoped', async () => {
@@ -909,6 +1075,140 @@ test('IDEA shortcuts format, switch documents and open settings while respecting
   press('ArrowRight',{altKey:true,isComposing:true}); assert.equal(api.state().activeDocId,first.id);
   api.activateDoc(second.id);
   press('F4',{ctrlKey:true}); assert.equal(api.state().activeDocId,first.id);
+});
+
+test('opt-in Vim keys navigate visible nodes, fold branches, and resume on the canvas after search', async () => {
+  const {api,elements,keyListeners,flush} = reader();
+  const raw = '{"branch":{"hitOne":1},"hitTwo":2}';
+  const doc = api.buildDoc(raw,'vim.json',raw.length);
+  api.configure({defaultLevels:1}); api.add(doc); api.activateDoc(doc.id);
+  await flush();
+  const tree = elements.get('tree'), viewport = elements.get('viewport');
+  const selected = () => tree.querySelectorAll('.selected-node')[0]?.dataset.path;
+  const press = (key, extra = {}) => {
+    let handled = false;
+    keyListeners.get('keydown')({key,target:viewport,preventDefault(){ handled = true; },...extra});
+    return handled;
+  };
+  assert.equal(press('j'),false);
+  elements.get('optVimEditing').checked = true;
+  elements.get('optVimEditing').listeners.get('change')({target:elements.get('optVimEditing')});
+  assert(tree.classList.contains('vim-node-selection'));
+  assert.equal(press('j'),true); assert.equal(selected(),'$.branch');
+  press('l'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(selected(),'$.branch.hitOne');
+  press('h'); assert.equal(selected(),'$.branch');
+  press('z'); press('c'); press('j'); assert.equal(selected(),'$.hitTwo');
+  press('k'); assert.equal(selected(),'$.branch');
+  press('g'); press('g'); assert.equal(selected(),'$');
+  press('G'); assert.equal(selected(),'$.hitTwo');
+  press('z'); press('Shift',{shiftKey:true}); press('M',{shiftKey:true});
+  assert.equal(selected(),'$');
+  assert.equal(tree.firstElementChild.classList.contains('open'),false);
+
+  let canvasFocused = false;
+  viewport.focus = () => { canvasFocused = true; };
+  press('/'); assert.equal(elements.get('findPanel').hidden,false);
+  await api.searchTree('hit'); assert.equal(selected(),'$.branch.hitOne');
+  elements.get('closeFindBtn').click(); assert.equal(canvasFocused,true);
+  press('n'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(selected(),'$.hitTwo');
+  press('N'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(selected(),'$.branch.hitOne');
+  assert.equal(press('j',{isComposing:true}),false);
+  assert.equal(press('r',{target:elements.get('quickSearchInput')}),false);
+  press('r'); assert.equal(elements.get('valueEditDialog').open,true);
+});
+
+test('blank documents edit typed values and manipulate array elements on the canvas', async () => {
+  const {api,elements,keyListeners,flush} = reader();
+  elements.get('newDocBtn').click();
+  await flush();
+  const tree = elements.get('tree');
+  const selected = () => tree.querySelectorAll('.selected-node')[0];
+  const onCard = node => ({closest: selector => ({'.node-card':{closest:() => node}, '.tree-node':node})[selector]});
+  const input = elements.get('valueEditText'), type = elements.get('valueEditType');
+  const edit = (nextType, value) => {
+    type.value = nextType;
+    type.listeners.get('change')({target:type});
+    if(value !== undefined) input.value = value;
+    elements.get('valueEditForm').listeners.get('submit')({preventDefault(){}});
+    assert.equal(elements.get('valueEditError').textContent,'');
+  };
+  const press = key => keyListeners.get('keydown')({key,target:elements.get('viewport'),preventDefault(){}});
+  const openMenu = node => tree.listeners.get('contextmenu')({
+    target:onCard(node), preventDefault(){}, stopPropagation(){}, clientX:100, clientY:100
+  });
+  const parsed = () => JSON.parse(api.state().doc.text);
+
+  selected()._card.children.find(child => child.className === 'topic-add').click();
+  await flush();
+  tree.listeners.get('dblclick')({target:onCard(selected())});
+  assert.equal(elements.get('designTopicDialog').open,true);
+  elements.get('designTopicCancel').click();
+  elements.get('undoEditBtn').click();
+  await flush();
+  const doubleClick = elements.get('optTopicDoubleClick');
+  doubleClick.listeners.get('change')({target:{value:'value'}});
+
+  openMenu(selected());
+  elements.get('ctxTopicValue').click();
+  assert.equal(elements.get('valueEditDialog').open,true);
+  edit('array');
+  await flush();
+  assert.deepEqual(parsed(),[]);
+
+  selected()._card.children.find(child => child.className === 'topic-add').click();
+  await flush();
+  assert.deepEqual(parsed(),[null]);
+  assert.equal(selected().dataset.path,'$[0]');
+  tree.listeners.get('dblclick')({target:onCard(selected())});
+  assert.equal(elements.get('valueEditDialog').open,true);
+  edit('number','42');
+  await flush();
+  assert.deepEqual(parsed(),[42]);
+  assert.equal(selected().dataset.path,'$[0]');
+
+  press('Enter');
+  await flush();
+  assert.equal(selected().dataset.path,'$[1]');
+  openMenu(selected());
+  assert.equal(elements.get('ctxTopicRename').disabled,true);
+  elements.get('ctxTopicValue').click();
+  edit('object','{"nested":{"deep":true}}');
+  await flush();
+  await api.expandOne(selected());
+  assert.equal(selected().classList.contains('open'),true);
+  api.selectCopyNode(tree.querySelectorAll('.tree-node').find(node => node.dataset.path === '$[0]'));
+  press('Delete');
+  await flush();
+  assert.deepEqual(parsed(),[{nested:{deep:true}}]);
+  assert.equal(tree.querySelectorAll('.tree-node.open').some(node => node.dataset.path === '$[0]'),true);
+  elements.get('undoEditBtn').click();
+  await flush();
+  assert.deepEqual(parsed(),[42,{nested:{deep:true}}]);
+  assert.equal(tree.querySelectorAll('.tree-node.open').some(node => node.dataset.path === '$[1]'),true);
+});
+
+test('Vim commands in blank documents add, rename, delete and undo topics', async () => {
+  const {api,elements,keyListeners,flush} = reader();
+  api.configure({vimEditing:true});
+  elements.get('newDocBtn').click(); await flush();
+  const press = key => keyListeners.get('keydown')({key,target:elements.get('viewport'),preventDefault(){}});
+  const submit = async name => {
+    elements.get('designTopicName').value = name;
+    elements.get('designTopicForm').listeners.get('submit')({preventDefault(){}});
+    await flush();
+  };
+  press('a'); await submit('first');
+  press('o'); await submit('second');
+  press('i'); await submit('renamed');
+  press('d'); press('Escape'); press('d');
+  assert.equal(Object.hasOwn(api.state().doc.parsed,'renamed'),true);
+  press('d'); await flush();
+  assert.equal(Object.hasOwn(api.state().doc.parsed,'renamed'),false);
+  press('u'); await flush();
+  assert.equal(Object.hasOwn(api.state().doc.parsed,'renamed'),true);
 });
 
 test('tree folding and undo shortcuts preserve ordinary text editing', async () => {

@@ -4,43 +4,46 @@ use std::{ffi::OsString, fs::File, io::Read, path::Path};
 pub const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
 pub fn save_document(path: &str, text: &str, expected: &str) -> Result<(), String> {
+    if expected.len() as u64 > MAX_FILE_BYTES {
+        return Err("文件超过 256 MiB，无法保存".into());
+    }
+    write_document(path, text, Some(expected))
+}
+
+pub fn save_document_copy(path: &str, text: &str) -> Result<(), String> {
+    write_document(path, text, None)
+}
+
+fn write_document(path: &str, text: &str, expected: Option<&str>) -> Result<(), String> {
     use std::io::Write;
-    if text.len() as u64 > MAX_FILE_BYTES || expected.len() as u64 > MAX_FILE_BYTES {
+    if text.len() as u64 > MAX_FILE_BYTES {
         return Err("文件超过 256 MiB，无法保存".into());
     }
     validate_local_path(path)?;
-    let path = std::fs::canonicalize(path).map_err(|e| format!("无法保存文件：{e}"))?;
-    validate_local_path(&path.to_string_lossy())?;
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.share_mode(1 | 4); // Permit reads/replacement, but no concurrent writer.
-    }
-    let mut original = options
-        .open(&path)
-        .map_err(|e| format!("无法保存文件：{e}"))?;
-    let meta = original.metadata().map_err(|e| e.to_string())?;
-    if !meta.is_file() || meta.permissions().readonly() {
-        return Err("文件为只读或不是普通文件，无法保存".into());
-    }
-    let changed = "文件已被其他程序修改，请重新打开或另存为，避免覆盖外部修改";
-    if meta.len() != expected.len() as u64 {
-        return Err(changed.into());
-    }
-    let mut buffer = [0u8; 64 * 1024];
-    for chunk in expected.as_bytes().chunks(buffer.len()) {
-        original
-            .read_exact(&mut buffer[..chunk.len()])
-            .map_err(|e| format!("无法核对原文件：{e}"))?;
-        if &buffer[..chunk.len()] != chunk {
-            return Err(changed.into());
+    let requested = Path::new(path);
+    let (path, permissions) = match requested.canonicalize() {
+        Ok(path) => {
+            validate_local_path(&path.to_string_lossy())?;
+            let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+            if !metadata.is_file() || metadata.permissions().readonly() {
+                return Err("文件为只读或不是普通文件，无法保存".into());
+            }
+            (path, Some(metadata.permissions()))
         }
-    }
-    if original.read(&mut buffer[..1]).map_err(|e| e.to_string())? != 0 {
-        return Err(changed.into());
-    }
+        Err(error) if expected.is_none() && error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = requested
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let parent = parent.canonicalize().map_err(|e| e.to_string())?;
+            validate_local_path(&parent.to_string_lossy())?;
+            (
+                parent.join(requested.file_name().ok_or("无效的文件名")?),
+                None,
+            )
+        }
+        Err(error) => return Err(format!("无法保存文件：{error}")),
+    };
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -58,49 +61,120 @@ pub fn save_document(path: &str, text: &str, expected: &str) -> Result<(), Strin
         output
             .write_all(text.as_bytes())
             .map_err(|e| e.to_string())?;
+        #[cfg(not(windows))]
+        if let Some(permissions) = &permissions {
+            output
+                .set_permissions(permissions.clone())
+                .map_err(|e| e.to_string())?;
+        }
         output.sync_all().map_err(|e| e.to_string())?;
         drop(output);
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStrExt;
-            #[link(name = "kernel32")]
-            unsafe extern "system" {
-                fn ReplaceFileW(
-                    replaced: *const u16,
-                    replacement: *const u16,
-                    backup: *const u16,
-                    flags: u32,
-                    exclude: *mut std::ffi::c_void,
-                    reserved: *mut std::ffi::c_void,
-                ) -> i32;
-            }
-            let destination: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-            let replacement: Vec<_> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
-            if unsafe {
-                ReplaceFileW(
-                    destination.as_ptr(),
-                    replacement.as_ptr(),
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                )
-            } == 0
-            {
-                return Err(format!("保存失败：{}", std::io::Error::last_os_error()));
-            }
+        // Leave only the replacement itself after the content check. The
+        // handle denies concurrent writers on Windows and stays open until it completes.
+        let _original = expected
+            .map(|expected| check_original(&path, expected))
+            .transpose()?;
+        if permissions.is_some() {
+            replace_document(&path, &temporary)
+        } else {
+            // Publish without replacing a file created after the dialog.
+            publish_document(&path, &temporary)
         }
-        #[cfg(not(windows))]
-        {
-            std::fs::set_permissions(&temporary, meta.permissions()).map_err(|e| e.to_string())?;
-            std::fs::rename(&temporary, &path).map_err(|e| e.to_string())?;
-        }
-        Ok(())
     })();
-    if result.is_err() {
+    if result.is_err() || permissions.is_none() {
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+fn check_original(path: &Path, expected: &str) -> Result<File, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(1 | 4);
+    }
+    let changed = "文件已被其他程序修改，请重新打开或另存为，避免覆盖外部修改";
+    let mut original = options
+        .open(path)
+        .map_err(|e| format!("无法核对原文件：{e}"))?;
+    if original.metadata().map_err(|e| e.to_string())?.len() != expected.len() as u64 {
+        return Err(changed.into());
+    }
+    let mut buffer = [0u8; 64 * 1024];
+    for chunk in expected.as_bytes().chunks(buffer.len()) {
+        original
+            .read_exact(&mut buffer[..chunk.len()])
+            .map_err(|e| format!("无法核对原文件：{e}"))?;
+        if &buffer[..chunk.len()] != chunk {
+            return Err(changed.into());
+        }
+    }
+    if original.read(&mut buffer[..1]).map_err(|e| e.to_string())? != 0 {
+        return Err(changed.into());
+    }
+    Ok(original)
+}
+
+#[cfg(not(windows))]
+fn replace_document(path: &Path, temporary: &Path) -> Result<(), String> {
+    std::fs::rename(temporary, path).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn replace_document(path: &Path, temporary: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn ReplaceFileW(
+            replaced: *const u16,
+            replacement: *const u16,
+            backup: *const u16,
+            flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+    let destination: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let replacement: Vec<_> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+    if unsafe {
+        ReplaceFileW(
+            destination.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(format!("保存失败：{}", std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn publish_document(path: &Path, temporary: &Path) -> Result<(), String> {
+    std::fs::hard_link(temporary, path).map_err(|e| format!("无法创建目标文件：{e}"))
+}
+
+#[cfg(windows)]
+fn publish_document(path: &Path, temporary: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileW(existing: *const u16, new: *const u16) -> i32;
+    }
+    let source: Vec<_> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    if unsafe { MoveFileW(source.as_ptr(), destination.as_ptr()) } == 0 {
+        return Err(format!(
+            "无法创建目标文件：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 // Check before canonicalize()/metadata(): resolving a UNC path can itself contact SMB.
@@ -140,10 +214,14 @@ pub fn validate_local_path(path: &str) -> Result<(), String> {
 
 pub fn copy_name(name: &str) -> String {
     let leaf = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let mut units = 0;
     let clean: String = leaf
         .chars()
         .filter(|c| !c.is_control() && !"<>:\"|?*".contains(*c))
-        .take(180)
+        .take_while(|c| {
+            units += c.len_utf16();
+            units <= 180
+        })
         .collect();
     let clean = clean.trim().trim_matches('.').trim();
     // Windows 的设备名匹配会忽略扩展名前的尾部空格，"CON .json" 仍等价于 CON。
@@ -217,7 +295,8 @@ pub fn display_path(path: &Path) -> String {
     }
 }
 
-pub fn read_document(path: &str) -> Result<Document, String> {
+pub fn read_document(path: &str, max_bytes: u64) -> Result<Document, String> {
+    let max_bytes = max_bytes.min(MAX_FILE_BYTES);
     validate_local_path(path)?;
     let path = std::fs::canonicalize(path).map_err(|e| format!("无法打开文件：{e}"))?;
     validate_local_path(&path.to_string_lossy())?;
@@ -233,17 +312,17 @@ pub fn read_document(path: &str) -> Result<Document, String> {
     if !["json", "jsonl", "ndjson", "jsonlines", "txt"].contains(&extension.as_str()) {
         return Err("只支持 JSON / JSONL / NDJSON / JSONLines / TXT 文件".into());
     }
-    if metadata.len() > MAX_FILE_BYTES {
-        return Err("当前版本支持最大 256 MiB 的文件".into());
+    if metadata.len() > max_bytes {
+        return Err("文件已超过内存读取阈值，请重新打开以使用磁盘索引".into());
     }
     let file = File::open(&path).map_err(|e| e.to_string())?;
     // Bound the read even if another process grows the file after metadata().
     let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES + 1)
+    file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err("文件读取期间超过 256 MiB".into());
+    if bytes.len() as u64 > max_bytes {
+        return Err("文件读取期间超过内存读取阈值，请重新打开以使用磁盘索引".into());
     }
     let size = bytes.len() as u64;
     let text = String::from_utf8(bytes).map_err(|e| format!("文件不是有效 UTF-8：{e}"))?;
@@ -285,6 +364,13 @@ mod tests {
         assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
         save_document(path.to_str().unwrap(), "{}", "{\"new\":2}").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+        let copy = directory.join("copy.json");
+        save_document_copy(copy.to_str().unwrap(), "{\"copy\":1}").unwrap();
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "{\"copy\":1}");
+        save_document_copy(copy.to_str().unwrap(), "{}").unwrap();
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "{}");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        std::fs::remove_file(&copy).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir(&directory).unwrap();
     }
@@ -293,6 +379,7 @@ mod tests {
     fn suggested_copy_names_are_basenames_and_arguments_skip_options() {
         assert_eq!(copy_name(r"C:\private\sample.json"), "sample.json");
         assert_eq!(copy_name("../../CON.json"), "document-edited.json");
+        assert_eq!(copy_name(&"😀".repeat(180)).encode_utf16().count(), 180);
         assert_eq!(copy_name("CON .json"), "document-edited.json");
         assert_eq!(copy_name("lpt9 .txt"), "document-edited.json");
         assert_eq!(copy_name("CONSOLE .json"), "CONSOLE .json");
@@ -351,14 +438,16 @@ mod tests {
     #[test]
     fn reads_canonical_path_and_rejects_other_file_types() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/sample.json");
-        let doc = read_document(path.to_str().unwrap()).unwrap();
+        let doc = read_document(path.to_str().unwrap(), MAX_FILE_BYTES).unwrap();
+        assert!(read_document(path.to_str().unwrap(), doc.size - 1).is_err());
+        assert!(read_document(path.to_str().unwrap(), doc.size).is_ok());
         assert_eq!(doc.name, "sample.json");
         assert!(doc.text.contains("JSON Atlas"));
         assert_eq!(doc.size, doc.text.len() as u64);
         assert!(!doc.path.starts_with(r"\\?\"));
         let unsupported = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        assert!(read_document(unsupported.to_str().unwrap()).is_err());
-        assert!(read_document("missing.json").is_err());
+        assert!(read_document(unsupported.to_str().unwrap(), MAX_FILE_BYTES).is_err());
+        assert!(read_document("missing.json", MAX_FILE_BYTES).is_err());
     }
 
     #[test]
@@ -380,7 +469,7 @@ mod tests {
     #[test]
     fn directories_are_rejected_before_the_extension_check() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let error = read_document(dir.to_str().unwrap()).unwrap_err();
+        let error = read_document(dir.to_str().unwrap(), MAX_FILE_BYTES).unwrap_err();
         assert!(error.contains("目录"), "{error}");
     }
 }

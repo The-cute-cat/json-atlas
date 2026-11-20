@@ -70,13 +70,17 @@ button,input{font:inherit}
 .empty-content h1{margin:0;font-size:30px;line-height:1.2;font-weight:650;letter-spacing:-1.1px;color:#222226}
 .empty-content p{margin:10px 0 30px;color:#8a8a92;font-size:13px;letter-spacing:.5px}
 .desktop-open{
-  display:flex;align-items:center;justify-content:center;gap:8px;min-width:210px;
-  padding:10px 22px;border:1px solid #0874e5;border-radius:10px;
-  background:linear-gradient(#268dff,#0877ed);box-shadow:0 1px 2px rgba(0,91,206,.18),inset 0 1px 0 rgba(255,255,255,.18);
-  color:#fff;font-size:13px;font-weight:550;cursor:pointer;transition:filter .15s,box-shadow .15s;
+  display:flex;align-items:center;justify-content:center;gap:8px;min-width:164px;
+  padding:10px 16px;border:0;border-radius:10px;
+  background:var(--accent);color:#fff;font:inherit;font-size:13px;font-weight:550;
+  cursor:pointer;transition:filter .15s,background .15s;
 }
-.desktop-open:hover{filter:brightness(1.05);box-shadow:0 3px 9px rgba(0,105,230,.18)}
+.desktop-open:hover{filter:brightness(1.06)}
 .desktop-open:active{filter:brightness(.95)}
+.empty-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}
+.empty-actions #chooseBtn{background:var(--control);color:var(--text)}
+.empty-actions #chooseBtn:hover{background:var(--hover)}
+:is(#chooseBtn,#sidebarOpenBtn,#openAnotherBtn):focus-visible{outline:2px solid var(--muted);outline-offset:2px}
 .empty-drop-hint{display:flex;align-items:center;gap:4px;margin-top:17px;font-size:11px;color:#9a9aa2}
 .empty-drop-hint kbd{min-width:18px;padding:2px 4px;border:1px solid #dfdfe4;border-radius:4px;background:var(--card);color:#8d8d95;font:10px 'Segoe UI',sans-serif;box-shadow:0 1px 0 #e8e8ec}
 .workspace-status{
@@ -992,6 +996,11 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 #ctxMenu button:hover:not(:disabled){background:var(--control)}
 #ctxMenu button:disabled{opacity:.35;cursor:not-allowed}
 #ctxMenu button[hidden]{display:none}
+#ctxMenu.topic-menu>button{display:none}
+#topicMenu button{
+  display:flex;align-items:center;justify-content:space-between;gap:24px;
+}
+#topicMenu kbd{color:var(--muted);font:inherit;font-size:11px}
 
 /* ---------- 内容弹窗 ---------- */
 #modalMask,#settingsMask{
@@ -1302,7 +1311,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 
 /* ---------- 结构模板编辑器（画布模式） ---------- */
 #viewer:not(.template-editing) .template-only,
-#viewer.template-editing :is(#fileRail,#viewport,#ideView,#openAnotherBtn,#documentSearch,#moreBtn,#pathText,#editModeStatus,.statusbar .help){
+#viewer.template-editing :is(#fileRail,#viewport,#ideView,#newAnotherBtn,#openAnotherBtn,#documentSearch,#moreBtn,#pathText,#editModeStatus,.statusbar .help){
   display:none;
 }
 #editorSaveBtn{background:var(--accent);color:white}
@@ -1453,7 +1462,30 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .search-wrap .search-nav button:disabled{opacity:.35;cursor:not-allowed}
 .search-wrap .search-nav button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);box-shadow:inset 0 0 0 1px rgba(0,113,227,.25)}
 .search-scope-node>.node-main .node-card{outline:2px solid rgba(0,113,227,.3);outline-offset:2px}
-.show-node-selection .selected-node>.node-main>.node-card{outline:2px solid var(--accent);outline-offset:2px}
+:is(.show-node-selection,.vim-node-selection) .selected-node>.node-main>.node-card{outline:2px solid var(--accent);outline-offset:2px}
+#viewer.designing .node-card{cursor:default}
+#viewer.designing .object-badge{display:none}
+#viewer.designing .selected-node>.node-main>.node-card{outline:2px solid var(--accent);outline-offset:2px}
+.topic-add{
+  position:absolute;top:50%;left:calc(100% + 7px);transform:translateY(-50%);
+  display:grid;place-items:center;width:25px;height:25px;padding:0;
+  border:1px solid var(--border);border-radius:50%;background:var(--card);
+  color:var(--muted);font:18px/1 system-ui,sans-serif;cursor:pointer;user-select:none;
+}
+.topic-add:hover{background:var(--hover);color:var(--text)}
+#designDock:not([hidden]){
+  position:absolute;left:14px;bottom:14px;z-index:3;
+  display:flex;flex-wrap:wrap;gap:3px;max-width:calc(100% - 144px);
+  padding:5px;border:1px solid var(--border);border-radius:12px;
+  background:var(--card);box-shadow:var(--shadow)
+}
+#designDock button{
+  padding:6px 8px;border:0;border-radius:7px;background:transparent;
+  color:var(--text);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer
+}
+#designDock button:hover:not(:disabled){background:var(--hover)}
+#designDock button:disabled{opacity:.4;cursor:default}
+#designDock #designSave{color:var(--accent);background:var(--accent-soft)}
 #searchCount{
   position:static;
   transform:none;
@@ -1613,6 +1645,14 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .value-edit-dialog .edit-type-row{display:flex;align-items:center;justify-content:space-between;margin:18px 0 10px;color:var(--muted);font-size:12px}
 .value-edit-dialog textarea{display:block;resize:none;width:100%;min-height:72px;margin:0;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--text);font:13px/1.6 Consolas,"Microsoft YaHei",monospace;outline:none;scrollbar-width:thin;transition:border-color .15s,box-shadow .15s}
 .value-edit-dialog textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+#designTopicForm label{display:block;margin:16px 0 7px;color:var(--muted);font-size:12px}
+#designTopicName{
+  width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;
+  background:var(--surface);color:var(--text);font:inherit
+}
+#designTopicName:focus{outline:2px solid var(--accent);outline-offset:1px}
+.design-topic-error{margin:8px 0 0;color:var(--danger,#b91c1c);font-size:12px}
+.design-topic-error:empty{display:none}
 .value-edit-dialog select,.edit-actions button{padding:7px 12px;border:0;border-radius:8px;background:var(--control);color:var(--text);font:inherit;font-size:13px;cursor:pointer}
 .value-edit-dialog select{font-size:12px;max-width:160px}
 .edit-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.edit-actions button{min-width:64px;white-space:nowrap}.edit-actions button:last-child{background:var(--accent);color:white;font-weight:600}
