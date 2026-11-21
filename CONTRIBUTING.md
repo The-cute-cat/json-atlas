@@ -107,13 +107,22 @@ cargo test --manifest-path src-tauri/Cargo.toml --release --locked indexed::benc
 
 ## 版本发布
 
-发布前核对 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 `src-tauri/tauri.conf.json` 中的应用版本，并更新 [CHANGELOG](CHANGELOG.md)。
+发布前核对 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 `src-tauri/tauri.conf.json` 中的应用版本，并更新 [CHANGELOG](CHANGELOG.md)。版本号应与标签去掉前缀 `v` 后完全一致，包含预发布后缀。
 
 在 PowerShell 中可执行版本一致性检查：
 
 ```powershell
-$env:RELEASE_TAG = 'v0.4.0'
+$env:RELEASE_TAG = 'v0.5.0-beta.1'
 node scripts/check-release.js
 ```
 
-发布工作流由 `vX.Y.Z` 标签触发，也支持手动选择已有标签。工作流检查通过后生成草稿 Release，除 NSIS 与 MSI 安装包外还上传 `JSON-Atlas-<tag>-portable.zip`（免安装版，解压直接运行 `json-atlas.exe`）。免安装版不注册文件关联、不提供卸载入口，依赖系统已安装 WebView2 Runtime，草稿确认时一并验证。维护者验证安装包和发布说明后再公开发布。不要向仓库提交签名证书或其他凭据。
+提交版本改动后，在该提交上创建并推送标签。也可以在 GitHub Actions 的 **Release** 工作流手动选择已有标签。
+
+| 标签 | GitHub Release | Windows 产物 |
+| --- | --- | --- |
+| `vX.Y.Z-alpha.N`、`vX.Y.Z-beta.N`、`vX.Y.Z-rc.N` | 预发布草稿 | NSIS 安装包、免安装 ZIP |
+| `vX.Y.Z` | 正式版草稿 | NSIS 安装包、MSI 安装包、免安装 ZIP |
+
+维护者验证安装包和发布说明后，再到 GitHub Releases 公开草稿。预发布用户可从 Releases 页面手动下载，应用内检查更新面向正式版。预发布验证完成后，将各处版本号更新为正式版（例如 `0.5.0`），提交并推送新的正式版标签 `v0.5.0`。
+
+免安装版 `JSON-Atlas-<tag>-portable.zip` 解压后直接运行 `json-atlas.exe`，依赖系统已安装 WebView2 Runtime。免安装版不注册文件关联、不提供卸载入口，草稿确认时一并验证。不要向仓库提交签名证书或其他凭据。
