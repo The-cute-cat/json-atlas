@@ -87,9 +87,6 @@ button,input{font:inherit}
   grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding:0 15px;border-top:1px solid rgba(0,0,0,.045);background:var(--bg);color:#96969e;font-size:10px;
 }
-#jsonlOpts{padding:12px 24px 18px;text-align:center}
-#jsonlOpts .hint{display:block;color:#a0a0a8;font-size:10px;line-height:1.5;letter-spacing:.5px}
-#jsonlOpts.available{background:var(--accent-soft)}
 #fileInput{display:none}
 button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .primary{margin-top:18px;width:100%;padding:10px 16px;border:0;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer;font-weight:600}
@@ -282,17 +279,21 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   display:flex;
 }
 .file-rail{
+  --rail-collapsed-width:48px;
   --rail-expanded-width:276px;
+  --rail-padding-right:12px;
+  --rail-preview-row-height:10px;
+  --rail-row-gap:6px;
   position:absolute;
   left:0;
   top:0;
   bottom:0;
   z-index:16;
-  width:48px;
-  padding:14px 12px 14px 10px;
+  width:var(--rail-collapsed-width);
+  padding:14px var(--rail-padding-right) 14px 10px;
   transition:width .34s cubic-bezier(.22,1,.36,1);
 }
-.file-rail:hover{width:var(--rail-expanded-width)}
+.file-rail:is(:hover,:focus-visible,:has(:focus-visible)){width:var(--rail-expanded-width)}
 /* 毛玻璃底只在展开时浮出：折叠状态下侧栏完全透明，只剩那几根色条 */
 .rail-glass{
   position:absolute;
@@ -305,28 +306,43 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   visibility:hidden;
   pointer-events:none;
 }
-.file-rail:hover .rail-glass{visibility:visible}
+.file-rail:is(:hover,:focus-visible,:has(:focus-visible)) .rail-glass{visibility:visible}
 .rail-list{
   position:relative;
   display:flex;
   flex-direction:column;
-  gap:6px;
+  gap:var(--rail-row-gap);
 }
-/* The expanded rows must scroll inside the canvas height, above the statusbar.
-   Keep this separate from the dial style, whose cards extend beyond its lines. */
+.rail-preview{
+  width:calc(var(--rail-collapsed-width) - var(--rail-padding-right) - 10px);
+  height:100%;
+  display:flex;
+  flex-direction:column;
+  gap:var(--rail-row-gap);
+  overflow:hidden;
+  pointer-events:none;
+}
+.file-rail.rail-dial .rail-preview{display:none}
+.file-rail:is(:hover,:focus-visible,:has(:focus-visible)) .rail-preview{visibility:hidden}
+/* The expanded list has its own scrollport above the status bar. */
 .file-rail:not(.rail-dial) .rail-list{
-  max-height:100%;
-  min-height:0;
+  position:absolute;
+  inset:14px var(--rail-padding-right) 14px 10px;
+  visibility:hidden;
   overflow-x:hidden;
   overflow-y:auto;
   overscroll-behavior:contain;
   scrollbar-width:thin;
   scrollbar-color:rgba(60,60,67,.24) transparent;
 }
-.file-slot{
+.file-rail:not(.rail-dial):is(:hover,:focus-visible,:has(:focus-visible)) .rail-list{visibility:visible}
+.file-slot,.rail-preview-slot{
   position:relative;
   flex:0 0 auto;
 }
+#viewer.pending-files .toolbar > :not(#newAnotherBtn,#openAnotherBtn),
+#viewer.pending-files #zoomDock,
+#viewer.pending-files .statusbar{visibility:hidden}
 /* 折叠 = 一根小长方形圆角色条；展开 = 一行标签，宽度由侧栏宽度带动 */
 .file-tab{
   position:relative;
@@ -334,7 +350,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   align-items:center;
   gap:9px;
   width:100%;
-  height:10px;
+  height:var(--rail-preview-row-height);
   padding:0;
   border-radius:999px;
   overflow:hidden;
@@ -345,7 +361,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
              padding .34s cubic-bezier(.22,1,.36,1),
              background .18s ease;
 }
-.file-rail:hover .file-tab{
+.file-rail .rail-list .file-tab{
   height:42px;
   border-radius:11px;
   padding:0 10px;
@@ -368,11 +384,11 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
              width .34s cubic-bezier(.22,1,.36,1),
              border-radius .34s cubic-bezier(.22,1,.36,1);
 }
-.file-slot.error .file-tab::before,.file-slot.warning .file-tab::before{background:#ff9f0a;opacity:1}
-.file-slot.active .file-tab::before{background:var(--accent);opacity:1}
-.file-slot.error .file-tab,.file-slot.warning .file-tab{background:rgba(255,159,10,.3)}
-.file-rail:hover .file-slot.error .file-tab,.file-rail:hover .file-slot.warning .file-tab{background:rgba(255,159,10,.09)}
-.file-rail:hover .file-tab::before{
+:is(.file-slot,.rail-preview-slot):is(.error,.warning) .file-tab::before{background:#ff9f0a;opacity:1}
+:is(.file-slot,.rail-preview-slot).active .file-tab::before{background:var(--accent);opacity:1}
+:is(.file-slot,.rail-preview-slot):is(.error,.warning) .file-tab{background:rgba(255,159,10,.3)}
+.file-rail:is(:hover,:focus-visible,:has(:focus-visible)) .file-slot.error .file-tab,.file-rail:is(:hover,:focus-visible,:has(:focus-visible)) .file-slot.warning .file-tab{background:rgba(255,159,10,.09)}
+.file-rail .rail-list .file-tab::before{
   left:4px;
   top:9px;
   bottom:9px;
@@ -391,7 +407,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 }
 .file-slot.active .file-dot{background:var(--accent)}
 .file-slot.error .file-dot,.file-slot.warning .file-dot{background:#ff9f0a}
-.file-rail:hover .file-dot{opacity:1}
+.file-rail:is(:hover,:focus-visible,:has(:focus-visible)) .file-dot{opacity:1}
 .file-info{
   flex:1;
   min-width:0;
@@ -401,7 +417,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   opacity:0;
   transition:opacity .16s ease .08s;
 }
-.file-rail:hover .file-info{opacity:1}
+.file-rail:is(:hover,:focus-visible,:has(:focus-visible)) .file-info{opacity:1}
 .file-tab-name{
   font-size:12.5px;
   font-weight:640;
@@ -438,15 +454,15 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .file-slot:hover .file-close{opacity:1}
 .file-close:hover{background:#e4e4e9;color:#1d1d1f}
 /* 底部的「打开文件」：折叠时虚线色条，展开后是一行普通入口 */
-.file-slot.rail-add .file-tab{
+:is(.file-slot,.rail-preview-slot).rail-add .file-tab{
   background:transparent;
   border:1px dashed rgba(60,60,67,.3);
 }
-.file-rail:hover .file-slot.rail-add .file-tab{
+.file-rail:is(:hover,:focus-visible,:has(:focus-visible)) .file-slot.rail-add .file-tab{
   border-color:transparent;
   background:transparent;
 }
-.file-rail:hover .file-slot.rail-add:hover .file-tab{background:rgba(0,0,0,.06)}
+.file-rail:is(:hover,:focus-visible,:has(:focus-visible)) .file-slot.rail-add:hover .file-tab{background:rgba(0,0,0,.06)}
 .file-plus{
   flex:0 0 12px;
   width:12px;
@@ -457,7 +473,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   opacity:0;
   transition:opacity .16s ease .08s;
 }
-.file-rail:hover .file-plus{opacity:1}
+.file-rail:is(:hover,:focus-visible,:has(:focus-visible)) .file-plus{opacity:1}
 .file-rail .rail-sep{
   flex:0 0 auto;
   width:24px;
@@ -466,13 +482,9 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   background:rgba(0,0,0,.1);
   transition:width .34s cubic-bezier(.22,1,.36,1);
 }
-.file-rail:hover .rail-sep{width:100%}
+.file-rail:is(:hover,:focus-visible,:has(:focus-visible)) :where(.rail-list) .rail-sep{width:100%}
 
-/* ---------- 多文件栏 · 样式二：悬浮细线（设置里切换） ----------
-   与默认竖条最根本的区别：默认是整条侧栏一起展开，这里只展开鼠标所在的那一项。
-   1. 收起时每份文件只是一根小横线，整列不贴边、在画布内竖直居中；
-   2. 鼠标移到某一根上，只有那一根向右展开成一枚悬浮小卡片，其余仍是竖线；
-   3. 收起态没有「打开文件」那条，打开新文件走工具栏按钮或直接拖入。 */
+/* ---------- 多文件栏 · 悬浮细线 ---------- */
 .file-rail.rail-dial{
   top:14px;
   bottom:14px;
@@ -505,10 +517,37 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .file-rail.rail-dial .rail-list::-webkit-scrollbar{display:none}
 .file-rail.rail-dial .rail-sep,
 .file-rail.rail-dial .file-slot.rail-add{display:none}
-/* 横线本体 14x4。占位高度 = 内容高 + 上下 padding - 上下负 margin：
-   收起时只占 4px，悬停时把整格撑到 42px，于是上下的邻居被挤开，
-   卡片正好填满这一格，不会盖住任何一根线。
-   上下 padding 取 gap 的一半（4px），相邻两格的热区正好相接而不重叠。 */
+.rail-scroll{
+  display:none;
+  position:absolute;
+  z-index:4;
+  left:-9px;
+  width:32px;
+  height:26px;
+  padding:0;
+  border:0;
+  background:transparent;
+  color:var(--muted);
+  cursor:ns-resize;
+  pointer-events:auto;
+  touch-action:none;
+}
+.rail-dial.rail-dial-overflow .rail-scroll{
+  display:grid;
+  place-items:center;
+}
+.rail-scroll-up{top:0}
+.rail-scroll-down{bottom:0}
+.rail-scroll::before{
+  content:"";
+  width:14px;
+  height:2px;
+  border-radius:999px;
+  background:currentColor;
+  opacity:.6;
+}
+.rail-scroll:is(:hover,:focus-visible)::before{opacity:1}
+/* Keep row positions fixed so the hover effect cannot change the scroll range. */
 .file-rail.rail-dial .file-slot{
   --rail-bar:rgba(0,0,0,.2);
   position:relative;
@@ -517,7 +556,6 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   height:4px;
   padding:4px 9px;
   margin:-4px -9px;
-  transition:height .28s cubic-bezier(.22,1,.36,1);
   pointer-events:auto;
 }
 .file-rail.rail-dial .file-slot.error,.file-rail.rail-dial .file-slot.warning{--rail-bar:#ff9f0a}
@@ -532,24 +570,34 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   width:4px;height:4px;border-radius:50%;background:#ff9f0a;
 }
 .file-rail.rail-dial .file-slot:hover .file-tab::after{display:none}
-.file-rail.rail-dial .file-slot:hover{
-  height:42px;      /* 占位跟着长高，把上下两边挤开 */
-  z-index:3;
+.file-rail.rail-dial .file-slot:hover{z-index:3}
+.file-rail.rail-dial :is(.file-slot:hover + .file-slot,.file-slot:has(+ .file-slot:hover)){
+  --dial-line-width:30px;
+  --dial-offset:15px;
 }
-/* 收起态：一根小横线，颜色本身就是文件状态。
-   tab 始终绝对定位、居中于 slot，且与 slot 同一条缓动同一条时长，
-   所以整格撑开的每一步卡片都严丝合缝地填满它，一像素也不会溢出去。 */
+.file-rail.rail-dial :is(.file-slot:hover + .file-slot + .file-slot,.file-slot:has(+ .file-slot + .file-slot:hover)){
+  --dial-line-width:23px;
+  --dial-offset:10px;
+}
+.file-rail.rail-dial :is(.file-slot:hover + .file-slot + .file-slot + .file-slot,.file-slot:has(+ .file-slot + .file-slot + .file-slot:hover)){
+  --dial-line-width:18px;
+  --dial-offset:5px;
+}
+.file-rail.rail-dial .file-slot:has(+ .file-slot:hover,+ .file-slot + .file-slot:hover,+ .file-slot + .file-slot + .file-slot:hover){
+  --dial-offset-direction:-1;
+}
 .file-rail.rail-dial .file-tab{
   position:absolute;
   left:9px;                  /* = 上面 .file-slot 的 padding-left */
   top:50%;
-  transform:translateY(-50%);
-  width:14px;
+  transform:translateY(calc(-50% + var(--dial-offset, 0px) * var(--dial-offset-direction, 1)));
+  width:var(--dial-line-width, 14px);
   height:4px;
   padding:0;
   border-radius:999px;
   background:var(--rail-bar);
-  transition:width .28s cubic-bezier(.22,1,.36,1),
+  transition:transform .28s cubic-bezier(.22,1,.36,1),
+             width .28s cubic-bezier(.22,1,.36,1),
              height .28s cubic-bezier(.22,1,.36,1),
              border-radius .28s cubic-bezier(.22,1,.36,1),
              padding .28s cubic-bezier(.22,1,.36,1),
@@ -557,7 +605,6 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
              box-shadow .18s ease;
 }
 .file-rail.rail-dial .file-dot{display:none}
-/* 悬停：只有这一根展开成小卡片，尺寸就是被撑开的那一格 */
 .file-rail.rail-dial .file-slot:hover .file-tab{
   width:220px;
   height:42px;
@@ -581,6 +628,26 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .file-rail.rail-dial .file-slot:hover .file-dot,
 .file-rail.rail-dial .file-slot:hover .file-close{opacity:1}
 .file-rail.rail-dial .file-slot:hover .file-dot{display:block}
+
+.file-rail :is(.file-slot,.rail-preview-slot).loading .file-tab{
+  --rail-bar:var(--accent);
+  box-shadow:inset 0 0 0 1px var(--accent);
+}
+.file-rail :is(.file-slot,.rail-preview-slot).requested .file-tab::before{
+  background:var(--accent);
+  opacity:1;
+}
+.file-rail .file-slot.loading .file-dot{
+  flex:0 0 10px;
+  width:10px;
+  height:10px;
+  background:transparent;
+  border:1px solid var(--line);
+  border-top-color:var(--accent);
+}
+@media(prefers-reduced-motion:no-preference){
+  .file-rail .file-slot.loading.requested .file-dot{animation:loading-spin .8s linear infinite}
+}
 
 /* ---------- 文档错误面板（覆盖画布，条纹栏仍可操作） ---------- */
 .doc-error{
@@ -706,8 +773,6 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .toggle.placeholder{visibility:hidden;pointer-events:none}
 .chevron{
   display:block;
-  font-size:17px;
-  line-height:1;
   transition:transform .15s ease;
 }
 .tree-node.open>.node-main .chevron{transform:rotate(90deg)}
@@ -1464,7 +1529,6 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .search-scope-node>.node-main .node-card{outline:2px solid rgba(0,113,227,.3);outline-offset:2px}
 :is(.show-node-selection,.vim-node-selection) .selected-node>.node-main>.node-card{outline:2px solid var(--accent);outline-offset:2px}
 #viewer.designing .node-card{cursor:default}
-#viewer.designing .object-badge{display:none}
 #viewer.designing .selected-node>.node-main>.node-card{outline:2px solid var(--accent);outline-offset:2px}
 .topic-add{
   position:absolute;top:50%;left:calc(100% + 7px);transform:translateY(-50%);
@@ -1574,7 +1638,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   .node-card{max-width:78vw}
   .node-value{max-width:68vw}
   .help{display:none}
-  .file-rail{--rail-expanded-width:242px;width:44px;padding-right:10px}
+  .file-rail{--rail-collapsed-width:44px;--rail-expanded-width:242px;--rail-padding-right:10px}
   .file-rail.rail-dial .file-slot:hover .file-tab{width:200px}
 }
 
@@ -1588,7 +1652,6 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   .empty-content h1{font-size:25px}
   .empty-content p{margin:8px 0 20px}
   .empty-drop-hint{margin-top:12px}
-  #jsonlOpts{padding:8px 16px 12px}
 }
 @media(max-width:620px){
   #landing{grid-template-columns:158px minmax(0,1fr)}
@@ -1686,7 +1749,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 :root[data-theme="dark"] .workspace-sidebar{background:linear-gradient(145deg,#27272c,#222227)}
 :root[data-theme="dark"] .workspace-main{background:linear-gradient(180deg,#202023,#1c1c1e)}
 :root[data-theme="dark"] :is(.sidebar-current,.sidebar-action,.workspace-toolbar,.empty-content h1,#aboutDescription,.about-license pre,#zoomDock button,.zoom-dock-inline button,.search-wrap .search-nav button){color:var(--text)}
-:root[data-theme="dark"] :is(.sidebar-current,.sidebar-action:hover,.file-rail:hover .file-tab){background:rgba(255,255,255,.07)}
+:root[data-theme="dark"] :is(.sidebar-current,.sidebar-action:hover,.file-rail:is(:hover,:focus-visible,:has(:focus-visible)) :where(.file-slot) .file-tab){background:rgba(255,255,255,.07)}
 :root[data-theme="dark"] .workspace-sidebar svg rect{fill:var(--control)}
 :root[data-theme="dark"] :is(input,textarea,select,dialog){color:var(--text)}
 :root[data-theme="dark"] #ideInput{color:transparent;-webkit-text-fill-color:transparent}
@@ -1732,23 +1795,31 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 .ide-line.caret-line{box-shadow:inset 0 1px rgba(128,128,128,.14),inset 0 -1px rgba(128,128,128,.14)}
 :root[data-theme="dark"] .ide-line.folded{background:rgba(70,150,210,.18)}
 /* Desktop preferences: category rail and independently scrolling content. */
-#settingsMask>.modal-box{width:min(820px,88vw);height:min(600px,78vh);max-height:78vh;border-radius:12px}
+#settingsMask>.modal-box{width:min(860px,90vw);height:min(620px,82vh);max-height:82vh;border-radius:12px}
 #settingsMask .modal-head{padding:14px 20px;background:var(--card)}
 #settingsTitle{font-size:17px!important}
 .settings-layout{display:flex;flex:1;min-height:0;overflow:hidden}
 .settings-nav{width:150px;flex-shrink:0;display:flex;flex-direction:column;gap:4px;padding:14px 10px;background:var(--surface);border-right:1px solid var(--line);overflow:auto}
 .settings-nav button{display:block;width:100%;padding:10px 12px;border:0;border-radius:7px;background:transparent;color:var(--text);font:inherit;font-size:14px;text-align:left;cursor:pointer}
 .settings-nav button:hover{background:var(--control)}
-.settings-nav button[aria-selected="true"]{background:var(--control);font-weight:650;box-shadow:inset 3px 0 var(--accent)}
+.settings-nav button[aria-selected="true"]{background:var(--accent-soft);font-weight:650;box-shadow:inset 3px 0 var(--accent)}
 .settings-nav button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 #settingsMask .settings-body{min-width:0;padding:16px 20px;background:var(--bg);scrollbar-gutter:stable}
-#settingsMask .settings-group[hidden]{display:none}
-#settingsMask .settings-group{padding:0 16px 8px;border:0;margin:0;border-radius:10px}
-#settingsMask .settings-group-title{font-size:16px;letter-spacing:0;color:var(--text);padding:14px 0 12px;text-transform:none;border-color:var(--line)}
+#settingsMask .settings-page[hidden]{display:none}
+.settings-page{display:grid;gap:12px}
+.settings-page-title{font-size:21px;line-height:1.3;margin:2px 0 4px;font-weight:670;letter-spacing:-.025em}
+#settingsMask .settings-group{padding:0 16px;border:1px solid var(--line);margin:0;border-radius:10px}
+#settingsMask .settings-group-title{font-size:13px;letter-spacing:0;color:var(--text);padding:12px 0 9px;margin:0;text-transform:none;border-color:var(--line)}
 #settingsMask .settings-row{padding:14px 0;gap:18px;border-color:var(--line)}
 #settingsMask .s-label{font-size:14px}
 #settingsMask .s-hint{font-size:12px;line-height:1.7;margin-top:5px}
 #settingsMask .modal-foot{padding:12px 26px;border-top:1px solid var(--line)}
+#optDesignLimit{width:5rem;flex-shrink:0;padding:6px 8px;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:7px;font:inherit}
+.settings-reference{border-bottom:1px solid var(--line)}
+.settings-reference:last-child{border-bottom:0}
+.settings-reference summary{padding:12px 0;color:var(--text);font-size:13px;font-weight:600;cursor:pointer}
+.settings-reference summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:4px}
+#resetContextMenu{margin-bottom:12px}
 #settingsFooter[hidden]{display:none}
 .template-rules{padding:12px 0;border-bottom:1px solid var(--line)}
 .template-rules ul,.context-options{list-style:none;margin:8px 0 12px;padding:0}

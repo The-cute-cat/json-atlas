@@ -24,8 +24,9 @@ export const selectNativeFiles = () => invoke('select_documents');
 export const openReleasePage = () => invoke('open_release_page');
 export const saveDocumentCopy = (name, text, originalPath, protectedPaths = []) => invoke('save_document_copy', { name, text, originalPath, protectedPaths });
 export const saveNativeDocument = (path, text, expectedText) => invoke('save_document', { path, text, expectedText });
-export async function guardEditedClose(hasChanges, confirmDiscard) {
+export async function guardEditedClose(hasChanges, confirmDiscard, saveSession) {
   await getCurrentWebviewWindow().onCloseRequested(async event => {
+    saveSession();
     if (!hasChanges()) return;
     event.preventDefault();
     if (await confirmDiscard()) await getCurrentWebviewWindow().destroy();
@@ -37,7 +38,7 @@ const indexRequest = (op, id, args = {}, path = null) => invoke('indexed_documen
 const indexId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
   byte => byte.toString(16).padStart(2, '0')).join('');
 export const statNativeFile = path => indexRequest('stat', indexId(), {}, path);
-export async function openIndexedFile(file, { signal, progress, wrap, strict }) {
+export async function openIndexedFile(file, { signal, progress = () => {}, wrap, strict, reuse = true }) {
   const id = indexId();
   signal.throwIfAborted();
   const unlisten = await listen('index-progress', event => {
@@ -51,7 +52,7 @@ export async function openIndexedFile(file, { signal, progress, wrap, strict }) 
   let opening;
   try {
     signal.throwIfAborted();
-    opening = indexRequest('open', id, { wrap, strict }, file.path);
+    opening = indexRequest('open', id, { wrap, strict, reuse }, file.path);
     signal.addEventListener('abort', cancel, { once: true });
     const info = await opening;
     if (signal.aborted) { await indexRequest('close', id); signal.throwIfAborted(); }
@@ -72,7 +73,7 @@ export async function connectDesktop(openPaths, reportError, onAction) {
   const drain = () => {
     queue = queue.then(async () => {
       const paths = await invoke('take_open_requests');
-      if (paths.length) await openPaths(paths);
+      if (paths.length) openPaths(paths).catch(reportError);
     }).catch(reportError);
     return queue;
   };

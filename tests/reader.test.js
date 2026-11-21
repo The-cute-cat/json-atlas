@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, encodeDataPath, normalizeDataPath } from '../src/data.js';
+import { MAX_FILE_BYTES, MAX_RENDERED_CHILDREN, PAGE_SIZE, searchData, parseDocument, encodeDataPath, normalizeDataPath } from '../src/data.js';
 import { MemoryDataSource } from '../src/data-source.js';
 import { normalizeThreshold, needsIndex, IndexedDataSource } from '../src/large-files.js';
 import { ViewportWindow } from '../src/viewport-window.js';
@@ -46,6 +46,7 @@ class Element {
   focus() {}
   select() {}
   click() { if(!this.disabled) this.listeners.get('click')?.({target:this}); }
+  setSelectionRange(start,end,direction){ Object.assign(this,{selectionStart:start,selectionEnd:end,selectionDirection:direction}); }
   setPointerCapture() {}
   getBoundingClientRect() { return { width: 610, height: 102, bottom: 54 }; }
   querySelectorAll(selector) {
@@ -98,13 +99,13 @@ function reader(storage = new Map(), native = {}) {
     requestAnimationFrame: callback => frames.push(callback),
     setTimeout: (callback, delay) => delay === 0 ? setTimeout(callback, 0) : 1, clearTimeout() {},
     desktop: false, connectDesktop: async () => {}, updateWindowTitle() {}, updateWindowTheme() {},
-    MAX_FILE_BYTES, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
+    MAX_FILE_BYTES, MAX_RENDERED_CHILDREN, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
     valueAt, replaceValue, editObjectTopic, parseEdit, serializeDocument, ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit, normalizeTheme, watchTheme,
     encodePath: encodeDataPath, normalizePath: normalizeDataPath, compileSearch,
     console, Blob, File, isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel, installTooltips, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
-    ;({ buildDoc, resolveDoc, activateDoc, collectSession, expandByPaths, expandLevels, expandOne, positionFindPanel,
+    ;({ buildDoc, resolveDoc, activateDoc, collectSession, saveSession, expandByPaths, expandLevels, expandOne, positionFindPanel,
       beginNodeEdit, applyNodeEdit, applyIdeChange, toggleIdeFold, handleIdeInput, formatIde, openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile, openPaths, showNodeLimit, collapseAll, updateVirtualization, saveCurrentDocument,
       openPastedText, selectCopyNode,
       allDocs: () => docs,
@@ -152,7 +153,7 @@ test('blank documents offer topic actions in the tree and save as ordinary JSON'
   const saves = [];
   const {api,elements,keyListeners,flush} = reader(new Map(), {
     desktop:true, updateDocumentMenu(){}, guardEditedClose:async()=>{},
-    saveDocumentCopy:async(name,text) => { saves.push([name,JSON.parse(text)]); return 'C:\\plan.json'; }
+    saveDocumentCopy:async(name,text) => { saves.push([name,JSON.parse(text),Buffer.byteLength(text)]); return 'C:\\plan.json'; }
   });
   api.configure({viewMode:'ide'});
   elements.get('newDocBtn').click();
@@ -170,10 +171,18 @@ test('blank documents offer topic actions in the tree and save as ordinary JSON'
 
   const tree = elements.get('tree');
   const rootCard = () => tree.firstElementChild._card;
+  const badge = card => card.querySelectorAll('.badge')[0].textContent;
+  assert.equal(tree.firstElementChild._keyEl.textContent,'root');
+  assert.equal(badge(rootCard()),'Object · 0');
   const plus = card => card.children.find(child => child.className === 'topic-add');
   plus(rootCard()).click();
   await flush();
   assert.equal(Object.hasOwn(api.state().doc.parsed,'子主题'),true);
+  assert.equal(badge(rootCard()),'Object · 1');
+  assert.equal(badge(tree.querySelectorAll('.node-card').find(card => card !== rootCard())),'未指定类型');
+  const editedBytes = Buffer.byteLength(api.state().doc.text);
+  assert.ok(editedBytes > api.state().doc.text.length);
+  assert.ok(elements.get('fileSub').textContent.startsWith(`${editedBytes} B ·`));
   assert.equal(plus(rootCard()),undefined);
   api.selectCopyNode(tree.firstElementChild);
   plus(rootCard()).click();
@@ -183,6 +192,8 @@ test('blank documents offer topic actions in the tree and save as ordinary JSON'
   await flush();
   elements.get('undoEditBtn').click();
   await flush();
+
+  assert.ok(elements.get('fileSub').textContent.startsWith('3 B ·'));
 
   const submit = name => {
     elements.get('designTopicName').value = name;
@@ -216,6 +227,7 @@ test('blank documents offer topic actions in the tree and save as ordinary JSON'
   assert.deepEqual(saves[0][1],{计划:{调研:{},['__proto__']:{}}});
   assert.equal(api.state().doc.path,'C:\\plan.json');
   assert.equal(api.state().doc.dirty,false);
+  assert.ok(elements.get('fileSub').textContent.startsWith(`${saves[0][2]} B ·`));
   const opened = api.buildDoc('{}','opened.json',2);
   api.add(opened); api.activateDoc(opened.id);
   openRootMenu();
@@ -354,22 +366,100 @@ test('find window stays below the toolbar for dragging, keyboard moves and pinne
 
 test('cancelling a queued native batch skips its remaining files but permits a later batch', async () => {
   const calls = []; let release;
+  const first = 'D:\\test files\\前两个.json';
+  const nextFile = '/test files/third.json';
   const {api, elements} = reader(new Map(), {statNativeFile: path => {
     calls.push(path);
     return new Promise(resolve => { release = resolve; });
   }});
-  const pending = api.openPaths(['first.json', 'second.json']);
+  const pending = api.openPaths([first, 'second.json']);
   await new Promise(resolve => setImmediate(resolve));
+  assert.equal(elements.get('loadingLabel').textContent, '正在读取 前两个.json…');
   elements.get('cancelLoadBtn').click();
-  release({path:'first.json', name:'first.json', size:2});
+  release({path:first, name:'前两个.json', size:2});
   await pending;
-  assert.deepEqual(calls, ['first.json']);
-  const next = api.openPaths(['third.json']);
+  assert.deepEqual(calls, [first]);
+  const next = api.openPaths([nextFile]);
   await new Promise(resolve => setImmediate(resolve));
+  assert.equal(elements.get('loadingLabel').textContent, '正在读取 third.json…');
   elements.get('cancelLoadBtn').click();
-  release({path:'third.json', name:'third.json', size:2});
+  release({path:nextFile, name:'third.json', size:2});
   await next;
-  assert.deepEqual(calls, ['first.json', 'third.json']);
+  assert.deepEqual(calls, [first, nextFile]);
+});
+
+test('new and selected files preempt restoration without losing pending files or stealing focus on completion', async () => {
+  const paths = ['D:/first.json', 'D:/previous.json', 'D:/last.json'];
+  const opened = [];
+  const pending = new Map();
+  let idle;
+  const storage = new Map([
+    ['json-atlas_settings_v1', JSON.stringify({reopenLast:true})],
+    ['json-atlas_lastfile_v1', JSON.stringify({docs:paths.map(path => ({path})), activeKey:paths[1]})]
+  ]);
+  const {api, elements, flush} = reader(storage, {
+    desktop:true, updateDocumentMenu(){}, guardEditedClose:async()=>{},
+    window:{
+      innerWidth:1440, innerHeight:900, addEventListener(){},
+      requestIdleCallback(callback){ idle = callback; return 1; },
+      cancelIdleCallback(){ idle = null; }
+    },
+    statNativeFile:async path => ({path, name:path.split('/').at(-1), size:70 * 1024 ** 2}),
+    openIndexedFile:({path}, {signal}) => new Promise((resolve, reject) => {
+      opened.push(path);
+      signal.addEventListener('abort', () => reject(signal.reason), {once:true});
+      pending.set(path, () => resolve(new IndexedDataSource(async () => true, path, {
+        kind:'json', root:{type:'number', value:42, path:[], childCount:0}
+      })));
+    })
+  });
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  const runIdle = async () => {
+    assert.ok(idle);
+    const callback = idle;
+    idle = null;
+    callback();
+    await tick();
+  };
+  const rail = elements.get('fileRail');
+  const loading = () => rail.querySelectorAll('.file-slot.loading');
+  await tick();
+  assert.deepEqual(opened, [paths[1]]);
+  assert.equal(loading().length, 3);
+  assert.equal(elements.get('viewer').classList.contains('pending-files'), true);
+  const latest = 'D:/new.json';
+  const next = api.openPaths([latest]);
+  await tick();
+  assert.deepEqual(opened, [paths[1], latest]);
+  assert.equal(loading().length, 4);
+  assert.equal(JSON.parse(storage.get('json-atlas_lastfile_v1')).docs.length, 4);
+  pending.get(latest)();
+  await next;
+  await tick();
+  await flush();
+  assert.equal(api.state().doc.path, latest);
+  assert.equal(loading().length, 3);
+  assert.equal(elements.get('loadingStatus').hidden, true);
+  assert.deepEqual(opened, [paths[1], latest]);
+  await runIdle();
+  assert.equal(opened.at(-1), paths[0]);
+
+  const select = loading().find(slot => slot.querySelectorAll('.file-tab-name')[0].textContent === 'last.json');
+  select.firstElementChild.click();
+  await tick();
+  assert.equal(opened.at(-1), paths[2]);
+  pending.get(paths[2])();
+  await tick();
+  assert.equal(api.state().doc.path, paths[2]);
+  for(const path of paths.slice(0,2)){
+    await runIdle();
+    assert.equal(opened.at(-1), path);
+    pending.get(path)();
+    await tick();
+  }
+  assert.equal(loading().length, 0);
+  assert.equal(api.state().doc.path, paths[2]);
+  assert.deepEqual(Array.from(api.allDocs(), doc => doc.path), [...paths, latest]);
 });
 
 test('stored settings cannot set the prototype or overwrite settings with the wrong type', () => {
@@ -410,16 +500,18 @@ test('switching files persists the selected document even with session restorati
 
 test('wide files do not prompt automatically; blocked expansion cleanup releases content and clears the notice', async () => {
   const { api, elements } = reader();
-  const doc = api.buildDoc(JSON.stringify(Array.from({ length: 5000 }, (_, i) => i)), 'wide.json', 1);
+  const doc = api.buildDoc(JSON.stringify(Array.from({length:2}, () => Array.from({length:3000}, (_, i) => i))), 'wide.json', 1);
   api.add(doc); api.activateDoc(doc.id);
   const root = elements.get('tree').firstElementChild;
   await api.expandOne(root);
   assert.equal(elements.get('nodeBudgetNotice').hidden, true);
+  for(const branch of elements.get('tree').querySelectorAll('.tree-node').filter(node => node._path.length === 1)) await api.expandOne(branch);
   api.showNodeLimit();
   assert.equal(elements.get('nodeBudgetNotice').hidden, false);
   const cleanup = elements.get('reclaimNodesBtn').listeners.get('click');
   cleanup();
-  assert.equal(elements.get('tree').querySelectorAll('.tree-node').length, 4000);
+  const remaining = elements.get('tree').querySelectorAll('.tree-node').length;
+  assert(remaining <= 4000 && remaining > 1);
   assert(root.classList.contains('open'));
   assert.equal(elements.get('nodeBudgetNotice').hidden, true);
   await api.expandOne(root);
@@ -555,6 +647,58 @@ test('saved sessions retain exact indices and literal object keys across restart
   storage.set('json-atlas_session_v1', JSON.stringify(session));
   const restarted = reader(storage); await restarted.flush();
   assert.equal(JSON.stringify(restarted.elements.get('tree').querySelectorAll('.tree-node.open').map(n => n.dataset.path)), JSON.stringify(wanted));
+});
+
+test('session restoration keeps per-file IDE and design modes and restores the IDE reading position', async () => {
+  const storage = new Map([['json-atlas_settings_v1', JSON.stringify({reopenLast:true})]]);
+  const {api,elements,keyListeners,flush} = reader(storage);
+  const text = '{\n  "inner": {\n    "name": "value"\n  },\n  "sibling": true\n}';
+  const first = api.buildDoc(text, 'ide.json', text.length);
+  const second = api.buildDoc('{}', 'design.json', 2);
+  api.add(first); api.add(second); api.activateDoc(first.id);
+  await flush();
+  elements.get('switchViewBtn').click();
+  const input = elements.get('ideInput');
+  api.toggleIdeFold(1);
+  input.listeners.get('wheel')({ctrlKey:true,deltaY:-1,preventDefault(){}});
+  input.setSelectionRange(2,5,'backward');
+  input.scrollTop = 45;
+  input.scrollLeft = 16;
+  api.activateDoc(second.id);
+  const viewport = elements.get('viewport');
+  let handled = false;
+  keyListeners.get('keydown')({key:'d',code:'KeyD',target:viewport,ctrlKey:true,altKey:true,preventDefault(){handled=true;}});
+  assert.equal(handled,true);
+  assert.equal(second.design,true);
+  await flush();
+  const restarted = reader(storage);
+  assert.equal(restarted.api.state().doc.design,true);
+  restarted.api.activateDoc(restarted.api.allDocs().find(doc=>doc.name==='ide.json').id);
+  assert.equal(restarted.elements.get('ideView').hidden,false);
+  const restored = restarted.elements.get('ideInput');
+  assert.equal(restored.selectionStart,2);
+  assert.equal(restored.selectionEnd,5);
+  assert.equal(restored.selectionDirection,'backward');
+  assert.equal(restored.scrollTop,45);
+  assert.equal(restored.scrollLeft,16);
+  assert.equal(restarted.api.state().doc.ideZoom,110);
+  assert.equal(restarted.api.state().doc.ideFolds.has(1),true);
+});
+
+test('tree sessions restore the visible page even when no child branch is expanded', async () => {
+  const storage = new Map([['json-atlas_settings_v1', JSON.stringify({reopenLast:true})]]);
+  const {api,elements,flush} = reader(storage);
+  const text=JSON.stringify(Array.from({length:3010},(_,i)=>i));
+  const doc=api.buildDoc(text,'paged.json',text.length);
+  api.add(doc); api.activateDoc(doc.id);
+  await flush();
+  await api.expandOne(elements.get('tree').firstElementChild,undefined,3000);
+  api.saveSession();
+  const restarted=reader(storage);
+  await restarted.flush();
+  const tree=restarted.elements.get('tree');
+  assert.equal(tree.firstElementChild._pageStart,3000);
+  assert.equal(tree.querySelectorAll('.tree-node')[1].dataset.path,'$[3000]');
 });
 
 test('structure templates still normalize array items and expand only the first object', async () => {
@@ -820,10 +964,14 @@ test('native opening at the threshold retains the ordinary worker parser', async
     URL,
     Worker: class {
       terminate() {}
-      postMessage(payload) { this.onmessage({ data: { result: parseDocument(payload.text, payload.name), text: '' } }); }
+      postMessage(payload, transfer) {
+        assert.equal(transfer[0], payload.bytes);
+        const text = new TextDecoder().decode(payload.bytes);
+        this.onmessage({data:{result:parseDocument(text, payload.name), text}});
+      }
     },
     statNativeFile: async path => ({ path, name: 'normal.json', size: 32 * 1024 ** 2 }),
-    readNativeFile: async (path, maxBytes) => { read++; assert.equal(maxBytes, 32 * 1024 ** 2); return { path, name: 'normal.json', size: maxBytes, text: '{"ok":true}' }; },
+    readNativeFile: async (path, maxBytes) => { read++; assert.equal(maxBytes, 32 * 1024 ** 2); return new TextEncoder().encode('{"ok":true}').buffer; },
     openIndexedFile: () => { throw new Error('must not index at the threshold'); }
   });
   api.configure({ largeFileThresholdMiB: 32 });
@@ -837,10 +985,14 @@ test('native IDE retains original source text and reopening clears the previous 
     URL,
     Worker: class {
       terminate() {}
-      postMessage(payload) { this.onmessage({data:{result:parseDocument(payload.text,payload.name),text:''}}); }
+      postMessage(payload) {
+        assert.equal(payload.keepText, true);
+        const text = new TextDecoder().decode(payload.bytes);
+        this.onmessage({data:{result:parseDocument(text,payload.name),text}});
+      }
     },
     statNativeFile: async path => ({path,name:'normal.json',size:original.length}),
-    readNativeFile: async path => ({path,name:'normal.json',size:original.length,text:original})
+    readNativeFile: async () => new TextEncoder().encode(original).buffer
   });
   api.configure({viewMode:'ide'});await api.loadFile({path:'D:/normal.json'});
   assert.equal(elements.get('ideInput').value,original);
@@ -918,6 +1070,70 @@ test('the IDE complexity switch allows complex memory files but respects the siz
   assert.equal(restored.elements.get('optLimitIdeComplexity').checked,false);
 });
 
+test('rapid settings changes update IDE availability on close without rebuilding the current tree', () => {
+  const {api,elements,storage} = reader();
+  const doc = api.buildDoc(JSON.stringify(Array(10001).fill(0)), 'complex.json', 75 * 1024 ** 2);
+  api.configure({largeFileThresholdMiB:128});
+  api.add(doc); api.activateDoc(doc.id);
+  const root = elements.get('tree').firstElementChild;
+  const toggle = elements.get('optLimitIdeComplexity');
+  const switchView = elements.get('switchViewBtn');
+  elements.get('settingsBtn').click();
+  for(const checked of [false, true, false]) toggle.listeners.get('change')({target:{checked}});
+  assert.equal(switchView.disabled,true);
+  assert.equal(JSON.parse(storage.get('json-atlas_settings_v1')).limitIdeComplexity,false);
+  elements.get('settingsClose').click();
+  assert.equal(switchView.disabled,false);
+  assert.equal(elements.get('tree').firstElementChild,root);
+  assert.equal(elements.get('ideView').hidden,true);
+
+  elements.get('settingsBtn').click();
+  const select = elements.get('optLargeFileThreshold');
+  for(const value of ['256', '64']){ select.value = value; select.listeners.get('change')(); }
+  assert.equal(switchView.disabled,false);
+  elements.get('settingsClose').click();
+  assert.equal(switchView.disabled,true);
+  assert.equal(elements.get('tree').firstElementChild,root);
+});
+
+test('JSONL settings coalesce native reconfiguration and skip changes that are reversed', async () => {
+  const calls = [];
+  let finish;
+  const {api,elements} = reader();
+  const doc = api.buildDoc('{"a":1}\n{"b":2}', 'logs.jsonl', 96 * 1024 ** 2);
+  const info = wrap => ({kind:'jsonl',records:2,badCount:0,commentCount:0,
+    root:{type:wrap ? 'array' : 'object',childCount:wrap ? 2 : 1,path:[]}});
+  doc.source = new IndexedDataSource((op, id, {wrap}) => {
+    assert.equal(op,'info');
+    calls.push(wrap);
+    return new Promise(resolve => { finish = () => resolve(info(wrap)); });
+  }, 'indexed-logs', info(true));
+  api.add(doc); api.activateDoc(doc.id);
+  const set = (id,checked) => {
+    const toggle = elements.get(id);
+    toggle.checked = checked;
+    toggle.listeners.get('change')({target:toggle});
+  };
+  const open = () => elements.get('settingsBtn').click();
+  const close = () => elements.get('settingsClose').click();
+  const wrap = checked => set('optSettingsJsonlArray',checked);
+  const strict = checked => set('optStrictJsonl',checked);
+  open(); wrap(false); wrap(true); close();
+  assert.deepEqual(calls,[]);
+  open(); wrap(false); strict(true); strict(false); strict(true);
+  assert.deepEqual(calls,[]);
+  close();
+  assert.deepEqual(calls,[false]);
+  open(); wrap(true); close();
+  assert.deepEqual(calls,[false]);
+  finish();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls,[false,true]);
+  finish();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(doc.source.wrap,true);
+});
+
 
 test('editing updates search source, undo restores the original and shortcuts stay opt-in', async () => {
   const {api,elements,keyListeners}=reader();
@@ -980,14 +1196,22 @@ test('IDE typing groups keep the starting revision and allow redo', () => {
     input.listeners.get('input')({target:input,inputType:'insertText'});
   }
   assert.equal(doc.editHistory.length,1);
+  input.value = '{"text":"中文🧪"}';
+  input.listeners.get('input')({target:input,inputType:'insertText'});
   const finished = doc.text;
+  const bytes = Buffer.byteLength(finished);
+  const railMeta = () => elements.get('fileRail').querySelectorAll('.file-tab-meta')[0].textContent;
+  assert.ok(elements.get('fileSub').textContent.startsWith(`${bytes} B ·`));
+  assert.ok(railMeta().endsWith(`${bytes} B`));
   const keydown = (key, extra = {}) => keyListeners.get('keydown')({
     key, target:input, ctrlKey:true, preventDefault(){}, ...extra
   });
   keydown('z');
   assert.equal(doc.text,original);
+  assert.ok(railMeta().endsWith(`${Buffer.byteLength(original)} B`));
   keydown('y');
   assert.equal(doc.text,finished);
+  assert.ok(railMeta().endsWith(`${bytes} B`));
   keydown('z');
   input.value = '{"text":"b"}';
   input.listeners.get('input')({target:input,inputType:'insertText'});
@@ -1118,6 +1342,85 @@ test('opt-in Vim keys navigate visible nodes, fold branches, and resume on the c
   assert.equal(press('j',{isComposing:true}),false);
   assert.equal(press('r',{target:elements.get('quickSearchInput')}),false);
   press('r'); assert.equal(elements.get('valueEditDialog').open,true);
+});
+
+test('new topics stay untyped through draft restore and can gain an explicit or structural type', async () => {
+  const storage = new Map();
+  const {api, elements, flush} = reader(storage);
+  const tree = elements.get('tree');
+  const badge = node => node._card.querySelectorAll('.badge')[0].textContent;
+  const add = node => node._card.children.find(child => child.className === 'topic-add').click();
+  const selected = () => tree.querySelectorAll('.selected-node')[0];
+  elements.get('newDocBtn').click();
+  await flush();
+  add(tree.firstElementChild);
+  await flush();
+  assert.equal(badge(selected()), '未指定类型');
+  const reopened = reader(storage);
+  await reopened.flush();
+  const restoredChild = reopened.elements.get('tree').querySelectorAll('.tree-node')[1];
+  assert.equal(badge(restoredChild), '未指定类型');
+
+  api.beginNodeEdit(selected());
+  const type = elements.get('valueEditType');
+  assert.equal(type.value, '');
+  assert.equal(elements.get('valueEditText').value, '');
+  assert.throws(() => api.applyNodeEdit(), /请选择值类型/);
+  type.value = 'object';
+  type.listeners.get('change')({target:type});
+  api.applyNodeEdit();
+  await flush();
+  assert.equal(badge(selected()), 'Object · 0');
+  elements.get('undoEditBtn').click();
+  await flush();
+  assert.equal(badge(selected()), '未指定类型');
+
+  add(selected());
+  await flush();
+  assert.equal(badge(tree.querySelectorAll('.tree-node')[1]), 'Object · 1');
+  assert.equal(badge(selected()), '未指定类型');
+});
+
+test('existing JSON files can enter design mode while the larger files remain editable normally', async () => {
+  const {api,elements,storage,flush} = reader();
+  const tree = elements.get('tree'), mode = elements.get('designModeBtn'), limit = elements.get('optDesignLimit');
+  const existing = api.buildDoc('{"old":1}', 'existing.json', 9);
+  const boundary = api.buildDoc('{}', 'boundary.json', 8 * 1024 ** 2);
+  const large = api.buildDoc('{}', 'large.json', 32 * 1024 ** 2);
+  for(const doc of [existing,boundary,large]) api.add(doc);
+  api.activateDoc(existing.id);
+  mode.click();
+  await flush();
+  assert.equal(existing.design,true);
+  assert.equal(elements.get('viewer').classList.contains('designing'),true);
+  assert.equal(elements.get('editModeBtn').hidden,true);
+  tree.firstElementChild._card.children.find(child => child.className === 'topic-add').click();
+  await flush();
+  assert.deepEqual(JSON.parse(existing.text),{old:1,子主题:{}});
+  mode.click();
+  await flush();
+  assert.equal(existing.design,false);
+  assert.equal(elements.get('editModeBtn').disabled,false);
+  assert.ok([...storage.keys()].some(key => key.startsWith('json-atlas_design-draft_v1:')));
+
+  api.activateDoc(boundary.id);
+  assert.equal(mode.disabled,true);
+  assert.equal(elements.get('editModeBtn').disabled,false);
+  limit.value = '16';
+  limit.listeners.get('change')();
+  assert.equal(mode.disabled,false);
+  mode.click();
+  assert.equal(boundary.design,true);
+  limit.value = '8';
+  limit.listeners.get('change')();
+  assert.equal(boundary.design,false);
+  assert.equal(mode.disabled,true);
+  limit.value = '64';
+  limit.listeners.get('change')();
+  assert.equal(limit.value,'32');
+  api.activateDoc(large.id);
+  assert.equal(mode.disabled,true);
+  assert.equal(elements.get('editModeBtn').disabled,false);
 });
 
 test('blank documents edit typed values and manipulate array elements on the canvas', async () => {

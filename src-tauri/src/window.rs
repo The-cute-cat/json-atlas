@@ -116,6 +116,7 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     };
     let file = Submenu::with_items(app, menu_title("文件", "文件(&F)"), true, file_items)?;
     let edit_mode = MenuItem::with_id(app, "edit-mode", "编辑模式", false, None::<&str>)?;
+    let design_mode = MenuItem::with_id(app, "design-mode", "设计模式", false, None::<&str>)?;
     let undo = MenuItem::with_id(app, "undo-edit", "撤销修改", false, None::<&str>)?;
     let redo = MenuItem::with_id(app, "redo-edit", "重做修改", false, None::<&str>)?;
     let format = MenuItem::with_id(app, "format-json", "格式化文档", false, None::<&str>)?;
@@ -142,11 +143,17 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
             &PredefinedMenuItem::select_all(app, Some("全选"))?,
             &PredefinedMenuItem::separator(app)?,
             &edit_mode,
+            &design_mode,
             &format,
         ],
     )?;
     #[cfg(not(target_os = "macos"))]
-    let edit = Submenu::with_items(app, "编辑(&E)", true, &[&edit_mode, &undo, &redo, &format])?;
+    let edit = Submenu::with_items(
+        app,
+        "编辑(&E)",
+        true,
+        &[&edit_mode, &design_mode, &undo, &redo, &format],
+    )?;
     let reset = MenuItem::with_id(
         app,
         "reset",
@@ -270,6 +277,7 @@ pub fn sync_document_menu(
                 "save-copy",
                 "save",
                 "edit-mode",
+                "design-mode",
                 "undo-edit",
                 "redo-edit",
                 "copy-node",

@@ -38,6 +38,7 @@ test('custom menu shortcuts work on both platforms without AltGr or composition 
       assert.equal(shortcutAction({...mod,altKey:true,key,code,isComposing:true},mac),null);
       assert.equal(shortcutAction({...mod,altKey:true,key,code,getModifierState:()=>true},mac),null);
     }
+    assert.equal(shortcutAction({...mod,altKey:true,shiftKey:mac,key:'d',code:'KeyD'},mac),'designMode');
     assert.equal(shortcutAction({key:'F1'},mac),'about');
     assert.equal(shortcutLabel('switchView',mac),mac?'⌘+⌥+V':'Ctrl+Alt+V');
   }

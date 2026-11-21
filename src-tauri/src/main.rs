@@ -41,7 +41,7 @@ async fn indexed_document(
         if let Some(cancel) = jobs.remove(&id) {
             cancel.store(true, Ordering::Relaxed);
         }
-        state.close_session(&id)?;
+        state.close_session(&id, args["forget"].as_bool().unwrap_or(false))?;
         return Ok(json!(null));
     }
     if op == "searchCancel" {
@@ -94,23 +94,41 @@ async fn indexed_document(
         let job_cancel = cancel.clone();
         let wrap = args["wrap"].as_bool().unwrap_or(true);
         let strict = args["strict"].as_bool().unwrap_or(false);
+        let reuse = args["reuse"].as_bool().unwrap_or(true);
         let result = tauri::async_runtime::spawn_blocking(move || {
+            use std::{
+                cell::Cell,
+                time::{Duration, Instant},
+            };
             indexed::stat(&path)?;
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let stamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos();
-            let mut doc = indexed::Indexed::open(
+            let last_progress = Cell::new(None);
+            indexed::cache::open(
                 &path,
-                dir.join(format!("{}-{stamp}-{id_for_job}.idx", std::process::id())),
+                &dir,
+                &format!("{}-{stamp}-{id_for_job}", std::process::id()),
                 &job_cancel,
                 &|bytes| {
+                    let now = Instant::now();
+                    if last_progress
+                        .get()
+                        .is_some_and(|last| now.duration_since(last) < Duration::from_millis(125))
+                    {
+                        return;
+                    }
+                    last_progress.set(Some(now));
                     let _ = emitter.emit("index-progress", json!({"id":id_for_job,"bytes":bytes}));
                 },
-            )?;
-            let info = doc.info(wrap, strict)?;
-            Ok::<_, String>((doc, info))
+                indexed::cache::Options {
+                    wrap,
+                    strict,
+                    reuse,
+                },
+            )
         })
         .await
         .map_err(|e| e.to_string())
@@ -136,6 +154,9 @@ async fn indexed_document(
         .cloned()
         .ok_or("索引已关闭，请重新打开文件")?;
     tauri::async_runtime::spawn_blocking(move || {
+        if op == "verify" {
+            return indexed::cache::verify(&doc).map(|valid| json!(valid));
+        }
         let mut doc = doc.lock().map_err(|e| e.to_string())?;
         let wrap = args["wrap"].as_bool().unwrap_or(true);
         let path = args["path"].as_array().cloned().unwrap_or_default();
@@ -186,10 +207,11 @@ fn take_open_requests(state: tauri::State<OpenRequests>) -> Vec<String> {
 }
 
 #[tauri::command]
-async fn read_document(path: String, max_bytes: u64) -> Result<documents::Document, String> {
+async fn read_document(path: String, max_bytes: u64) -> Result<tauri::ipc::Response, String> {
     tauri::async_runtime::spawn_blocking(move || documents::read_document(&path, max_bytes))
         .await
         .map_err(|e| e.to_string())?
+        .map(tauri::ipc::Response::new)
 }
 
 #[tauri::command]

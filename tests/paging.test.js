@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { MemoryDataSource } from '../src/data-source.js';
-import { PAGE_SIZE } from '../src/data.js';
+import { MAX_RENDERED_CHILDREN, PAGE_SIZE } from '../src/data.js';
 import { IndexedDataSource } from '../src/large-files.js';
 import { PageCache } from '../src/page-cache.js';
 
@@ -18,7 +18,7 @@ class Element {
 const sourceText = readFileSync(new URL('../src/paging.js', import.meta.url), 'utf8')
   .replace(/^import .*;\r?\n/gm, '').replaceAll('export function', 'function');
 const { pagedChildren, discardPagedTree } = runInNewContext(sourceText + '\n;({pagedChildren, discardPagedTree})', {
-  PAGE_SIZE, AbortController, setTimeout, document: { createElement: () => new Element() }
+  MAX_RENDERED_CHILDREN, PAGE_SIZE, AbortController, setTimeout, document: { createElement: () => new Element() }
 });
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const event = { stopPropagation() {} };
@@ -77,12 +77,21 @@ test('memory documents expose all ordinary children without page navigation', as
   assert.equal(container.children.some(n => n.className === 'page-navigation'), false);
 });
 
-test('a very wide memory branch keeps the display guard and search can reach later items', async () => {
-  const { node, container, items } = mount(new MemoryDataSource(Array.from({length:5005},(_,i)=>i)));
-  await node._ensureChildren(); assert.equal(items().length, 5000);
-  assert.equal(container.children.at(-1).className, 'node-limit');
-  await node._ensureChildren(5004); assert.equal(items().at(-1).key, 5004);
-  assert.equal(container.children.some(n => n.className === 'page-navigation'), false);
+test('wide branches load at most 3000 children per batch and can jump to later items', async () => {
+  const { node, container, items } = mount(new MemoryDataSource(Array.from({length:7005},(_,i)=>i)));
+  await node._ensureChildren();
+  assert.equal(items().length, 3000);
+  const next = container.children.at(-1).children[2];
+  assert.equal(next.textContent, '加载更多');
+  await next.onclick(event);
+  assert.equal(items().length, 3000);
+  assert.equal(items()[0].key, 3000);
+  await node._ensureChildren(7004);
+  assert.equal(items()[0].key, 6000);
+  assert.equal(items().at(-1).key, 7004);
+  assert.equal(container.children.at(-1).children[2].disabled, true);
+  await container.children.at(-1).children[0].onclick(event);
+  assert.equal(items()[0].key, 3000);
 });
 
 test('trimmed wide roots preserve nearby nodes and restore removed ranges with bounded paging', async () => {
@@ -90,12 +99,12 @@ test('trimmed wide roots preserve nearby nodes and restore removed ranges with b
   await node._ensureChildren();
   const first = container.children[0];
   let disposed = 0;
-  for (const child of container.children.slice(3900, 5000)) child._disposeBudget = () => disposed++;
-  node._trimChildren(new Set(container.children.slice(3900, 5000)));
-  assert.equal(items().length, 3900); assert.equal(container.children[0], first); assert.equal(disposed, 1100);
+  for (const child of container.children.slice(1900, 3000)) child._disposeBudget = () => disposed++;
+  node._trimChildren(new Set(container.children.slice(1900, 3000)));
+  assert.equal(items().length, 1900); assert.equal(container.children[0], first); assert.equal(disposed, 1100);
   const hint = container.children.find(child => child.className === 'trimmed-range');
   hint.children[1].onclick(event); await settle();
-  assert.equal(items().length, 100); assert.equal(items()[0].key, 3900);
+  assert.equal(items().length, 100); assert.equal(items()[0].key, 1900);
   assert.equal(container.children.at(-1).className, 'page-navigation');
   await node._ensureChildren(5004);
   assert.equal(items().at(-1).key, 5004); assert.equal(items().length, 5);

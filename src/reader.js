@@ -23,8 +23,10 @@ let searchGeneration = 0;
 let focusGeneration = 0;
 let searchTruncated = false;
 let activeLoad = null;
-let openQueue = Promise.resolve();
-let openBatchGeneration = 0;
+const fileLoads = [];
+let runningLoad = null, selectedLoad = null, loadSequence = 0, drainingLoads = false;
+let wakeBackgroundLoad = null;
+let pendingRailRefresh = false;
 let editMode = false;
 let vimPrefix = null;
 let editingNode = null;
@@ -76,8 +78,13 @@ const macPlatform = isMacPlatform(navigator);
 const primaryModifier = macPlatform ? '⌘' : 'Ctrl';
 const shortcutText = action => shortcutLabel(action, macPlatform);
 function editRevision(doc){
-  return {parsed:doc.parsed, records:doc.records, dirty:!!doc.dirty, text:doc.text,
+  return {parsed:doc.parsed, records:doc.records, dirty:!!doc.dirty, text:doc.text, editedSize:doc.editedSize,
+    untypedTopics:doc.untypedTopics,
     ideDraft:doc.ideDraft, ideError:doc.ideError, bad:doc.bad, totalLines:doc.totalLines};
+}
+function setEditedText(doc, text, size = new Blob([text]).size){
+  doc.text = text;
+  doc.editedSize = size;
 }
 function rememberEdit(doc, inputType = null){
   doc.ideFolds?.clear();
@@ -107,6 +114,7 @@ function setIdeZoom(value){
   document.getElementById('ideView').style.setProperty('--ide-size', `${13 * doc.ideZoom / 100}px`);
   document.getElementById('ideView').style.setProperty('--ide-line-height', `${23 * doc.ideZoom / 100}px`);
   syncIdeScroll();
+  scheduleSessionSave();
 }
 function renderIdeBuffer(doc){
   const text = doc.ideDraft ?? doc.text ?? '', lines = text.length > 2 * 1024 * 1024 ? [] : ideTextLines(text);
@@ -142,6 +150,7 @@ function toggleIdeFold(line){
     caret = row.visible + Math.min(row.length, raw - row.raw);
   }
   input.setSelectionRange?.(caret, caret); input.scrollTop = scroll; syncIdeScroll();
+  scheduleSessionSave();
 }
 function handleIdeInput(text, inputType){
   const doc = activeDoc(), input = document.getElementById('ideInput');
@@ -155,12 +164,19 @@ function handleIdeInput(text, inputType){
 }
 function applyIdeChange(text, inputType){
   const doc = activeDoc(); if(!doc || !ideActive || doc.source?.indexed || text === doc.text) return;
+  const size = new Blob([text]).size;
+  if(doc.design && size >= designLimitBytes()){
+    renderIdeBuffer(doc);
+    showToast(designLimitMessage());
+    return;
+  }
   const previousProblem = doc.ideError, previousCount = doc.records?.length;
   rememberEdit(doc, inputType);
   doc.ideFolds?.clear();
-  doc.ideDraft = text; doc.text = text; doc.dirty = true;
+  doc.ideDraft = text; setEditedText(doc, text, size); doc.dirty = true;
   try {
     Object.assign(doc, parseIdeText(text, doc.kind)); doc.ideError = '';
+    doc.untypedTopics = undefined;
     const resolved = resolveDoc(doc); doc.data = resolved.data; parsedData = doc.data;
     // Tree rendering refreshes its source when switching back; IDE search uses raw lines.
   } catch(error){ doc.ideError = error.message; }
@@ -169,6 +185,7 @@ function applyIdeChange(text, inputType){
   setSearchCount(''); nextMatchBtn.disabled = true; prevMatchBtn.disabled = true;
   renderIdeBuffer(doc); updateDocHeader(doc); syncEditing();
   if(previousProblem !== doc.ideError || previousCount !== doc.records?.length) renderRail();
+  else updateRailFileDetails(doc);
   if(searchInput.value){ clearTimeout(searchTimer); searchTimer = setTimeout(() => searchTree(searchInput.value), 180); }
 }
 function leaveIde(){
@@ -182,7 +199,9 @@ function formatIde(){
   try {
     const formatted = formatIdeText(doc.ideDraft ?? doc.text ?? '', doc.kind);
     doc.ideFolds?.clear();
-    applyIdeChange(formatted); renderIdeBuffer(doc); input.value = formatted; syncIdeScroll(); input.focus();
+    applyIdeChange(formatted);
+    if(doc.text !== formatted) return;
+    renderIdeBuffer(doc); input.value = formatted; syncIdeScroll(); input.focus();
   } catch(error){
     const status = document.getElementById('ideStatus');
     status.textContent = '无法格式化：' + error.message; status.title = status.textContent; status.classList.add('invalid');
@@ -193,9 +212,9 @@ function formatIde(){
 function syncDocumentMenu(){
   if(!desktop) return;
   const doc = activeDoc();
-  const actions = {'switch-view':'switchView','edit-mode':'editMode','undo-edit':'undo','redo-edit':'redo','format-json':'format'};
+  const actions = {'switch-view':'switchView','edit-mode':'editMode','design-mode':'designMode','undo-edit':'undo','redo-edit':'redo','format-json':'format'};
   updateDocumentMenu([
-    ['switch-view','switchViewBtn'], ['edit-mode','editModeBtn'],
+    ['switch-view','switchViewBtn'], ['edit-mode','editModeBtn'], ['design-mode','designModeBtn'],
     ['undo-edit','undoEditBtn'], ['redo-edit','redoEditBtn'], ['save','saveBtn'], ['save-copy','saveCopyBtn'], ['format-json','formatIdeBtn']
   ].map(([id, buttonId]) => {
     const button = document.getElementById(buttonId);
@@ -228,21 +247,35 @@ function resizeNodeEditor(){
   input.style.height = `${Math.min(Math.max(72, input.scrollHeight + 2 || 72), Math.max(72, Math.min(300, window.innerHeight - 300)))}px`;
 }
 
-function syncDocumentView(doc){
+function documentViewState(doc, keepDraft = true){
   const large = doc.source?.indexed || needsIndex(doc.size, settings.largeFileThresholdMiB);
   const mode = doc.viewOverride || (doc.design ? 'tree' : settings.viewMode);
-  const available = view => !doc.error && !large && view !== 'tree'
-    && ((!settings.limitIdeComplexity && view !== 'auto') || !!ideModel(doc, view, settings.largeFileThresholdMiB));
-  ideActive = !large && (typeof doc.ideDraft === 'string' || available(mode));
+  const available = !doc.error && !large;
+  const canUseIde = available && (!settings.limitIdeComplexity || !!ideModel(doc, 'ide', settings.largeFileThresholdMiB));
+  const active = !large && ((keepDraft && typeof doc.ideDraft === 'string')
+    || (mode === 'ide' && canUseIde)
+    || (mode === 'auto' && available && !!ideModel(doc, 'auto', settings.largeFileThresholdMiB)));
+  return {active, canUseIde, large};
+}
+
+function syncDocumentView(doc, {active, canUseIde, large} = documentViewState(doc), refreshBuffer = true){
+  ideActive = active;
   const panel = document.getElementById('ideView');
   panel.hidden = !ideActive; viewport.hidden = ideActive;
-  if(ideActive){
-    const input = document.getElementById('ideInput'); input.value = doc.ideDraft ?? (doc.text || '').replace(/\r\n/g,'\n');
-    renderIdeBuffer(doc); setIdeZoom(doc.ideZoom || 100); input.scrollTop = doc.ideScrollTop || 0; syncIdeScroll();
-  }else{ document.getElementById('ideLines').replaceChildren(); ideLocations = new Map(); document.getElementById('ideStatus').hidden = true; }
+  if(ideActive && refreshBuffer){
+    const input = document.getElementById('ideInput');
+    input.value = doc.ideDraft ?? (doc.text || '').replace(/\r\n/g,'\n');
+    renderIdeBuffer(doc);
+    setIdeZoom(doc.ideZoom || 100);
+    if(doc.ideSelection) input.setSelectionRange?.(doc.ideSelection.start, doc.ideSelection.end, doc.ideSelection.direction);
+    input.scrollTop = doc.ideScrollTop || 0;
+    input.scrollLeft = doc.ideScrollLeft || 0;
+    syncIdeScroll();
+    updateIdeScope();
+  }else if(!ideActive && refreshBuffer){ document.getElementById('ideLines').replaceChildren(); ideLocations = new Map(); document.getElementById('ideStatus').hidden = true; }
   const switcher = document.getElementById('switchViewBtn');
   switcher.textContent = ideActive ? '树形视图' : 'IDE 视图';
-  switcher.disabled = !ideActive && !available('ide');
+  switcher.disabled = !ideActive && !canUseIde;
   switcher.title = switcher.disabled ? (large ? '大文件仅支持树形视图' : '当前文档无法切换到 IDE 视图')
     : `切换当前文件的查看方式（${shortcutText('switchView')}）`;
   for(const id of ['expandAllBtn','collapseAllBtn','resetViewBtn','recordTemplateBtn','editorBtn']) document.getElementById(id).hidden = ideActive;
@@ -268,7 +301,6 @@ function syncEditing(){
   const doc = activeDoc();
   if(!doc || doc.error || doc.source?.indexed || doc.design) editMode = false;
   viewer.classList.toggle('editing', editMode);
-  document.getElementById('editModeStatus').hidden = !editMode;
   document.getElementById('editModeBtn').setAttribute('aria-pressed', String(editMode));
   document.getElementById('editModeBtn').textContent = editMode ? '退出编辑' : '编辑模式';
   document.getElementById('editModeBtn').disabled = !doc || !!doc.error || !!doc.source?.indexed || !!doc.design;
@@ -290,8 +322,47 @@ function setEditMode(on, notify = false){
   }
 }
 
+function normalizeDesignLimit(value){
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.min(32, Math.max(1, Math.trunc(number))) : 8;
+}
+
+function designLimitBytes(){
+  return settings.designLimitMiB * 1024 ** 2;
+}
+
+function designLimitMessage(){
+  return `设计模式仅支持小于 ${settings.designLimitMiB} MB 的 JSON 文档`;
+}
+
 function canDesign(doc){
-  return !!doc && doc.kind === 'json' && !doc.error && !doc.source?.indexed;
+  return !!doc && doc.kind === 'json' && !doc.error && !doc.source?.indexed &&
+    (doc.editedSize ?? doc.size) < designLimitBytes();
+}
+
+function leaveDesign(doc){
+  doc.design = false;
+  doc.viewOverride = doc.designPreviousView;
+  delete doc.designPreviousView;
+}
+
+function toggleDesignMode(){
+  const doc = activeDoc();
+  if(!doc || templateEditing || !leaveIde()) return;
+  if(!doc.design && !canDesign(doc)){ showToast(designLimitMessage()); return; }
+  snapshotDoc();
+  if(doc.design) leaveDesign(doc);
+  else {
+    doc.designPreviousView = doc.viewOverride;
+    doc.design = true;
+    doc.viewOverride = 'tree';
+    doc.ideDraft = undefined;
+    editMode = false;
+    persistDesignDraft(doc);
+  }
+  activateDoc(doc.id);
+  saveSession();
+  (ideActive ? document.getElementById('ideInput') : viewport).focus({preventScroll:true});
 }
 
 function designTarget(node = selectedCopyNode){
@@ -305,6 +376,14 @@ function designTarget(node = selectedCopyNode){
 function syncDesignControls(){
   const doc = activeDoc(), target = designTarget();
   const visible = !!doc?.design && canDesign(doc) && !ideActive && !templateEditing;
+  const button = document.getElementById('designModeBtn');
+  button.textContent = doc?.design ? '退出设计模式' : '设计模式';
+  button.setAttribute('aria-pressed', String(!!doc?.design));
+  button.disabled = !doc || (!doc.design && !canDesign(doc));
+  button.title = button.disabled && doc ? designLimitMessage() : button.textContent + '（' + shortcutText('designMode') + '）';
+  const status = document.getElementById('editModeStatus');
+  status.hidden = !visible && !editMode;
+  status.textContent = visible ? '设计模式' : '编辑模式 · Esc 退出';
   document.getElementById('designDock').hidden = !visible || settings.showTopicDock !== true;
   viewer.classList.toggle('designing', visible);
   const card = target?.child ? selectedCopyNode._card : null;
@@ -406,14 +485,23 @@ function commitTopicEdit({doc, path}, action, name){
       return deleting ? [] : [after + item.slice(before.length)];
     };
   }
+  const text = serializeDocument({kind:'json', parsed:next});
+  const size = new Blob([text]).size;
+  if(size >= designLimitBytes()) throw new Error(designLimitMessage());
   snapshotDoc();
   rememberEdit(doc);
   Object.assign(doc.editHistory.at(-1), { topicSelection:path, openPaths:doc.openPaths });
   const open = (doc.openPaths || []).flatMap(remapOpenPath);
   for(let i = 0; i <= parent.length; i++) open.push(encodePath(parent.slice(0, i)));
   doc.openPaths = [...new Set(open)];
+  const untyped = new Set([...doc.untypedTopics || []].flatMap(remapOpenPath));
+  if(action === 'child' || action === 'sibling'){
+    untyped.delete(encodePath(parent));
+    untyped.add(encodePath(selection));
+  }
+  doc.untypedTopics = untyped;
   doc.parsed = next;
-  doc.text = serializeDocument(doc);
+  setEditedText(doc, text, size);
   doc.dirty = true;
   doc.searchQuery = '';
   persistDesignDraft(doc);
@@ -452,11 +540,12 @@ function canEditNode(node){
 function beginNodeEdit(node){
   if(!canEditNode(node)) return;
   const doc = activeDoc(), value = valueAt(doc.data, node._sourcePath);
-  const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  const untyped = doc.design && doc.untypedTopics?.has(encodePath(node._sourcePath));
+  const type = untyped ? '' : value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
   editingNode = { doc, path: [...node._sourcePath], type };
   document.getElementById('valueEditPath').textContent = encodePath(node._path);
   document.getElementById('valueEditType').value = type;
-  document.getElementById('valueEditText').value = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  document.getElementById('valueEditText').value = untyped ? '' : typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   document.getElementById('valueEditError').textContent = '';
   closeMenu(); document.getElementById('valueEditDialog').showModal();
   document.getElementById('valueEditHint').textContent = doc.kind === 'jsonl'
@@ -469,16 +558,24 @@ function applyNodeEdit(){
   const state = editingNode;
   if(!state || state.doc !== activeDoc()) throw new Error('当前文件已切换，请重新选择节点');
   const doc = state.doc;
-  const value = parseEdit(document.getElementById('valueEditText').value, document.getElementById('valueEditType').value);
+  const type = document.getElementById('valueEditType').value;
+  if(!type) throw new Error('请选择值类型');
+  const value = parseEdit(document.getElementById('valueEditText').value, type);
   const wrapped = doc.kind === 'jsonl' && doc.records.length > 1 && settings.jsonlWrapArray !== false;
   if(doc.kind === 'jsonl' && wrapped && !state.path.length && !Array.isArray(value)) throw new Error('JSONL 记录列表必须保留为数组');
   if(doc.kind === 'jsonl' && wrapped && !state.path.length && !value.length) throw new Error('JSONL 至少需要一条记录');
   const next = replaceValue(doc.data, state.path, value);
+  const designText = doc.design ? serializeDocument({kind:'json', parsed:next}) : null;
+  const designSize = designText === null ? undefined : new Blob([designText]).size;
+  if(designSize !== undefined && designSize >= designLimitBytes()) throw new Error(designLimitMessage());
   snapshotDoc();
   rememberEdit(doc);
   if(doc.design){
     Object.assign(doc.editHistory.at(-1), { topicSelection:state.path, openPaths:doc.openPaths });
     const changed = encodePath(state.path);
+    if(doc.untypedTopics){
+      doc.untypedTopics = new Set([...doc.untypedTopics].filter(path => path !== changed && !isPathPrefix(changed, path, false)));
+    }
     doc.openPaths = (doc.openPaths || []).filter(path => !isPathPrefix(changed, path, false));
     if(value === null || typeof value !== 'object') doc.openPaths = doc.openPaths.filter(path => path !== changed);
   }
@@ -486,7 +583,7 @@ function applyNodeEdit(){
   else if(wrapped) doc.records = next;
   else { doc.records = doc.records.slice(); doc.records[0] = next; }
   doc.dirty = true;
-  doc.text = serializeDocument(doc);
+  setEditedText(doc, designText ?? serializeDocument(doc), designSize);
   // Export omits skipped JSONL lines; the loaded document retains its diagnostics.
   doc.searchQuery = '';
   editingNode = null; document.getElementById('valueEditDialog').close();
@@ -501,8 +598,6 @@ const viewer = document.getElementById('viewer');
 const fileInput = document.getElementById('fileInput');
 const chooseBtn = document.getElementById('chooseBtn');
 const dropZone = document.getElementById('dropZone');
-const jsonlOpts = document.getElementById('jsonlOpts');
-const jsonlHint = document.getElementById('jsonlHint');
 
 const fileName = document.getElementById('fileName');
 const fileSub = document.getElementById('fileSub');
@@ -553,6 +648,9 @@ const viewportWindow = new ViewportWindow(viewport);
 const pathText = document.getElementById('pathText');
 
 const fileRail = document.getElementById('fileRail');
+const loadingStatus = document.getElementById('loadingStatus');
+const loadingLabel = document.getElementById('loadingLabel');
+const loadingProgress = document.getElementById('loadingProgress');
 const docError = document.getElementById('docError');
 
 const zoomOutBtn = document.getElementById('zoomOutBtn');
@@ -573,29 +671,12 @@ const MIN_SCALE = .45;
 const MAX_SCALE = 2.2;
 
 /* ---------- JSONL / 解析工具 ---------- */
-/* 文件形态提示：让用户知道本次是哪种解析路径、以及哪些设置正在生效 */
-const JSONL_IDLE_HINT = 'JSON · JSONL · NDJSON';
-
-function modeHints(){
+function jsonlModeHints(){
   const bits = [];
   bits.push(settings.jsonlWrapArray !== false ? '数组根' : '首条为根');
   bits.push(settings.strictJsonl ? '严格模式（坏行即拒绝）' : '坏行跳过');
   return bits.join(' · ');
 }
-
-function noteFileMode(kind, extra){
-  const on = kind === 'jsonl';
-  jsonlOpts.classList.toggle('available', on);
-  if(on){
-    jsonlHint.textContent = (extra && extra.trim() ? extra.trim().split('\n')[0] : '已识别为 JSONL')
-      + ' · ' + modeHints();
-  }else{
-    jsonlHint.textContent = JSONL_IDLE_HINT;
-  }
-  return on;
-}
-
-function clearJsonlOptions(){ noteFileMode('json'); }
 
 /* ---------- 多文件：文档（条纹）模型 ----------
    每份打开的文件是一个文档；左侧条纹栏里一根条纹对应一个文档。
@@ -655,7 +736,7 @@ function resolveDoc(doc){
   }
   if(doc.kind !== 'jsonl'){
     if(doc.error) return { error: doc.error };
-    return { data: doc.parsed, rootLabel: doc.design ? '根' : 'root', sub: '' };
+    return { data: doc.parsed, rootLabel: 'root', sub: '' };
   }
 
   const parseBad = doc.bad.filter(b => !b.comment);
@@ -670,7 +751,7 @@ function resolveDoc(doc){
     ].filter(Boolean).join('，');
     return { error:
       `严格模式下拒绝加载：${why}（共 ${doc.totalLines} 行）。\n` +
-      `可在「设置 → JSONL」关闭严格模式以跳过这些行。\n\n` + badLinesPreview(doc.bad) };
+      `可在「设置 → 文件与恢复 → JSONL」关闭严格模式以跳过这些行。\n\n` + badLinesPreview(doc.bad) };
   }
 
   if(!doc.records.length) return { error: doc.error || '文件内没有可解析的记录' };
@@ -700,16 +781,23 @@ function snapshotDoc(){
   const doc = activeDoc();
   if(!doc || doc.error) return;
   if(ideActive){
-    doc.ideScrollTop = document.getElementById('ideInput').scrollTop;
+    const input = document.getElementById('ideInput');
+    doc.ideScrollTop = input.scrollTop;
+    doc.ideScrollLeft = input.scrollLeft;
+    if(Number.isInteger(input.selectionStart) && Number.isInteger(input.selectionEnd)){
+      doc.ideSelection = { start:input.selectionStart, end:input.selectionEnd, direction:input.selectionDirection };
+    }
     doc.searchQuery = searchInput.value || '';
     return;
   }
 
   if(restoringExpansion !== expansionGeneration){
-    doc.openPaths = [...tree.querySelectorAll('.tree-node.open')]
-      .map(n => n.dataset.path);
+    const open = [...tree.querySelectorAll('.tree-node.open')];
+    doc.openPaths = open.map(node => node.dataset.path);
+    doc.pageOffsets = Object.fromEntries(open.filter(node => node._pageStart > 0)
+      .map(node => [node.dataset.path, node._pageStart]));
+    if(lastViewState) doc.view = { ...lastViewState };
   }
-  if(lastViewState) doc.view = { x: lastViewState.x, y: lastViewState.y, scale: lastViewState.scale };
   doc.searchQuery = searchInput.value || '';
   doc.data = parsedData;
   doc.rootLabel = currentRootLabel;
@@ -719,12 +807,15 @@ function snapshotDoc(){
 function activateDoc(id, designPath = null){
   const doc = docs.find(d => d.id === id);
   if(!doc) return;
+  selectedLoad = null;
+  loadingStatus.hidden = true;
   if(activeDoc()) activeDoc().ideEditGroup = null;
 
   vimPrefix = null;
   closeMenu();
   if(activeDocId && activeDocId !== id) snapshotDoc();
   activeDocId = id;
+  if(doc.design && !canDesign(doc)) leaveDesign(doc);
   expansionGeneration++;
   viewportWindow.clear();
   discardPagedTree(tree);
@@ -745,7 +836,6 @@ function activateDoc(id, designPath = null){
   parsedData = doc.data;
   currentRootLabel = doc.rootLabel;
 
-  noteFileMode(doc.kind, doc.sub);
   landing.style.display = 'none';
   viewer.style.display = 'flex';
 
@@ -781,13 +871,13 @@ function activateDoc(id, designPath = null){
   }
 
   const activation = expansionGeneration;
-  if(Array.isArray(doc.openPaths)) restoringExpansion = activation;
+  restoringExpansion = activation;
   requestAnimationFrame(async () => {
     if(activation !== expansionGeneration) return;
     if(activeDocId !== doc.id) return;
     if(Array.isArray(doc.openPaths)){
       try{
-        await expandByPaths(doc.openPaths, { exact: true });
+        await expandByPaths(doc.openPaths, { exact:true, pageOffsets:doc.pageOffsets });
       }finally{
         if(restoringExpansion === activation) restoringExpansion = null;
       }
@@ -795,7 +885,11 @@ function activateDoc(id, designPath = null){
       if(doc.view) applySessionView(doc.view); else resetView();
     }else{
       resetView();
-      await applyOpenPolicy();
+      try{
+        await applyOpenPolicy();
+      }finally{
+        if(restoringExpansion === activation) restoringExpansion = null;
+      }
       if(activeDocId !== doc.id || activation !== expansionGeneration) return;
       if(doc.view) applySessionView(doc.view);
     }
@@ -822,7 +916,8 @@ function closeDoc(id){
     return;
   }
   persistDesignDraft(closing);
-  closing.source?.dispose();
+  closing.indexRebuild?.abort();
+  closing.source?.dispose({ forget:true });
 
   if(wasActive) snapshotDoc();
   docs.splice(idx, 1);
@@ -848,7 +943,8 @@ function updateDocHeader(doc){
   const kindTag = doc.kind === 'jsonl' ? ' · JSONL' : '';
   const rootType = doc.source?.indexed ? doc.source.getRoot().type : null;
   const typeName = doc.error ? '无法预览' : rootType ? ({array:'Array',object:'Object'}[rootType] || rootType) : getTypeName(doc.data);
-  fileSub.textContent = `${formatBytes(doc.size)} · ${typeName}${kindTag}`;
+  fileSub.textContent = `${formatBytes(doc.editedSize ?? doc.size)} · ${typeName}${kindTag}`;
+  fileSub.title = doc.kind === 'jsonl' ? [doc.sub, jsonlModeHints()].filter(Boolean).join(' · ') : doc.sub;
 }
 
 function resetSearchState(){
@@ -888,12 +984,109 @@ function railMeta(doc, problem = fileProblem(doc)){
   if(doc.kind === 'jsonl' && doc.records) bits.push(`${doc.records.length} 条记录`);
   if(problem.error) bits.push('无法预览');
   else if(problem.skipped) bits.push(`已跳过 ${problem.skipped} 行`);
-  bits.push(formatBytes(doc.size));
+  bits.push(formatBytes(doc.editedSize ?? doc.size));
   return bits.join(' · ');
 }
 
+let railPreview = null, railList = null, railPreviewRange = '';
+function setRailFileDetails(doc, tab, meta, text, error){
+  meta.textContent = text;
+  tab.title = `${doc.path || doc.name}\n${text}${error ? '\n' + error : ''}`;
+  tab.setAttribute('aria-label', `${doc.name}，${text}`);
+}
+
+function updateRailFileDetails(doc){
+  const slot = Array.from(railList?.children || []).find(item => item.dataset.id === doc.id);
+  if(!slot || slot.classList.contains('loading')) return;
+  const tab = slot.firstElementChild;
+  const problem = fileProblem(doc);
+  setRailFileDetails(doc, tab, tab.querySelectorAll('.file-tab-meta')[0], railMeta(doc, problem), problem.error);
+}
+function syncRailDialOverflow(){
+  const overflows = fileRail.classList.contains('rail-dial') &&
+    railList?.scrollHeight > railList?.clientHeight;
+  fileRail.classList.toggle('rail-dial-overflow', overflows);
+}
+
+function createRailScrollControl(direction){
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'rail-scroll rail-scroll-' + (direction < 0 ? 'up' : 'down');
+  button.setAttribute('aria-label', direction < 0 ? '向上滚动文件栏' : '向下滚动文件栏');
+
+  let drag = null;
+  let dragged = false;
+  button.addEventListener('pointerdown', event => {
+    if(!event.isPrimary || event.button !== 0) return;
+    drag = { id: event.pointerId, y: event.clientY, top: railList.scrollTop };
+    dragged = false;
+    button.setPointerCapture(event.pointerId);
+  });
+  button.addEventListener('pointermove', event => {
+    if(drag?.id !== event.pointerId) return;
+    const delta = drag.y - event.clientY;
+    if(!dragged && Math.abs(delta) < 4) return;
+    dragged = true;
+    railList.scrollTop = drag.top + delta;
+  });
+  button.addEventListener('lostpointercapture', () => { drag = null; });
+  button.addEventListener('click', event => {
+    if(!dragged || event.detail === 0) railList.scrollTop += direction * railList.clientHeight / 2;
+    dragged = false;
+  });
+  button.addEventListener('wheel', event => {
+    if(event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
+    const unit = event.deltaMode === 1 ? 12 : event.deltaMode === 2 ? railList.clientHeight : 1;
+    railList.scrollTop += event.deltaY * unit;
+  }, { passive:false });
+  return button;
+}
+
+const railScrollUp = createRailScrollControl(-1);
+const railScrollDown = createRailScrollControl(1);
+
+function syncRailPreview(){
+  syncRailDialOverflow();
+  if(!railPreview || !railList || !railPreview.clientHeight) return;
+  const style = getComputedStyle(fileRail);
+  const height = parseFloat(style.getPropertyValue('--rail-preview-row-height'));
+  const gap = parseFloat(style.getPropertyValue('--rail-row-gap'));
+  const stride = height + gap;
+  const total = railList.children.length - 2;
+  const count = Math.min(total, Math.floor((railPreview.clientHeight + gap) / stride));
+  const active = Math.max(0, Array.from(railList.children).findIndex(slot =>
+    slot.classList.contains(selectedLoad ? 'requested' : 'active')));
+  const start = Math.min(Math.max(0, active - Math.floor(count / 2)), total - count);
+  const rowsHeight = Math.max(0, total * stride - gap);
+  // The separator occupies 1px plus 8px of margins in the compact rail.
+  const showAdd = count === total && rowsHeight + height + 9 + gap * (total ? 2 : 1) <= railPreview.clientHeight;
+  const range = `${start}:${count}:${showAdd}`;
+  if(range === railPreviewRange) return;
+  railPreviewRange = range;
+  railPreview.replaceChildren();
+  const previewSlot = slot => {
+    const item = document.createElement('div');
+    item.className = slot.className.replace('file-slot', 'rail-preview-slot');
+    const tab = document.createElement('div');
+    tab.className = 'file-tab';
+    item.appendChild(tab);
+    railPreview.appendChild(item);
+  };
+  for(let index = start; index < start + count; index++) previewSlot(railList.children[index]);
+  if(showAdd){
+    const sep = document.createElement('div');
+    sep.className = 'rail-sep';
+    railPreview.appendChild(sep);
+    previewSlot(railList.children[total + 1]);
+  }
+}
+if(typeof ResizeObserver === 'function') new ResizeObserver(syncRailPreview).observe(fileRail);
+else window.addEventListener('resize', syncRailPreview);
+
 function renderRail(){
-  const previousScroll = fileRail.querySelectorAll('.rail-list')[0]?.scrollTop || 0;
+  pendingRailRefresh = false;
+  const previousScroll = railList?.scrollTop || 0;
   applyRailStyle();
   fileRail.innerHTML = '';
 
@@ -907,18 +1100,26 @@ function renderRail(){
   list.setAttribute('tabindex', '0');
   list.setAttribute('aria-label', '已打开的文件列表，可滚动');
 
-  docs.forEach(doc => {
-    const problem = fileProblem(doc);
+  const openKeys = new Set(docs.map(docKey));
+  const jobsByPath = new Map(fileLoads.filter(job => job.key).map(job => [job.key, job]));
+  const pending = fileLoads.filter(job => !job.key || !openKeys.has(job.key));
+  const entries = [...docs, ...pending].sort((a,b) => (a.loadOrder || 0) - (b.loadOrder || 0));
+  entries.forEach(doc => {
+    const job = doc.file ? doc : jobsByPath.get(docKey(doc));
+    const loading = job || doc.indexRebuild;
+    const problem = loading ? {} : fileProblem(doc);
+    const metaText = loading ? '正在加载…' : railMeta(doc, problem);
     const slot = document.createElement('div');
     slot.className = 'file-slot'
       + (doc.id === activeDocId ? ' active' : '')
+      + (loading ? ' loading' : '')
+      + (job && job === selectedLoad ? ' requested' : '')
       + (problem.error ? ' error' : problem.skipped ? ' warning' : '');
     slot.dataset.id = doc.id;
 
     const tab = document.createElement('div');
     tab.className = 'file-tab';
-    tab.title = `${doc.path || doc.name}\n${railMeta(doc, problem)}${problem.error ? '\n' + problem.error : ''}`;
-    tab.setAttribute('aria-label', `${doc.name}，${railMeta(doc, problem)}`);
+    if(loading) tab.setAttribute('aria-busy', 'true');
     tab.setAttribute('aria-current', doc.id === activeDocId ? 'true' : 'false');
 
     const dot = document.createElement('span');
@@ -931,7 +1132,7 @@ function renderRail(){
     nm.textContent = doc.name;
     const meta = document.createElement('div');
     meta.className = 'file-tab-meta';
-    meta.textContent = railMeta(doc, problem);
+    setRailFileDetails(doc, tab, meta, metaText, problem.error);
     info.append(nm, meta);
 
     const close = document.createElement('button');
@@ -941,12 +1142,14 @@ function renderRail(){
     close.title = '关闭这份文件';
     close.addEventListener('click', e => {
       e.stopPropagation();
-      closeDoc(doc.id);
+      if(job) cancelFileLoad(job);
+      if(!doc.file) closeDoc(doc.id);
     });
 
     tab.append(dot, info, close);
     tab.addEventListener('click', () => {
-      if(doc.id !== activeDocId) activateDoc(doc.id);
+      if(job) prioritizeFileLoad(job);
+      else if(doc.id !== activeDocId || selectedLoad) activateDoc(doc.id);
     });
 
     slot.appendChild(tab);
@@ -983,8 +1186,31 @@ function renderRail(){
   add.appendChild(addTab);
   list.appendChild(add);
 
-  fileRail.appendChild(list);
+  railList = list;
+  railPreview = document.createElement('div');
+  railPreview.className = 'rail-preview';
+  railPreview.setAttribute('aria-hidden', 'true');
+  railPreviewRange = '';
+  fileRail.append(railPreview, railScrollUp, list, railScrollDown);
   list.scrollTop = previousScroll;
+  syncPendingRail();
+  syncRailPreview();
+}
+
+function scheduleRailRefresh(){
+  if(pendingRailRefresh) return;
+  pendingRailRefresh = true;
+  requestAnimationFrame(() => {
+    if(pendingRailRefresh) renderRail();
+  });
+}
+
+function syncPendingRail(){
+  const pendingOnly = !docs.length && fileLoads.length > 0;
+  viewer.classList.toggle('pending-files', pendingOnly);
+  if(docs.length) return;
+  viewer.style.display = pendingOnly ? 'flex' : 'none';
+  landing.style.display = pendingOnly ? 'none' : 'grid';
 }
 
 /* ---------- 文档错误面板 ---------- */
@@ -1086,15 +1312,7 @@ viewer.addEventListener('drop', e => {
 
 /* 一次打开多个文件（多选 / 拖入多个） */
 function openFiles(fileList){
-  const files = [...fileList].filter(Boolean);
-  const generation = openBatchGeneration;
-  openQueue = openQueue.catch(() => {}).then(async () => {
-    for(const file of files){
-      if(generation !== openBatchGeneration) break;
-      await loadFile(file);
-    }
-  });
-  return openQueue;
+  return queueFiles([...fileList].filter(Boolean));
 }
 
 let pastedSequence = 0;
@@ -1138,20 +1356,113 @@ async function chooseFiles(){
   if(!desktop){ fileInput.click(); return; }
   if(pickingFiles) return;
   pickingFiles = true;
-  try{ await openPaths(await selectNativeFiles()); }
+  try{ openPaths(await selectNativeFiles()); }
   catch(error){ showToast('无法选择文件：' + error); }
   finally{ pickingFiles = false; }
 }
 
-function openPaths(paths, sessions){
-  const generation = openBatchGeneration;
-  openQueue = openQueue.catch(() => {}).then(async () => {
-    for(const path of paths){
-      if(generation !== openBatchGeneration) break;
-      await loadFile({ path }, sessions);
+function filePathKey(path){
+  return (navigator.userAgentData?.platform || navigator.platform || '').startsWith('Win') ? path.toLowerCase() : path;
+}
+
+function openPaths(paths, sessions, preferred = null){
+  return queueFiles(paths.map(path => ({ path })), sessions, preferred);
+}
+
+function queueFiles(files, sessions, preferred){
+  const batch = {};
+  const jobs = files.map(file => {
+    const key = file.path && filePathKey(file.path);
+    const existing = key && fileLoads.find(job => job.key === key);
+    if(existing){
+      if(sessions) existing.sessions = sessions;
+      else existing.batch = batch;
+      return existing;
     }
+    const job = { id:`load-${++loadSequence}`, loadOrder:loadSequence, file, path:file.path, key,
+      name:file.name || file.path.split(/[\\/]/).pop(), sessions, batch };
+    job.done = new Promise(resolve => { job.finish = resolve; });
+    fileLoads.push(job);
+    return job;
   });
-  return openQueue;
+  if(!jobs.length) return Promise.resolve();
+  const preferredKey = preferred && filePathKey(preferred);
+  const target = sessions
+    ? !selectedLoad && !activeDoc() && (jobs.find(job => job.key === preferredKey) || jobs[0])
+    : jobs[0];
+  if(target) prioritizeFileLoad(target);
+  else renderRail();
+  saveReopenCopy();
+  if(!drainingLoads){
+    drainingLoads = true;
+    Promise.resolve().then(drainFileLoads);
+  }
+  return Promise.all(jobs.map(job => job.done));
+}
+
+function prioritizeFileLoad(job){
+  selectedLoad = job;
+  wakeBackgroundLoad?.();
+  loadingStatus.hidden = runningLoad !== job;
+  if(runningLoad && runningLoad !== job) runningLoad.controller.abort();
+  renderRail();
+  saveReopenCopy();
+}
+
+function cancelFileLoad(job){
+  const index = fileLoads.indexOf(job);
+  if(index < 0) return;
+  fileLoads.splice(index, 1);
+  if(selectedLoad === job) selectedLoad = null;
+  if(runningLoad === job){
+    job.controller.abort();
+    loadingStatus.hidden = true;
+  }else job.finish();
+  if(!fileLoads.length) wakeBackgroundLoad?.();
+  renderRail();
+  saveReopenCopy();
+}
+
+function waitForBackgroundLoad(){
+  return new Promise(resolve => {
+    const idle = window.requestIdleCallback(() => {
+      wakeBackgroundLoad = null;
+      resolve();
+    }, { timeout:180 });
+    wakeBackgroundLoad = () => {
+      window.cancelIdleCallback(idle);
+      wakeBackgroundLoad = null;
+      resolve();
+    };
+  });
+}
+
+async function drainFileLoads(){
+  try{
+    while(fileLoads.length){
+      if(!selectedLoad && activeDoc() && typeof window.requestIdleCallback === 'function'){
+        await waitForBackgroundLoad();
+        if(!fileLoads.length) break;
+      }
+      const job = selectedLoad || fileLoads[0];
+      runningLoad = job;
+      job.controller = new AbortController();
+      await loadFile(job.file, job.sessions, job);
+      runningLoad = null;
+      const index = fileLoads.indexOf(job);
+      if(index >= 0 && job.controller.signal.aborted) continue;
+      if(index >= 0) fileLoads.splice(index, 1);
+      const wasSelected = selectedLoad === job;
+      if(wasSelected) selectedLoad = null;
+      job.finish();
+      if(wasSelected || !fileLoads.length) renderRail();
+      else scheduleRailRefresh();
+      saveReopenCopy();
+    }
+  }finally{
+    runningLoad = null;
+    drainingLoads = false;
+  }
 }
 
 function parseInBackground(payload, signal){
@@ -1167,11 +1478,11 @@ function parseInBackground(payload, signal){
     signal.addEventListener('abort', abort, { once: true });
     worker.onmessage = ({ data }) => finish(data.error ? new Error(data.error) : null, data);
     worker.onerror = event => finish(new Error(event.message || '后台解析失败'));
-    worker.postMessage(payload);
+    worker.postMessage(payload, payload.bytes ? [payload.bytes] : []);
   });
 }
 
-async function loadFile(file, sessions){
+async function loadFile(file, sessions, job = null){
   const threshold = settings.largeFileThresholdMiB;
   if(!file.path && needsIndex(file.size, threshold)){
     showToast(`文件超过 ${threshold} MB，当前入口无法建立磁盘索引`);
@@ -1180,13 +1491,15 @@ async function loadFile(file, sessions){
   if(!file.path && !/\.(json|jsonl|ndjson|jsonlines|txt)$/i.test(file.name)){
     showToast(`已跳过 ${file.name}：不支持的文件格式`); return;
   }
-  const controller = new AbortController();
+  const controller = job?.controller || new AbortController();
   activeLoad = controller;
-  loadingStatus.hidden = false;
-  loadingLabel.textContent = '正在读取 ' + (file.name || file.path) + '…';
+  loadingStatus.hidden = !!job && selectedLoad !== job && !!activeDoc();
+  const name = file.name || file.path?.split(/[\\/]/).pop();
+  loadingLabel.textContent = name ? `正在读取 ${name}…` : '正在读取文件…';
   loadingProgress.removeAttribute('value');
   let indexedSource = null;
   let attached = false;
+  let lastPercent = -1;
   try{
     const metadata = file.path ? await statNativeFile(file.path) : file;
     if(controller.signal.aborted) return;
@@ -1195,24 +1508,26 @@ async function loadFile(file, sessions){
       loadingLabel.textContent = '正在后台建立索引 · 0% · ' + metadata.name;
       indexedSource = await openIndexedFile(metadata, {
         signal: controller.signal, wrap: settings.jsonlWrapArray !== false, strict: !!settings.strictJsonl,
+        reuse: settings.indexRebuild === 'smart',
         progress(bytes){
+          if(controller.signal.aborted || loadingStatus.hidden) return;
           const percent = Math.min(99, Math.floor(bytes / Math.max(1, metadata.size) * 100));
+          if(percent === lastPercent) return;
+          lastPercent = percent;
           loadingProgress.value = percent;
           loadingLabel.textContent = `正在后台建立索引 · ${percent}% · ${metadata.name}`;
         }
       });
       result = { kind: indexedSource.info.kind }; text = '';
     }else{
-      source = file.path ? await readNativeFile(metadata.path, threshold * 1024 ** 2) : file;
+      const bytes = file.path ? await readNativeFile(metadata.path, threshold * 1024 ** 2) : null;
       controller.signal.throwIfAborted();
+      if(bytes) source = { ...metadata, size:bytes.byteLength };
       loadingLabel.textContent = '正在后台解析 ' + source.name + '…';
       ({ result, text } = await parseInBackground({
         name: source.name, size: source.size, file: file.path ? null : file,
-        text: file.path ? source.text : null, keepText: !desktop || !!file.temporary
+        bytes, keepText: !!bytes || !desktop || !!file.temporary
       }, controller.signal));
-      // Native parsing avoids returning another copy through the worker, but
-      // the IDE needs the already-read original text, including its formatting.
-      if(file.path) text = source.text;
     }
     if(controller.signal.aborted) return;
     if(file.temporary && result.error){ showToast('无法粘贴：' + result.error); return; }
@@ -1224,37 +1539,101 @@ async function loadFile(file, sessions){
       if(doc.kind === 'jsonl') doc.name = doc.name.replace(/\.json$/, '.jsonl');
     }
     // Windows paths are case insensitive; native canonical paths identify documents.
-    doc.identity = doc.path && (navigator.userAgentData?.platform || navigator.platform || '').startsWith('Win') ? doc.path.toLowerCase() : doc.path;
+    doc.identity = doc.path && filePathKey(doc.path);
     if(doc.kind === 'jsonl') doc.bad ||= [];
     const duplicate = docs.find(d => doc.path ? docKey(d) === docKey(doc)
       : !file.temporary && !d.temporary && !d.path && d.name === doc.name && d.size === doc.size && d.text === doc.text);
     if(duplicate){
       if(duplicate.dirty && !await confirmDiscardEdits()) return;
+      if(controller.signal.aborted) return;
       duplicate.dirty = false; duplicate.editHistory = [];
       duplicate.redoHistory = []; duplicate.ideEditGroup = null;
       persistDesignDraft(duplicate);
       duplicate.ideDraft = undefined; duplicate.ideError = undefined;
+      duplicate.untypedTopics = undefined;
       duplicate.ideFolds = undefined; duplicate.ideProjection = undefined;
       duplicate.savedText = undefined; duplicate.diskText = undefined;
+      duplicate.indexRebuild?.abort();
       duplicate.source?.dispose();
       Object.assign(duplicate, { parsed: doc.parsed, records: doc.records, bad: doc.bad,
-        totalLines: doc.totalLines, text: doc.text, size: doc.size, kind: doc.kind, error: doc.error,
+        totalLines: doc.totalLines, text: doc.text, size: doc.size, editedSize:undefined, kind: doc.kind, error: doc.error,
         rootLabel: 'root', data: undefined, source: indexedSource });
       attached = true;
-      activateDoc(duplicate.id);
+      if(!job || selectedLoad === job || activeDocId === duplicate.id) activateDoc(duplicate.id);
+      scheduleIndexVerification(duplicate);
     }else{
-      const session = sessions && sessionFor(doc, sessions);
-      if(session){ doc.openPaths = session.paths; doc.view = session.view; }
-      docs.push(doc);
+      const savedSessions = job?.sessions || sessions || nativeRestore?.sessions;
+      if(savedSessions) restoreDocSession(doc, sessionFor(doc, savedSessions));
+      if(job){
+        doc.loadOrder = job.loadOrder;
+        const later = docs.findIndex(item => item.loadOrder > doc.loadOrder);
+        docs.splice(later < 0 ? docs.length : later, 0, doc);
+      }else docs.push(doc);
       attached = true;
-      activateDoc(doc.id);
+      if(!job || selectedLoad === job || (!activeDoc() && !selectedLoad)) activateDoc(doc.id);
+      scheduleIndexVerification(doc);
     }
-    saveReopenCopy();
+    if(!job) saveReopenCopy();
   }catch(error){
     if(error.name !== 'AbortError') showToast('打开失败：' + (error.message || String(error)));
   }finally{
     if(indexedSource && !attached) indexedSource.dispose();
     if(activeLoad === controller){ activeLoad = null; loadingStatus.hidden = true; }
+  }
+}
+
+// Run hashes one at a time, after the newly mounted tree gets a paint.
+let indexVerification = Promise.resolve();
+function scheduleIndexVerification(doc){
+  const source = doc?.source;
+  if(nativeRestore || !source?.indexed) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    indexVerification = indexVerification.then(async () => {
+      // Hashing reads the entire source again. Wait for the file queue before
+      // starting another read, especially when indexes are being restored.
+      while(fileLoads.length && docs.includes(doc) && doc.source === source){
+        await fileLoads.at(-1).done;
+      }
+      if(!docs.includes(doc) || doc.source !== source) return;
+      if(!await source.verifyIndex() && docs.includes(doc) && doc.source === source){
+        await rebuildChangedIndex(doc, source);
+      }
+    }).catch(error => {
+      if(docs.includes(doc) && doc.source === source) console.warn('未能保存大文件索引', error);
+    });
+  }));
+}
+
+async function rebuildChangedIndex(doc, source){
+  const controller = new AbortController();
+  doc.indexRebuild = controller;
+  renderRail();
+  let replacement;
+  if(doc === activeDoc()) showToast(`${doc.name} 已变化，正在后台重建索引`);
+  try{
+    const metadata = await statNativeFile(doc.path);
+    replacement = await openIndexedFile(metadata, {
+      signal:controller.signal, wrap:settings.jsonlWrapArray !== false,
+      strict:!!settings.strictJsonl, reuse:settings.indexRebuild === 'smart'
+    });
+    if(controller.signal.aborted || doc.source !== source || !docs.includes(doc)) return;
+    if(doc === activeDoc()) snapshotDoc();
+    source.dispose();
+    Object.assign(doc, { source:replacement, size:metadata.size, kind:replacement.info.kind, error:null });
+    replacement = null;
+    if(doc === activeDoc()) activateDoc(doc.id);
+    else renderRail();
+    scheduleIndexVerification(doc);
+  }catch(error){
+    if(!controller.signal.aborted && doc.source === source) {
+      showToast('重建索引失败：' + (error.message || String(error)));
+    }
+  }finally{
+    replacement?.dispose();
+    if(doc.indexRebuild === controller){
+      doc.indexRebuild = null;
+      if(docs.includes(doc)) renderRail();
+    }
   }
 }
 
@@ -1264,7 +1643,7 @@ async function loadFile(file, sessions){
 function saveReopenCopy(){
   if(!settings.reopenLast) return;
 
-  if(!docs.length){
+  if(!docs.length && !fileLoads.length){
     try{
       localStorage.removeItem(LASTFILE_KEY);
       localStorage.removeItem(SESSION_KEY);
@@ -1273,19 +1652,23 @@ function saveReopenCopy(){
   }
 
   if(desktop){
-    const snapshot = { version: 3, activeKey: docKey(activeDoc() || docs[0]),
-      docs: docs.filter(d => d.path).map(d => ({ path: d.path })), savedAt: Date.now() };
+    const files = new Map(docs.filter(doc => doc.path).map(doc => [docKey(doc), { path:doc.path }]));
+    for(const job of fileLoads) if(job.key && !files.has(job.key)) files.set(job.key, { path:job.path });
+    const snapshot = { version: 3,
+      activeKey: selectedLoad?.key || (activeDoc() ? docKey(activeDoc()) : files.keys().next().value),
+      docs: [...files.values()], savedAt: Date.now() };
     try{ localStorage.setItem(LASTFILE_KEY, JSON.stringify(snapshot)); }
     catch(_){ showToast('未能保存文件列表'); }
     return;
   }
+  if(!docs.length) return;
 
-  const reopenable = docs.filter(doc => !doc.design || !doc.dirty || doc.draftWriteFailed);
+  const reopenable = docs.filter(doc => !(doc.design || doc.draftKey) || !doc.dirty || doc.draftWriteFailed);
   const snapshot = active => ({
     version: 2,
     activeKey: docKey(active),
     docs: reopenable.map(d => ({
-      name: d.name, size: d.size, kind: d.kind,
+      name: d.name, size: d.size, editedSize:d.editedSize, kind: d.kind,
       text: d.text, rootLabel: d.rootLabel, temporary:!!d.temporary, dirty:!!d.dirty, design:!!d.design
     })),
     savedAt: Date.now()
@@ -1303,7 +1686,7 @@ function saveReopenCopy(){
     localStorage.setItem(LASTFILE_KEY, JSON.stringify({
       version: 2,
       activeKey: docKey(cur),
-      docs: [{ name: cur.name, size: cur.size, kind: cur.kind, text: cur.text, rootLabel: cur.rootLabel, temporary:!!cur.temporary, dirty:!!cur.dirty, design:!!cur.design }],
+      docs: [{ name: cur.name, size: cur.size, editedSize:cur.editedSize, kind: cur.kind, text: cur.text, rootLabel: cur.rootLabel, temporary:!!cur.temporary, dirty:!!cur.dirty, design:!!cur.design }],
       savedAt: Date.now()
     }));
     showToast('打开的文件较多，刷新后只会恢复当前文件');
@@ -1316,15 +1699,24 @@ function saveReopenCopy(){
 /* 只收集体积很小的会话数据；文件原文在副本里，不跟着一起重写 */
 function collectSession(){
   if(!settings.reopenLast || !settings.restoreSession) return null;
-  if(!docs.length) return { version: 3, docs: {}, savedAt: Date.now() };
 
   /* 当前文档的展开 / 平移状态先落到文档对象上，再整体收集 */
   snapshotDoc();
 
   const map = {};
+  for(const job of fileLoads){
+    const session = job.sessions?.[job.key];
+    if(session) map[job.key] = session;
+  }
   docs.forEach(d => {
-    if(!d.openPaths && !d.view) return;
-    map[docKey(d)] = { paths: d.openPaths || [], view: d.view || null };
+    map[docKey(d)] = {
+      paths:d.openPaths, view:d.view, pageOffsets:d.pageOffsets,
+      viewMode:d.viewOverride, design:d.design || undefined, designPreviousView:d.designPreviousView,
+      ide:d.ideZoom || d.ideSelection || d.ideFolds?.size ? {
+        zoom:d.ideZoom, scrollTop:d.ideScrollTop, scrollLeft:d.ideScrollLeft,
+        selection:d.ideSelection, folds:d.ideFolds && [...d.ideFolds]
+      } : undefined
+    };
   });
   return { version: 3, docs: map, savedAt: Date.now() };
 }
@@ -1403,6 +1795,7 @@ function withdrawView(){
   closeFindPanel(false);
   viewer.style.display = 'none';
   landing.style.display = 'grid';
+  syncPendingRail();
 }
 
 /* ---------- 树渲染 ---------- */
@@ -1584,7 +1977,10 @@ function attachChildren(node, card, toggle, source, sourcePath, path){
     if(hidden.size && hidden.has(normalizePath(encodePath(path.concat(item.key))))) return null;
     return createNode(item.arrayItem ? arrayIndexLabel(item.key) : String(item.key), item,
       path.concat(item.key), false, item.arrayItem, source);
-  }, () => { updateVirtualization(); scheduleOverflowSweep(); });
+  }, () => { updateVirtualization(); scheduleOverflowSweep(); }, false, first => {
+    focusGeneration++;
+    centerNode(first?._path ? first : node);
+  });
 
   const toggleNode = e => {
     e.stopPropagation();
@@ -1751,15 +2147,27 @@ function createJsonBadge(node){
   return btn;
 }
 
+function createNodeToggle(isBranch){
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'toggle' + (isBranch ? '' : ' placeholder');
+  if(isBranch) toggle.setAttribute('aria-label', '展开或收起节点');
+  toggle.innerHTML = '<svg class="chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.25 2.5 7.75 6 4.25 9.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  return toggle;
+}
+
 function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, source){
   const isBranch = descriptor.type === 'object' || descriptor.type === 'array';
   const value = descriptor.value;
+  const doc = activeDoc();
+  const nodePath = encodePath(path);
+  const untyped = doc?.design && doc.source === source && doc.untypedTopics?.has(nodePath);
 
   const node = document.createElement('div');
   node.className = 'tree-node'
     + (isBranch ? ' branch' : '')
     + (isRoot ? ' root-node' : '');
-  node.dataset.path = encodePath(path);
+  node.dataset.path = nodePath;
   if(searchOptions.scopePath && node.dataset.path === encodePath(searchOptions.scopePath)) node.classList.add('search-scope-node');
   node.dataset.searchText =
     `${String(key)} ${isBranch ? descriptor.type : String(value)}`.toLowerCase();
@@ -1775,9 +2183,7 @@ function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, sour
   const main = document.createElement('div');
   main.className = 'node-main';
 
-  const toggle = document.createElement('button');
-  toggle.className = 'toggle' + (isBranch ? '' : ' placeholder');
-  toggle.innerHTML = '<span class="chevron">›</span>';
+  const toggle = createNodeToggle(isBranch);
 
   const card = document.createElement('div');
   card.className = 'node-card';
@@ -1788,11 +2194,11 @@ function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, sour
   keyEl.textContent = key;
   node._keyEl = keyEl;
 
-  if(isBranch){
+  if(isBranch || untyped){
     card.appendChild(keyEl);
     const badge = document.createElement('span');
-    badge.className = descriptor.type === 'object' ? 'badge object-badge' : 'badge';
-    badge.textContent = `${descriptor.type === 'array' ? 'Array' : 'Object'} · ${descriptor.childCount}`;
+    badge.className = 'badge';
+    badge.textContent = untyped ? '未指定类型' : `${descriptor.type === 'array' ? 'Array' : 'Object'} · ${descriptor.childCount}`;
     card.appendChild(badge);
   }else{
     const text = document.createElement('span');
@@ -1860,7 +2266,7 @@ async function expandVisible(root, scope = tree){
   }
   updateVirtualization();
   scheduleOverflowSweep();
-  if(scope.querySelector('.page-navigation')) showToast('已展开当前页；更多条目可在节点下翻页');
+  if(scope.querySelector('.page-navigation')) showToast('已展开当前页；可在分支底部加载更多');
 }
 
 function expandAll(){ return expandVisible(tree.firstElementChild); }
@@ -1906,10 +2312,10 @@ const ctxCollapseBtn = document.getElementById('ctxCollapse');
 let ctxTarget = null;
 
 /* 展开该节点的一级子节点 */
-async function expandOne(node, key){
+async function expandOne(node, key, offset){
   if(!node.classList.contains('branch')) return;
   node.classList.add('open');
-  await node._ensureChildren?.(key);
+  await node._ensureChildren?.(key, offset);
   if(node.isConnected === false) return;
   updateVirtualization();
   scheduleOverflowSweep();
@@ -2123,7 +2529,7 @@ const LASTFILE_KEY = 'json-atlas_lastfile_v1';
 const DESIGN_DRAFT_PREFIX = 'json-atlas_design-draft_v1:';
 
 function persistDesignDraft(doc, discard = false){
-  if(!doc.design) return;
+  if(!doc.design && !doc.draftKey) return;
   const keep = doc.dirty && !discard;
   if(!keep && !doc.draftKey) return;
   try{
@@ -2131,6 +2537,7 @@ function persistDesignDraft(doc, discard = false){
       doc.draftKey ??= DESIGN_DRAFT_PREFIX + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
       localStorage.setItem(doc.draftKey, JSON.stringify({
         name:doc.name, text:doc.text, openPaths:doc.openPaths,
+        untypedTopics:doc.untypedTopics && [...doc.untypedTopics],
         ideError:doc.ideError || undefined,
         validText:doc.ideError ? JSON.stringify(doc.parsed) : undefined
       }));
@@ -2145,7 +2552,7 @@ function persistDesignDraft(doc, discard = false){
   }
 }
 
-function restoreDesignDrafts(){
+function restoreDesignDrafts(focusDraft = true){
   let restored = 0, latest = null;
   try{
     for(let i = 0; i < localStorage.length; i++){
@@ -2170,13 +2577,16 @@ function restoreDesignDrafts(){
         docs.push(doc);
       }
       Object.assign(doc, { design:true, temporary:true, dirty:true, draftKey:key,
+        untypedTopics:Array.isArray(draft.untypedTopics)
+          ? new Set(draft.untypedTopics.filter(path => typeof path === 'string' && path !== '$')) : undefined,
         openPaths:Array.isArray(draft.openPaths) ? draft.openPaths.filter(path => typeof path === 'string') : ['$'] });
       latest = doc;
       restored++;
     }
   }catch(_){ /* Local storage is unavailable. */ }
   if(latest){
-    activateDoc(latest.id);
+    if(focusDraft || (!activeDoc() && !selectedLoad)) activateDoc(latest.id);
+    else renderRail();
     showToast(`已恢复 ${restored} 份未保存的设计`);
   }
 }
@@ -2212,7 +2622,9 @@ let settings = {
   showTopicDock: false,
   topicDoubleClick: 'rename',
   limitIdeComplexity: true,
+  designLimitMiB: 8,
   largeFileThresholdMiB: 64,
+  indexRebuild: 'smart',
   legacyTreeLayout: false,
   autoTemplate: true,
   defaultLevels: 0,
@@ -2237,6 +2649,8 @@ try{
   }
 }catch(_){}
 settings.largeFileThresholdMiB = normalizeThreshold(settings.largeFileThresholdMiB);
+settings.designLimitMiB = normalizeDesignLimit(settings.designLimitMiB);
+settings.indexRebuild = settings.indexRebuild === 'always' ? 'always' : 'smart';
 settings.viewMode = normalizeViewMode(settings.viewMode);
 settings.topicDoubleClick = settings.topicDoubleClick === 'value' ? 'value' : 'rename';
 settings.theme = normalizeTheme(settings.theme);
@@ -2340,7 +2754,7 @@ function sessionChildKeys(paths){
 }
 
 /* 模板按归一化路径、数组首项恢复；会话按精确路径恢复实际展开项。 */
-async function expandByPaths(paths, { exact = false } = {}){
+async function expandByPaths(paths, { exact = false, pageOffsets } = {}){
   const generation = expansionGeneration;
   const root = tree.firstElementChild;
   const set = new Set(paths || []);
@@ -2370,7 +2784,7 @@ async function expandByPaths(paths, { exact = false } = {}){
     }
     if(!set.has(exact ? node.dataset.path : normalizePath(node.dataset.path))) continue;
 
-    await expandOne(node, childKeys?.get(node.dataset.path));
+    await expandOne(node, childKeys?.get(node.dataset.path), exact ? pageOffsets?.[node.dataset.path] : undefined);
     if(generation !== expansionGeneration) return null;
 
     const p = node.dataset.path;
@@ -2416,8 +2830,12 @@ const optIndexBase = document.getElementById('optIndexBase');
 const optRailStyle = document.getElementById('optRailStyle');
 const optLegacyTreeLayout = document.getElementById('optLegacyTreeLayout');
 const optLargeFileThreshold = document.getElementById('optLargeFileThreshold');
+const optDesignLimit = document.getElementById('optDesignLimit');
+const optIndexRebuild = document.getElementById('optIndexRebuild');
 function syncThresholdControl(){
   optLargeFileThreshold.value = String(settings.largeFileThresholdMiB);
+  optDesignLimit.value = String(settings.designLimitMiB);
+  optIndexRebuild.value = settings.indexRebuild;
   document.getElementById('optViewMode').value = settings.viewMode;
   document.getElementById('optIdeFoldAlwaysVisible').checked = settings.ideFoldAlwaysVisible;
   document.getElementById('optNodeSelectionStyle').checked = settings.nodeSelectionStyle;
@@ -2425,17 +2843,19 @@ function syncThresholdControl(){
 }
 document.getElementById('optLimitIdeComplexity').addEventListener('change', e => {
   if(!leaveIde()){ syncThresholdControl(); return; }
-  if(activeDoc()) activeDoc().ideDraft = undefined;
-  settings.limitIdeComplexity = e.target.checked;
-  saveSettings();
-  if(activeDocId){ snapshotDoc(); activateDoc(activeDocId); }
+  changeReadingSetting('limitIdeComplexity', e.target.checked);
 });
 optLargeFileThreshold.addEventListener('change', () => {
   if(!leaveIde()){ syncThresholdControl(); return; }
-  if(activeDoc()) activeDoc().ideDraft = undefined;
-  settings.largeFileThresholdMiB = normalizeThreshold(optLargeFileThreshold.value);
-  syncThresholdControl(); saveSettings();
-  if(activeDocId){ snapshotDoc(); activateDoc(activeDocId); }
+  changeReadingSetting('largeFileThresholdMiB', normalizeThreshold(optLargeFileThreshold.value));
+  syncThresholdControl();
+});
+optDesignLimit.addEventListener('change', () => {
+  changeReadingSetting('designLimitMiB', normalizeDesignLimit(optDesignLimit.value));
+  syncThresholdControl();
+});
+optIndexRebuild.addEventListener('change', () => {
+  changeReadingSetting('indexRebuild', optIndexRebuild.value === 'always' ? 'always' : 'smart');
 });
 const optReopenLast = document.getElementById('optReopenLast');
 const optRestoreSession = document.getElementById('optRestoreSession');
@@ -2608,6 +3028,73 @@ function openSettings(){
 }
 function closeSettings(){
   settingsMask.classList.remove('open');
+  flushReadingSettings();
+}
+
+// Persist the switches as they change, but use the final values for work on the document.
+let previousReadingSettings = null, applyingReadingSettings = false, settingsImported = false;
+function changeReadingSetting(key, value){
+  if(settings[key] === value) return;
+  previousReadingSettings ??= {...settings};
+  settings[key] = value;
+  saveSettings();
+  flushReadingSettings();
+}
+
+function flushReadingSettings(){
+  if(!previousReadingSettings || applyingReadingSettings || settingsMask.classList.contains('open')) return;
+  const previous = previousReadingSettings;
+  const imported = settingsImported;
+  previousReadingSettings = null;
+  settingsImported = false;
+  const changed = key => previous[key] !== settings[key];
+  const doc = activeDoc();
+  if(imported || changed('viewMode')) for(const item of docs) delete item.viewOverride;
+
+  const viewChanged = changed('viewMode') || changed('limitIdeComplexity') || changed('largeFileThresholdMiB');
+  const view = doc && viewChanged ? documentViewState(doc, false) : null;
+  const jsonlChanged = doc?.kind === 'jsonl' && (imported || changed('jsonlWrapArray') || changed('strictJsonl'));
+  const designLimitChanged = changed('designLimitMiB');
+  const rebuild = !!doc && (imported || jsonlChanged || (view && view.active !== ideActive) ||
+    (designLimitChanged && doc.design && !canDesign(doc)));
+  if(rebuild && (imported || view)) doc.ideDraft = undefined;
+
+  let pending;
+  if(jsonlChanged && doc.source?.indexed && doc.source.wrap !== settings.jsonlWrapArray){
+    pending = rebuildJsonlRoot();
+  }else if(rebuild){
+    snapshotDoc(); activateDoc(doc.id);
+  }else if(view){
+    syncDocumentView(doc, view, false);
+  }
+  if(designLimitChanged) syncEditing();
+
+  const measureValues = changed('limitValueHeight') || (settings.limitValueHeight && changed('valueMaxLines'));
+  if(changed('legacyTreeLayout')) applyTreeLayout(!measureValues);
+  if(measureValues) applyValueHeightSetting();
+  if(changed('indexBase')){
+    if(!rebuild) relabelArrayIndexes(tree);
+    relabelArrayIndexes(editorTree);
+  }
+  if(imported || changed('reopenLast')){
+    if(!settings.reopenLast){
+      try{ localStorage.removeItem(LASTFILE_KEY); }catch(_){}
+    }else if(!rebuild) saveReopenCopy();
+  }
+  if(imported || changed('reopenLast') || changed('restoreSession')){
+    if(settings.reopenLast && settings.restoreSession) scheduleSessionSave();
+    else{
+      try{ localStorage.removeItem(SESSION_KEY); }catch(_){}
+    }
+  }
+
+  if(pending){
+    applyingReadingSettings = true;
+    pending.finally(() => {
+      applyingReadingSettings = false;
+      flushReadingSettings();
+    });
+  }
 }
 
 settingsBtn.addEventListener('click', openSettings);
@@ -2641,27 +3128,25 @@ function relabelArrayIndexes(root){
 }
 
 optIndexBase.addEventListener('change', () => {
-  settings.indexBase = parseInt(optIndexBase.value, 10) === 1 ? 1 : 0;
-  saveSettings();
-  relabelArrayIndexes(tree);
-  relabelArrayIndexes(editorTree);
-  showToast(settings.indexBase === 1
-    ? '数组索引已改为从 1 开始'
-    : '数组索引已改为从 0 开始');
+  changeReadingSetting('indexBase', parseInt(optIndexBase.value, 10) === 1 ? 1 : 0);
 });
 
 /* 多文件栏样式：只切一个类，CSS 负责两套外观，文件列表本身不重建
    （renderRail 每次渲染时会再同步一次，避免样式与设置脱节） */
 function applyRailStyle(){
   fileRail.classList.toggle('rail-dial', settings.railStyle === 'dial');
+  fileRail.tabIndex = settings.railStyle === 'dial' ? -1 : 0;
+  syncRailDialOverflow();
 }
 
-function applyTreeLayout(){
+function applyTreeLayout(measure = true){
   for(const id of ['tree', 'editorTree']){
     document.getElementById(id).classList.toggle('legacy-tree-layout', settings.legacyTreeLayout === true);
   }
-  viewportWindow.restoreAll();
-  requestAnimationFrame(() => refreshValueOverflow(tree, true));
+  if(measure){
+    viewportWindow.restoreAll();
+    if(settings.limitValueHeight) requestAnimationFrame(() => refreshValueOverflow(tree, true));
+  }
 }
 
 document.getElementById('optNodeSelectionStyle').addEventListener('change', e => {
@@ -2678,9 +3163,7 @@ document.getElementById('optIdeFoldAlwaysVisible').addEventListener('change', e 
 });
 
 optLegacyTreeLayout.addEventListener('change', () => {
-  settings.legacyTreeLayout = optLegacyTreeLayout.checked;
-  saveSettings();
-  applyTreeLayout();
+  changeReadingSetting('legacyTreeLayout', optLegacyTreeLayout.checked);
 });
 
 optRailStyle.addEventListener('change', () => {
@@ -2698,76 +3181,27 @@ function syncReopenControls(){
 }
 
 optReopenLast.addEventListener('change', () => {
-  settings.reopenLast = optReopenLast.checked;
-  saveSettings();
+  changeReadingSetting('reopenLast', optReopenLast.checked);
   syncReopenControls();
-
-  /* 关闭开关时清除已保存的文件副本与会话 */
-  if(!settings.reopenLast){
-    try{
-      localStorage.removeItem(LASTFILE_KEY);
-      localStorage.removeItem(SESSION_KEY);
-    }catch(_){}
-    return;
-  }
-
-  /* 打开开关时就地存一份当前状态：只等下次「打开文件」才写的话，
-     已经打开的文件刷新后会消失（旧版的 bug） */
-  if(docs.length){
-    saveReopenCopy();
-    scheduleSessionSave();   /* 当前的展开状态与视图位置也一并记下 */
-    showToast('已保存当前打开的文件，刷新后会自动打开');
-  }else{
-    showToast(desktop ? '已开启：重启后从原路径重新打开文件' : '已开启：刷新后恢复文件副本');
-  }
 });
 
 optRestoreSession.addEventListener('change', () => {
-  settings.restoreSession = optRestoreSession.checked;
-  saveSettings();
-
-  if(!settings.restoreSession){
-    try{ localStorage.removeItem(SESSION_KEY); }catch(_){}
-    showToast('已关闭：刷新后回到默认阅读位置');
-    return;
-  }
-
-  scheduleSessionSave();
-  showToast('已开启：刷新后恢复阅读位置与展开的层级');
+  changeReadingSetting('restoreSession', optRestoreSession.checked);
 });
 
 /* JSONL 设置：根结构 + 坏行策略。
-   两者都只改 settings；若当前打开的是 JSONL，立即生效（用缓存文本重校验），无需重开文件。 */
+   关闭设置后用已有数据更新当前 JSONL，无需重开文件。 */
 const optSettingsJsonlArray = document.getElementById('optSettingsJsonlArray');
 const optStrictJsonl = document.getElementById('optStrictJsonl');
 
 optSettingsJsonlArray.addEventListener('change', () => {
-  settings.jsonlWrapArray = optSettingsJsonlArray.checked;
-  saveSettings();
-  rebuildJsonlRoot();
+  if(!leaveIde()){ optSettingsJsonlArray.checked = settings.jsonlWrapArray; return; }
+  changeReadingSetting('jsonlWrapArray', optSettingsJsonlArray.checked);
 });
 
-optStrictJsonl.addEventListener('change', async () => {
-  settings.strictJsonl = optStrictJsonl.checked;
-  saveSettings();
-
-  /* 立即对当前文件重校验：不合规就当场切成错误态，干净则原地重渲染。
-     展开状态保留在同一份文档上，所以关掉严格模式后还能恢复到原来的层级。 */
-  const doc = activeDoc();
-  if(doc && doc.kind === 'jsonl'){
-    if(doc.source?.indexed){ await rebuildJsonlRoot(); return; }
-    snapshotDoc();
-    activateDoc(doc.id);
-
-    if(doc.error) showToast('当前文件存在不合规行，已按严格模式拒绝加载');
-    else if(settings.strictJsonl) showToast('已按严格模式重新校验：文件全部合规');
-    else showToast('已关闭严格模式：不合规行将被跳过');
-    return;
-  }
-
-  showToast(settings.strictJsonl
-    ? '已开启严格模式：下次打开文件时，不合规行将导致拒绝加载'
-    : '已关闭严格模式：不合规行将被跳过并提示');
+optStrictJsonl.addEventListener('change', () => {
+  if(!leaveIde()){ optStrictJsonl.checked = settings.strictJsonl; return; }
+  changeReadingSetting('strictJsonl', optStrictJsonl.checked);
 });
 
 /* ---------- 限制字段内容的最大高度 ----------
@@ -2803,19 +3237,12 @@ function applyValueHeightSetting(){
 }
 
 optLimitValueHeight.addEventListener('change', () => {
-  settings.limitValueHeight = optLimitValueHeight.checked;
-  saveSettings();
+  changeReadingSetting('limitValueHeight', optLimitValueHeight.checked);
   syncValueHeightControls();
-  applyValueHeightSetting();
-  showToast(settings.limitValueHeight
-    ? `已限制字段内容高度（${settings.valueMaxLines || 6} 行）`
-    : '已取消字段内容高度限制');
 });
 
 optValueMaxLines.addEventListener('change', () => {
-  settings.valueMaxLines = parseInt(optValueMaxLines.value, 10) || 6;
-  saveSettings();
-  applyValueHeightSetting();
+  changeReadingSetting('valueMaxLines', parseInt(optValueMaxLines.value, 10) || 6);
 });
 
 /* 窗口变窄会让值换行更多：全部重测一次（防抖） */
@@ -2840,7 +3267,7 @@ async function rebuildJsonlRoot(){
     const generation = ++jsonlConfigurationGeneration;
     try {
       await doc.source.configure(settings.jsonlWrapArray !== false, false);
-      if(generation !== jsonlConfigurationGeneration || activeDocId !== doc.id) return;
+      if(generation !== jsonlConfigurationGeneration || activeDocId !== doc.id || doc.source.wrap !== settings.jsonlWrapArray) return;
     } catch(error) { showToast('更新失败：' + (error.message || String(error))); return; }
   }
   activateDoc(doc.id);
@@ -2870,21 +3297,23 @@ importSettingsBtn.addEventListener('click', () => settingsImportInput.click());
 settingsImportInput.addEventListener('change', () => {
   const file = settingsImportInput.files[0];
   settingsImportInput.value = '';
-  if(!file) return;
+  if(!file || importSettingsBtn.disabled) return;
   if(!leaveIde()) return;
 
   const reader = new FileReader();
+  importSettingsBtn.disabled = true;
+  reader.onloadend = () => { importSettingsBtn.disabled = false; };
   reader.onload = () => {
     try{
       const payload = JSON.parse(reader.result);
       if(!payload || typeof payload !== 'object') throw new Error('文件格式不正确');
       if(!leaveIde()) return;
-      if(activeDoc()) activeDoc().ideDraft = undefined;
-
       /* 兼容两种格式：完整导出包 { settings, template } 或裸设置对象 */
       const s = (payload.settings && typeof payload.settings === 'object')
         ? payload.settings : payload;
 
+      previousReadingSettings ??= {...settings};
+      settingsImported = true;
       settings = {
         theme: normalizeTheme(s.theme),
         viewMode: normalizeViewMode(s.viewMode),
@@ -2894,7 +3323,9 @@ settingsImportInput.addEventListener('change', () => {
         showTopicDock: s.showTopicDock === true,
         topicDoubleClick: s.topicDoubleClick === 'value' ? 'value' : 'rename',
         limitIdeComplexity: s.limitIdeComplexity !== false,
+        designLimitMiB: normalizeDesignLimit(s.designLimitMiB),
         largeFileThresholdMiB: normalizeThreshold(s.largeFileThresholdMiB),
+        indexRebuild: s.indexRebuild === 'always' ? 'always' : 'smart',
         legacyTreeLayout: s.legacyTreeLayout === true,
         autoTemplate: !!s.autoTemplate,
         defaultLevels: parseInt(s.defaultLevels, 10) || 0,
@@ -2918,25 +3349,11 @@ settingsImportInput.addEventListener('change', () => {
       applyTheme(settings.theme);
       saveSettings();
       saveTemplate();
-      for(const doc of docs) delete doc.viewOverride;
-      openSettings();   /* 刷新面板显示 */
-      if(activeDocId){
-        if(activeDoc()?.source?.indexed && activeDoc().kind === 'jsonl') rebuildJsonlRoot();
-        else { snapshotDoc(); activateDoc(activeDocId); }
-      }
-      relabelArrayIndexes(editorTree);
-      if(settings.reopenLast) saveReopenCopy();
-      else{
-        try{
-          localStorage.removeItem(LASTFILE_KEY);
-          localStorage.removeItem(SESSION_KEY);
-        }catch(_){}
-      }
-      applyValueHeightSetting();   /* 高度限制可能变了，立即生效 */
-      applyRailStyle();   /* 多文件栏样式可能变了，立即生效 */
+      if(settingsMask.classList.contains('open')) openSettings();
+      applyRailStyle();
       applyContextMenuSettings();
-      applyTreeLayout();
       applyIdeFoldVisibility();
+      flushReadingSettings();
       showToast('设置已导入');
     }catch(err){
       showToast('导入失败：' + err.message);
@@ -2982,13 +3399,10 @@ let nativeRestore = null;
     const doc = buildDoc(item.text, item.name, size);
     doc.temporary = !!item.temporary; doc.dirty = !!item.dirty;
     doc.design = item.design === true && doc.kind === 'json';
+    if(Number.isSafeInteger(item.editedSize) || doc.dirty || doc.design) setEditedText(doc, item.text);
     if(item.rootLabel) doc.rootLabel = item.rootLabel;
 
-    const s = sessionFor(doc, sessions);
-    if(s){
-      if(Array.isArray(s.paths)) doc.openPaths = s.paths;
-      if(s.view) doc.view = s.view;
-    }
+    restoreDocSession(doc, sessionFor(doc, sessions));
     docs.push(doc);
   });
 
@@ -3014,6 +3428,34 @@ function readSessions(){
     if(s.file) return { [s.file]: { paths: s.paths || [], view: s.view || null } };
   }catch(_){}
   return {};
+}
+
+function restoreDocSession(doc, session){
+  if(!session || typeof session !== 'object') return;
+  if(Array.isArray(session.paths)) doc.openPaths = session.paths.filter(path => typeof path === 'string');
+  if(session.view) doc.view = session.view;
+  if(session.pageOffsets && typeof session.pageOffsets === 'object'){
+    doc.pageOffsets = Object.fromEntries(Object.entries(session.pageOffsets)
+      .filter(([path, offset]) => path.startsWith('$') && Number.isSafeInteger(offset) && offset > 0));
+  }
+  if(['tree','ide'].includes(session.viewMode)) doc.viewOverride = session.viewMode;
+  if(session.design === true && canDesign(doc)){
+    doc.design = true;
+    if(['tree','ide'].includes(session.designPreviousView)) doc.designPreviousView = session.designPreviousView;
+  }
+  const ide = session.ide;
+  if(!ide || typeof ide !== 'object') return;
+  if(Number.isFinite(ide.zoom)) doc.ideZoom = clamp(ide.zoom, 70, 200);
+  if(Number.isFinite(ide.scrollTop)) doc.ideScrollTop = Math.max(0, ide.scrollTop);
+  if(Number.isFinite(ide.scrollLeft)) doc.ideScrollLeft = Math.max(0, ide.scrollLeft);
+  if(Array.isArray(ide.folds)) doc.ideFolds = new Set(ide.folds.filter(line => Number.isInteger(line) && line >= 0 && line < 20000));
+  if(Number.isSafeInteger(ide.selection?.start) && Number.isSafeInteger(ide.selection?.end)){
+    doc.ideSelection = {
+      start:Math.max(0, ide.selection.start),
+      end:Math.max(0, ide.selection.end),
+      direction:['forward','backward'].includes(ide.selection.direction) ? ide.selection.direction : 'none'
+    };
+  }
 }
 
 /* 桌面会话按完整路径定位；网页旧会话保留文件名兼容。 */
@@ -3083,6 +3525,7 @@ function openEditor(){
   enterEditorFind();
   viewer.classList.add('template-editing');
   fileSub.textContent = '模板编辑模式 · 勾选显示字段';
+  fileSub.title = '';
   editorHidden = getHiddenSet();
   renderEditorTree();
   editorView.reset();
@@ -3146,9 +3589,7 @@ function createEditorNode(key, descriptor, path, isRoot=false, isArrayItem=false
   const main = document.createElement('div');
   main.className = 'node-main';
 
-  const toggle = document.createElement('button');
-  toggle.className = 'toggle' + (isBranch ? '' : ' placeholder');
-  toggle.innerHTML = '<span class="chevron">›</span>';
+  const toggle = createNodeToggle(isBranch);
 
   const card = document.createElement('div');
   card.className = 'node-card ed-card';
@@ -3492,8 +3933,14 @@ document.getElementById('ideInput').addEventListener('keydown', e => {
     activeDoc().ideEditGroup = null;
   }
 });
-document.getElementById('ideInput').addEventListener('scroll', syncIdeScroll);
-for(const event of ['click','keyup','select','focus']) document.getElementById('ideInput').addEventListener(event, updateIdeScope);
+document.getElementById('ideInput').addEventListener('scroll', () => {
+  syncIdeScroll();
+  if(ideActive) scheduleSessionSave();
+});
+for(const event of ['click','keyup','select','focus']) document.getElementById('ideInput').addEventListener(event, () => {
+  updateIdeScope();
+  if(ideActive) scheduleSessionSave();
+});
 window.addEventListener('resize', syncIdeScroll);
 if(typeof ResizeObserver === 'function') new ResizeObserver(syncIdeScroll).observe(document.getElementById('ideInput'));
 document.getElementById('formatIdeBtn').addEventListener('click', formatIde);
@@ -3504,7 +3951,7 @@ document.getElementById('ideInput').addEventListener('wheel', e => {
 document.getElementById('valueEditText').addEventListener('input', resizeNodeEditor);
 document.getElementById('valueEditType').addEventListener('change', e => {
   if(editingNode?.doc.design){
-    const defaults = {string:'', number:'0', boolean:'false', null:'null', object:'{}', array:'[]'};
+    const defaults = {'':'', string:'', number:'0', boolean:'false', null:'null', object:'{}', array:'[]'};
     const text = document.getElementById('valueEditText');
     if(text.value === defaults[editingNode.type]) text.value = defaults[e.target.value];
     editingNode.type = e.target.value;
@@ -3514,10 +3961,7 @@ document.getElementById('valueEditType').addEventListener('change', e => {
 window.addEventListener('resize', resizeNodeEditor);
 document.getElementById('optViewMode').addEventListener('change', e => {
   if(!leaveIde()){ e.target.value = settings.viewMode; return; }
-  if(activeDoc()) activeDoc().ideDraft = undefined;
-  settings.viewMode = normalizeViewMode(e.target.value); saveSettings();
-  for(const doc of docs) delete doc.viewOverride;
-  if(activeDocId){ snapshotDoc(); activateDoc(activeDocId); }
+  changeReadingSetting('viewMode', normalizeViewMode(e.target.value));
 });
 function switchDocumentView(){
   const doc = activeDoc(); if(!doc) return;
@@ -3529,6 +3973,7 @@ function switchDocumentView(){
   if(!leaveIde()) return;
   if(ideActive) doc.ideDraft = undefined;
   snapshotDoc(); doc.viewOverride = ideActive ? 'tree' : 'ide'; activateDoc(doc.id);
+  saveSession();
   (ideActive ? document.getElementById('ideInput') : viewport).focus({preventScroll:true});
 }
 document.getElementById('switchViewBtn').addEventListener('click', switchDocumentView);
@@ -3577,6 +4022,7 @@ document.getElementById('optTopicDock').addEventListener('change', e => {
   saveSettings();
 });
 document.getElementById('editModeBtn').addEventListener('click', () => setEditMode(!editMode, true));
+document.getElementById('designModeBtn').addEventListener('click', toggleDesignMode);
 document.getElementById('ctxEditNode').addEventListener('click', () => beginNodeEdit(ctxTarget));
 document.getElementById('ctxTopicValue').addEventListener('click', () => beginNodeEdit(ctxTarget));
 tree.addEventListener('click', e => {
@@ -3674,7 +4120,7 @@ if(desktop) guardEditedClose(() => docs.some(d => d.dirty), async () => {
   if(!await confirmDiscardEdits()) return false;
   for(const doc of docs) persistDesignDraft(doc, true);
   return true;
-}).catch(console.error);
+}, saveSession).catch(console.error);
 
 /* ---------- 「更多」菜单 ---------- */
 const moreBtn = document.getElementById('moreBtn');
@@ -3862,6 +4308,7 @@ document.addEventListener('keydown', e => {
   if(action === 'settings') { consume(openSettings); return; }
   if(action === 'about') { consume(openAbout); return; }
   if(action === 'switchView' && activeDoc()) { consume(switchDocumentView); return; }
+  if(action === 'designMode' && activeDoc() && (!typing || inIde)) { consume(toggleDesignMode); return; }
   if(action === 'editMode' && activeDoc() && !ideActive) { consume(() => document.getElementById('editModeBtn').click()); return; }
   if(action === 'resetView' && activeDoc() && !activeDoc().error) { consume(() => ideActive ? setIdeZoom(100) : resetView()); return; }
   if(action === 'find' && activeDoc()) { consume(openFindPanel); return; }
@@ -3901,7 +4348,8 @@ document.addEventListener('keydown', e => {
     expansionGeneration++;
     searchGeneration++;
     if(searchCount.textContent === '搜索中…') setSearchCount('已取消');
-    if(activeLoad) activeLoad.abort();
+    if(selectedLoad === runningLoad && runningLoad) cancelFileLoad(runningLoad);
+    else if(!runningLoad) activeLoad?.abort();
     closeMenu();
     closeModal();
     closeSettings();
@@ -4362,13 +4810,15 @@ window.addEventListener('dragover', e => e.preventDefault());
 window.addEventListener('drop', e => e.preventDefault());
 
 // Native startup is deferred until the reader and canvas are initialized.
-const loadingStatus = document.getElementById('loadingStatus');
-const loadingLabel = document.getElementById('loadingLabel');
-const loadingProgress = document.getElementById('loadingProgress');
 document.getElementById('reopenHint').textContent = desktop
   ? '下次启动时从原路径读取文件的最新内容。关闭此项会清除恢复记录，不会删除原文件。'
   : '在浏览器本地保存文件副本，刷新后继续打开。关闭此项会清除副本，不会删除原文件。';
-document.getElementById('cancelLoadBtn').addEventListener('click', () => { openBatchGeneration++; activeLoad?.abort(); });
+document.getElementById('cancelLoadBtn').addEventListener('click', () => {
+  if(runningLoad){
+    const batch = runningLoad.batch;
+    for(const job of [...fileLoads]) if(job.batch === batch) cancelFileLoad(job);
+  }else activeLoad?.abort();
+});
 function initializeShortcutHints(){
   document.getElementById('openShortcutModifier').textContent = primaryModifier;
   document.getElementById('findShortcutLabel').textContent = shortcutText('find');
@@ -4381,13 +4831,13 @@ function initializeShortcutHints(){
     collapseAllBtn:['collapseAll','全部收起'], settingsBtn:['settings','设置'],
     nextMatchBtn:['nextMatch','下一个匹配'], prevMatchBtn:['previousMatch','上一个匹配'],
     quickNextMatchBtn:['nextMatch','下一个匹配'],
-    switchViewBtn:['switchView','切换树形 / IDE 视图'], editModeBtn:['editMode','切换编辑模式'],
+    switchViewBtn:['switchView','切换树形 / IDE 视图'], editModeBtn:['editMode','切换编辑模式'], designModeBtn:['designMode','切换设计模式'],
     resetViewBtn:['resetView','重置视图'], aboutBtn:['about','关于 JSON Atlas']
   };
   for(const [id,[action,label]] of Object.entries(buttons)) document.getElementById(id).title = `${label}（${shortcutText(action)}）`;
   const help = document.getElementById('shortcutHelp');
   help.replaceChildren();
-  for(const [action,label] of Object.entries({newDocument:'新建空白文档',open:'打开文件',save:'保存',saveCopy:'另存为副本',close:'关闭当前文件',undo:'撤销修改',redo:'重做修改',copyNode:'复制选中节点内容',find:'查找',nextMatch:'下一个匹配',previousMatch:'上一个匹配',format:'格式化文档',settings:'打开设置',switchView:'切换树形 / IDE 视图',editMode:'切换树形编辑模式',resetView:'重置视图 / IDE 字号',about:'关于 JSON Atlas',expandAll:'展开全部 / 当前页',collapseAll:'全部收起',nextFile:'下一个文件',previousFile:'上一个文件'})){
+  for(const [action,label] of Object.entries({newDocument:'新建空白文档',open:'打开文件',save:'保存',saveCopy:'另存为副本',close:'关闭当前文件',undo:'撤销修改',redo:'重做修改',copyNode:'复制选中节点内容',find:'查找',nextMatch:'下一个匹配',previousMatch:'上一个匹配',format:'格式化文档',settings:'打开设置',switchView:'切换树形 / IDE 视图',editMode:'切换树形编辑模式',designMode:'切换设计模式',resetView:'重置视图 / IDE 字号',about:'关于 JSON Atlas',expandAll:'展开全部 / 当前页',collapseAll:'全部收起',nextFile:'下一个文件',previousFile:'上一个文件'})){
     const name = document.createElement('dt'), value = document.createElement('dd'), keys = document.createElement('kbd');
     const alternative = shortcutAlternativeLabel(action, macPlatform);
     name.textContent = label;
@@ -4401,12 +4851,7 @@ syncDocumentMenu();
 installTooltips(document, window);
 
 (async () => {
-  if(nativeRestore){
-    await openPaths(nativeRestore.paths, nativeRestore.sessions);
-    const active = docs.find(d => docKey(d) === nativeRestore.activeKey);
-    if(active) activateDoc(active.id);
-  }
-  restoreDesignDrafts();
+  if(!nativeRestore) restoreDesignDrafts();
   await connectDesktop(openPaths, error => showToast('桌面文件入口失败：' + error), action => {
     if(['valueEditDialog','designTopicDialog','discardEditDialog','deleteTopicDialog','saveConflictDialog'].some(id => document.getElementById(id).open)) return;
     if(['aboutDialog','updateDialog'].some(id => document.getElementById(id).open)
@@ -4427,6 +4872,7 @@ installTooltips(document, window);
     else if(action === 'check-update') openUpdateCheck();
     else if(action === 'switch-view') switchDocumentView();
     else if(action === 'edit-mode') document.getElementById('editModeBtn').click();
+    else if(action === 'design-mode') document.getElementById('designModeBtn').click();
     else if(action === 'undo-edit') document.getElementById('undoEditBtn').click();
     else if(action === 'redo-edit') document.getElementById('redoEditBtn').click();
     else if(action === 'copy-node' && !ideActive) copyNodeContent(selectedCopyNode);
@@ -4434,4 +4880,12 @@ installTooltips(document, window);
     else if(action === 'save-copy') document.getElementById('saveCopyBtn').click();
     else if(action === 'format-json') formatIde();
   });
+  if(nativeRestore){
+    await openPaths(nativeRestore.paths, nativeRestore.sessions, nativeRestore.activeKey);
+    nativeRestore = null;
+    const current = activeDoc();
+    scheduleIndexVerification(current);
+    for(const doc of docs) if(doc !== current) scheduleIndexVerification(doc);
+    restoreDesignDrafts(false);
+  }
 })().catch(error => showToast('启动失败：' + error));

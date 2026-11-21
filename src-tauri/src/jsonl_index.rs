@@ -103,7 +103,7 @@ pub(super) struct LineIndex {
     pub(super) records: u64,
     pub(super) bad: u64,
     pub(super) comments: u64,
-    long: Option<Indexed>,
+    pub(super) long: Option<Indexed>,
     long_nodes: u64,
     cached: Option<(u64, Arc<Value>)>,
     width: usize,
@@ -157,6 +157,38 @@ fn at<'a>(mut value: &'a Value, path: &[Value]) -> Result<&'a Value> {
 }
 
 impl LineIndex {
+    pub(super) fn restore(
+        path: &Path,
+        offsets: File,
+        size: u64,
+        counts: [u64; 3],
+        long: Option<Indexed>,
+    ) -> Result<Self> {
+        let width = entry_width(size);
+        let [records, bad, comments] = counts;
+        if records.checked_mul(width as u64) != Some(offsets.metadata().map_err(err)?.len())
+            || records == 0
+        {
+            return Err("JSONL 记录索引不完整".into());
+        }
+        Ok(Self {
+            reader: BufReader::with_capacity(256 * 1024, File::open(path).map_err(err)?),
+            cursor: 0,
+            offsets,
+            records,
+            bad,
+            comments,
+            long,
+            long_nodes: 0,
+            cached: None,
+            width,
+        })
+    }
+    pub(super) fn retain_index(&mut self) {
+        if let Some(long) = self.long.as_mut() {
+            long.owned = false;
+        }
+    }
     pub(super) fn native_search(
         &mut self,
         search: &mut super::native_search::Search<'_>,

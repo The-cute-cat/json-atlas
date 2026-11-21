@@ -1,4 +1,4 @@
-import { PAGE_SIZE } from './data.js';
+import { MAX_RENDERED_CHILDREN, PAGE_SIZE } from './data.js';
 
 export function pageRange(length, index = 0) {
   const start = Math.floor(Math.max(0, Math.min(index, Math.max(0, length - 1))) / PAGE_SIZE) * PAGE_SIZE;
@@ -18,7 +18,7 @@ export function discardPagedTree(root) {
 }
 
 // Commit only the latest request; cancelled/replaced branches cannot reappear.
-export function pagedChildren(node, container, source, path, render, changed, firstArrayOnly = false) {
+export function pagedChildren(node, container, source, path, render, changed, firstArrayOnly = false, onNavigate) {
   let mountedStart = -1, generation = 0, controller = null;
   let pending = null, pendingKey, pendingOffset;
   let releasePage = null;
@@ -27,7 +27,11 @@ export function pagedChildren(node, container, source, path, render, changed, fi
   let compact = false, trimmed = false;
   const navButton = (text, disabled, offset) => {
     const button = document.createElement('button'); button.textContent = text; button.disabled = disabled;
-    button.onclick = e => { e.stopPropagation(); show(undefined, offset); }; return button;
+    button.onclick = async e => {
+      e.stopPropagation();
+      if(await show(undefined, offset)) onNavigate?.(container.children[0]);
+    };
+    return button;
   };
   const show = (key, offset = Math.max(0, mountedStart)) => {
     if (pending && Object.is(key, pendingKey) && offset === pendingOffset) return pending;
@@ -47,7 +51,9 @@ export function pagedChildren(node, container, source, path, render, changed, fi
     pending = Promise.resolve().then(async () => {
       try {
         if (signal.aborted || request !== generation) return false;
-        const page = await source.getChildren(path, { offset, key, firstArrayOnly, signal, all: source.paged === false && !compact });
+        // Disk-backed sources and reclaimed branches keep their smaller I/O pages.
+        const limit = source.paged === false && !compact ? MAX_RENDERED_CHILDREN : PAGE_SIZE;
+        const page = await source.getChildren(path, { offset, key, firstArrayOnly, signal, limit });
         if (signal.aborted || request !== generation) return false;
         if (mountedStart === page.start && !trimmed) {
           if (node._pageError) {
@@ -66,21 +72,16 @@ export function pagedChildren(node, container, source, path, render, changed, fi
           if (child) children.push(child);
           if(source.paged === false && page.items.length > 500 && index % 100 === 99) await new Promise(resolve => setTimeout(resolve, 0));
         }
-        if ((source.paged !== false || compact) && page.total > PAGE_SIZE) {
+        if (page.total > limit) {
           const {start, end, total} = page;
           const navigation = document.createElement('div');
           navigation.className = 'page-navigation';
-          const previous = navButton('上一页', start === 0, start - PAGE_SIZE);
+          const previous = navButton('上一页', start === 0, start - limit);
           const label = document.createElement('span');
           label.textContent = `${start + 1}–${end} / ${total}`;
-          const next = navButton('下一页', end >= total, end);
+          const next = navButton('加载更多', end >= total, end);
           navigation.append(previous, label, next);
           children.push(navigation);
-        }
-        if(page.limited){
-          const hint = document.createElement('div'); hint.className = 'node-limit';
-          hint.textContent = `节点较多，当前显示 ${page.start + 1}–${page.end} 项；可搜索定位其余内容。`;
-          children.push(hint);
         }
         releasePage?.(); retainedWanted = true;
         pageRef = new WeakRef(page);
@@ -88,6 +89,7 @@ export function pagedChildren(node, container, source, path, render, changed, fi
         for (const child of [...container.children]) discardPagedTree(child);
         container.replaceChildren(...children);
         mountedStart = page.start;
+        node._pageStart = page.start;
         trimmed = false;
         node._pageError = null;
         changed();
@@ -142,7 +144,7 @@ export function pagedChildren(node, container, source, path, render, changed, fi
     };
     for (const child of [...container.children]) {
       if (selected.has(child)) run.push(child);
-      else { flush(); if (child.className !== 'node-limit') kept.push(child); }
+      else { flush(); kept.push(child); }
     }
     flush(); container.replaceChildren(...kept);
   };
@@ -163,6 +165,7 @@ export function pagedChildren(node, container, source, path, render, changed, fi
     releasePage?.(); releasePage = null;
     pageRef = null;
     mountedStart = -1;
+    node._pageStart = undefined;
     node.setAttribute('aria-busy', 'false');
   };
   node._discardChildren = () => {

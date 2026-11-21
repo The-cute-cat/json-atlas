@@ -29,6 +29,7 @@ export class IndexedDataSource {
   }
   matches(value) { return !this.#closed && value === this; }
   getRoot() { this.#check(); return this.#root; }
+  verifyIndex() { return this.#call('verify', {}); }
   async #call(op, args, signal) {
     this.#check(signal);
     const result = await this.#request(op, this.#id, { ...args, wrap: args.wrap ?? this.wrap });
@@ -214,11 +215,11 @@ export class IndexedDataSource {
     }
     return finish(false);
   }
-  dispose() {
+  dispose({ forget = false } = {}) {
     if (this.#closed) return;
     for (const cancel of this.#searchJobs.values()) cancel();
     this.#closed = true;
     this.#version++; this.#cache.deleteOwner(this.#owner); this.#inflight.clear();
-    this.#request('close', this.#id, {}).catch(console.error);
+    this.#request('close', this.#id, forget ? { forget } : {}).catch(console.error);
   }
 }

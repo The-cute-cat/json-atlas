@@ -2,6 +2,7 @@
 import { compileSearch } from './search-pattern.js';
 export const MAX_FILE_BYTES = 256 * 1024 * 1024;
 export const PAGE_SIZE = 100;
+export const MAX_RENDERED_CHILDREN = 3000;
 
 export function parseJsonl(text) {
   const records = [], bad = [];

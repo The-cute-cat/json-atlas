@@ -974,7 +974,7 @@ mod tests {
             state.cancel_search("doc", "two").unwrap();
             assert!(second.cancel.load(Ordering::Relaxed));
             let third = state.begin_search("doc", "three").unwrap();
-            state.close_session("doc").unwrap();
+            state.close_session("doc", false).unwrap();
             assert!(third.cancel.load(Ordering::Relaxed));
             assert!(state.begin_search("doc", "four").is_err());
             drop(first);

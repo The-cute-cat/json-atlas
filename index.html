@@ -35,7 +35,6 @@
         <input id="fileInput" type="file" multiple accept=".json,.jsonl,.ndjson,.jsonlines,application/json,application/x-ndjson,application/jsonl" />
       </div>
     </div>
-    <div id="jsonlOpts"><span class="hint" id="jsonlHint">JSON · JSONL · NDJSON</span></div>
   </main>
   <footer class="workspace-status"><span>就绪</span><span>本地处理</span></footer>
 </section>
@@ -74,6 +73,7 @@
       <div id="documentActions">
         <button id="switchViewBtn" title="切换当前文件的查看方式">IDE 视图</button>
         <button id="editModeBtn" aria-pressed="false">编辑模式</button>
+        <button id="designModeBtn" aria-pressed="false">设计模式</button>
         <button id="undoEditBtn" disabled>撤销修改</button>
         <button id="redoEditBtn" disabled>重做修改</button>
         <button id="saveBtn" disabled title="保存修改">保存</button>
@@ -166,7 +166,7 @@
 
 <dialog id="valueEditDialog" class="value-edit-dialog" aria-labelledby="valueEditTitle">
   <form id="valueEditForm"><h2 id="valueEditTitle">编辑节点</h2><p id="valueEditPath"></p>
-  <label class="edit-type-row">值类型 <select id="valueEditType"><option value="string">字符串</option><option value="number">数字</option><option value="boolean">布尔值</option><option value="null">null</option><option value="object">对象</option><option value="array">数组</option></select></label>
+  <label class="edit-type-row">值类型 <select id="valueEditType"><option value="" disabled>请选择类型</option><option value="string">字符串</option><option value="number">数字</option><option value="boolean">布尔值</option><option value="null">null</option><option value="object">对象</option><option value="array">数组</option></select></label>
   <textarea id="valueEditText" aria-label="节点内容" spellcheck="false"></textarea>
   <p id="valueEditError" role="alert"></p><p class="s-hint" id="valueEditHint">修改保留在工作副本中，另存为后导出。</p>
   <div class="edit-actions"><button id="valueEditCancel" type="button">取消</button><button type="submit">应用修改</button></div></form>
@@ -217,216 +217,270 @@
     <div class="modal-head">
       <div class="modal-titles">
         <div id="settingsTitle" style="font-size:15px;font-weight:670;letter-spacing:-.01em">设置</div>
-        <div id="settingsSub" style="margin-top:2px;color:var(--muted);font-size:11px">设置自动保存在本机，关闭面板即可继续阅读</div>
+        <div id="settingsSub" style="margin-top:2px;color:var(--muted);font-size:11px">设置自动保存在本机，视图和文件处理设置在关闭面板后应用</div>
       </div>
       <button id="settingsClose" title="关闭">✕</button>
     </div>
     <div class="settings-layout">
       <nav id="settingsNav" class="settings-nav" aria-label="设置分类" role="tablist" aria-orientation="vertical">
-        <button type="button" id="settingsNav0" role="tab" aria-controls="settingsPage0" aria-selected="true" tabindex="0">阅读与布局</button>
-        <button type="button" id="settingsNav1" role="tab" aria-controls="settingsPage1" aria-selected="false" tabindex="-1">字段内容</button>
-        <button type="button" id="settingsNav2" role="tab" aria-controls="settingsPage2" aria-selected="false" tabindex="-1">JSONL</button>
+        <button type="button" id="settingsNav0" role="tab" aria-controls="settingsPage0" aria-selected="true" tabindex="0">外观与视图</button>
+        <button type="button" id="settingsNav1" role="tab" aria-controls="settingsPage1" aria-selected="false" tabindex="-1">树形阅读</button>
+        <button type="button" id="settingsNav2" role="tab" aria-controls="settingsPage2" aria-selected="false" tabindex="-1">文件与恢复</button>
         <button type="button" id="settingsNav3" role="tab" aria-controls="settingsPage3" aria-selected="false" tabindex="-1">模板与备份</button>
-        <button type="button" id="settingsNav4" role="tab" aria-controls="settingsPage4" aria-selected="false" tabindex="-1">键盘快捷键</button>
-        <button type="button" id="settingsNav5" role="tab" aria-controls="settingsPage5" aria-selected="false" tabindex="-1">右键菜单</button>
+        <button type="button" id="settingsNav4" role="tab" aria-controls="settingsPage4" aria-selected="false" tabindex="-1">编辑与设计</button>
+        <button type="button" id="settingsNav5" role="tab" aria-controls="settingsPage5" aria-selected="false" tabindex="-1">键盘与菜单</button>
       </nav>
       <div class="settings-body" id="settingsContent">
-      <div class="settings-group" id="settingsPage0" role="tabpanel" aria-labelledby="settingsNav0">
-      <div class="settings-group-title">阅读与布局</div>
-      <div class="settings-row"><div><label class="s-label" for="optTheme">外观主题</label><div class="s-hint">白天模式适合明亮环境，夜间模式减少暗处的屏幕亮度。默认跟随系统，系统切换外观时会自动更新。</div></div><select id="optTheme"><option value="system">跟随系统</option><option value="light">白天模式</option><option value="dark">夜间模式</option></select></div>
-      <div class="settings-row"><div><label class="s-label" for="optViewMode">文件查看方式</label><div class="s-hint">小文件可使用带行号和语法高亮的 IDE 视图，支持编辑、折叠与格式化。较大或复杂文件自动使用树形视图，两种视图共享修改内容。</div></div><select id="optViewMode"><option value="tree">树形视图</option><option value="auto">简单结构自动使用 IDE</option><option value="ide">优先使用 IDE</option></select></div>
-      <div class="settings-row"><div><label class="s-label" for="optIdeFoldAlwaysVisible">IDE 折叠箭头常驻显示</label><div class="s-hint">默认只在鼠标移到行号区域或用键盘聚焦按钮时显示；开启后始终显示。切换和悬停均无动画。</div></div><label class="switch"><input type="checkbox" id="optIdeFoldAlwaysVisible" /><span class="slider"></span></label></div>
-      <div class="settings-row"><div><label class="s-label" for="optLimitIdeComplexity">限制复杂文件使用 IDE</label><div class="s-hint">默认开启，按文本长度、行数和结构复杂度限制 IDE 的使用。关闭后，阈值以内的复杂文件也可使用 IDE；超过大文件阈值的文件仅支持树形视图。</div></div><label class="switch"><input type="checkbox" id="optLimitIdeComplexity" checked /><span class="slider"></span></label></div>
-      <div class="settings-row"><div><label class="s-label" for="optNodeSelectionStyle">显示节点选中描边</label><div class="s-hint">默认关闭。关闭仅隐藏描边，点击选中节点后仍可按 Ctrl/⌘+C 复制内容。</div></div><label class="switch"><input type="checkbox" id="optNodeSelectionStyle" /><span class="slider"></span></label></div>
-      <div class="settings-row"><div><label class="s-label" for="optVimEditing">Vim 风格快捷键</label><div class="s-hint">开启后，在树形画布上用 h、j、k、l 移动，用 / 查找。完整键位见「键盘快捷键」。</div></div><label class="switch"><input type="checkbox" id="optVimEditing" /><span class="slider"></span></label></div>
-      <div class="settings-row"><div><label class="s-label" for="optTopicDock">显示主题操作栏</label><div class="s-hint">在新建文档的画布左下角显示主题操作。</div></div><label class="switch"><input type="checkbox" id="optTopicDock" /><span class="slider"></span></label></div>
-      <div class="settings-row"><div><label class="s-label" for="optTopicDoubleClick">双击主题时</label><div class="s-hint">应用于新建文档的树形画布。根节点和数组元素可通过「编辑值」修改内容。</div></div><select id="optTopicDoubleClick"><option value="rename">修改主题名称</option><option value="value">编辑值</option></select></div>
-      <div class="settings-row">
-        <div>
-          <label class="s-label" for="optLargeFileThreshold">大文件处理阈值</label>
-          <div class="s-hint" id="largeFileThresholdHint">打开文件时，阈值以内使用内存解析，超过阈值时桌面版使用磁盘索引，浏览器预览会拒绝打开。调整后，下次打开文件会按新阈值选择读取方式。1 MB = 1024 × 1024 字节。</div>
+        <div class="settings-page" id="settingsPage0" role="tabpanel" aria-labelledby="settingsNav0">
+          <h2 class="settings-page-title">外观与视图</h2>
+          <section class="settings-group">
+            <h3 class="settings-group-title">界面外观</h3>
+            <div class="settings-row"><div><label class="s-label" for="optTheme">外观主题</label><div class="s-hint">白天模式适合明亮环境，夜间模式减少暗处的屏幕亮度。默认跟随系统，系统切换外观时会自动更新。</div></div><select id="optTheme"><option value="system">跟随系统</option><option value="light">白天模式</option><option value="dark">夜间模式</option></select></div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optRailStyle">多文件栏样式</label>
+                <div class="s-hint">调整左侧已打开文件的展示方式。将鼠标移到栏上可查看文件名，并切换到对应文件。</div>
+              </div>
+              <select id="optRailStyle">
+                <option value="default">默认竖条</option>
+                <option value="dial">悬浮细线</option>
+              </select>
+            </div>
+          </section>
+          <section class="settings-group">
+            <h3 class="settings-group-title">文档视图</h3>
+            <div class="settings-row"><div><label class="s-label" for="optViewMode">文件查看方式</label><div class="s-hint">小文件可使用带行号和语法高亮的 IDE 视图，支持编辑、折叠与格式化。较大或复杂文件自动使用树形视图，两种视图共享修改内容。</div></div><select id="optViewMode"><option value="tree">树形视图</option><option value="auto">简单结构自动使用 IDE</option><option value="ide">优先使用 IDE</option></select></div>
+            <div class="settings-row"><div><label class="s-label" for="optIdeFoldAlwaysVisible">IDE 折叠箭头常驻显示</label><div class="s-hint">默认只在鼠标移到行号区域或用键盘聚焦按钮时显示；开启后始终显示。切换和悬停均无动画。</div></div><label class="switch"><input type="checkbox" id="optIdeFoldAlwaysVisible" /><span class="slider"></span></label></div>
+          </section>
         </div>
-        <select id="optLargeFileThreshold" aria-describedby="largeFileThresholdHint">
-          <option value="32">32 MB</option>
-          <option value="64" selected>64 MB</option>
-          <option value="128">128 MB</option>
-          <option value="256">256 MB</option>
-        </select>
-      </div>
-      <div class="settings-row">
-        <div>
-          <label class="s-label" for="optLegacyTreeLayout">使用旧版横向布局</label>
-          <div class="s-hint" id="legacyTreeLayoutHint">开启后，子树在父节点右侧展开；关闭后，子树从父节点下方向右缩进。切换不会收起已展开的节点。</div>
+        <div class="settings-page" id="settingsPage1" role="tabpanel" aria-labelledby="settingsNav1" hidden>
+          <h2 class="settings-page-title">树形阅读</h2>
+          <section class="settings-group">
+            <h3 class="settings-group-title">布局与展开</h3>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optLegacyTreeLayout">使用旧版横向布局</label>
+                <div class="s-hint" id="legacyTreeLayoutHint">开启后，子树在父节点右侧展开；关闭后，子树从父节点下方向右缩进。切换不会收起已展开的节点。</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="optLegacyTreeLayout" aria-describedby="legacyTreeLayoutHint" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optDefaultLevels">默认展开层数</label>
+                <div class="s-hint">未恢复阅读状态、也未应用展开模板时，按所选层数展开。数组仅展开第一项，避免一次显示过多内容。</div>
+              </div>
+              <select id="optDefaultLevels">
+                <option value="0">全部收起</option>
+                <option value="1">1 层</option>
+                <option value="2">2 层</option>
+                <option value="3">3 层</option>
+              </select>
+            </div>
+            <div class="settings-row"><div><label class="s-label" for="optNodeSelectionStyle">显示节点选中描边</label><div class="s-hint">默认关闭。关闭仅隐藏描边，点击选中节点后仍可按 Ctrl/⌘+C 复制内容。</div></div><label class="switch"><input type="checkbox" id="optNodeSelectionStyle" /><span class="slider"></span></label></div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optIndexBase">数组编号起点</label>
+                <div class="s-hint">选择数组条目显示为 0、1、2… 或 1、2、3…。仅改变阅读编号，路径中的真实下标仍从 0 开始。</div>
+              </div>
+              <select id="optIndexBase">
+                <option value="0">从 0 开始</option>
+                <option value="1">从 1 开始</option>
+              </select>
+            </div>
+          </section>
+          <section class="settings-group">
+            <h3 class="settings-group-title">字段显示</h3>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optLimitValueHeight">限制内容高度</label>
+                <div class="s-hint">将过长的字段内容限制在指定行数内，让树形结构更紧凑。超出部分可点击卡片上的 … 查看全文。</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="optLimitValueHeight" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optValueMaxLines">最多显示行数</label>
+                <div class="s-hint">开启“限制内容高度”后生效，只影响卡片显示，不会截断复制的内容。</div>
+              </div>
+              <select id="optValueMaxLines">
+                <option value="3">3 行</option>
+                <option value="6">6 行</option>
+                <option value="10">10 行</option>
+                <option value="20">20 行</option>
+              </select>
+            </div>
+          </section>
         </div>
-        <label class="switch">
-          <input type="checkbox" id="optLegacyTreeLayout" aria-describedby="legacyTreeLayoutHint" />
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="s-label">自动应用结构模板</div>
-          <div class="s-hint">打开文件时按已记录的模板展开，适合连续阅读结构相似的文件。恢复阅读状态时，优先使用上次的展开状态。</div>
+        <div class="settings-page" id="settingsPage2" role="tabpanel" aria-labelledby="settingsNav2" hidden>
+          <h2 class="settings-page-title">文件与恢复</h2>
+          <section class="settings-group">
+            <h3 class="settings-group-title">大文件</h3>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optLargeFileThreshold">大文件处理阈值</label>
+                <div class="s-hint" id="largeFileThresholdHint">打开文件时，阈值以内使用内存解析，超过阈值时桌面版使用磁盘索引，浏览器预览会拒绝打开。调整后，下次打开文件会按新阈值选择读取方式。1 MB = 1024 × 1024 字节。</div>
+              </div>
+              <select id="optLargeFileThreshold" aria-describedby="largeFileThresholdHint">
+                <option value="32">32 MB</option>
+                <option value="64" selected>64 MB</option>
+                <option value="128">128 MB</option>
+                <option value="256">256 MB</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optIndexRebuild">大文件索引重建</label>
+                <div class="s-hint" id="indexRebuildHint">桌面版。智能重建可复用已保存的索引，并在显示内容后校验哈希。文件大小变更或缺少已保存的哈希时会重建。</div>
+              </div>
+              <select id="optIndexRebuild" aria-describedby="indexRebuildHint">
+                <option value="smart" selected>智能重建</option>
+                <option value="always">始终重建</option>
+              </select>
+            </div>
+          </section>
+          <section class="settings-group">
+            <h3 class="settings-group-title">JSONL</h3>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optSettingsJsonlArray">以数组显示多条记录</label>
+                <div class="s-hint">多条 JSONL 记录放在同一个数组根节点下，便于逐条浏览；关闭后只显示第一条记录。</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="optSettingsJsonlArray" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optStrictJsonl">严格模式</label>
+                <div class="s-hint">任意记录行解析失败或包含注释时，拒绝预览整个文件。关闭后跳过这些行；空行始终忽略。</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="optStrictJsonl" />
+                <span class="slider"></span>
+              </label>
+            </div>
+          </section>
+          <section class="settings-group">
+            <h3 class="settings-group-title">启动与会话</h3>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optReopenLast">重启时重新打开文件</label>
+                <div class="s-hint" id="reopenHint">下次启动时继续打开本次的文件；关闭此项会清除已保存的恢复记录。</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="optReopenLast" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optRestoreSession">恢复阅读状态</label>
+                <div class="s-hint">需先开启“重启时重新打开文件”。恢复文档视图、树形阅读位置，以及 IDE 的光标、折叠、滚动位置和字号。</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="optRestoreSession" />
+                <span class="slider"></span>
+              </label>
+            </div>
+          </section>
         </div>
-        <label class="switch">
-          <input type="checkbox" id="optAutoTemplate" />
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="s-label">默认展开层数</div>
-          <div class="s-hint">未恢复阅读状态、也未应用展开模板时，按所选层数展开。数组仅展开第一项，避免一次显示过多内容。</div>
+        <div class="settings-page" id="settingsPage3" role="tabpanel" aria-labelledby="settingsNav3" hidden>
+          <h2 class="settings-page-title">模板与备份</h2>
+          <section class="settings-group">
+            <h3 class="settings-group-title">结构模板</h3>
+            <div class="settings-row">
+              <div>
+                <div class="s-label">结构模板</div>
+                <div class="s-hint">记录常用的展开层级，并管理隐藏的节点。隐藏规则按结构匹配所有文件，数组元素共用同一路径规则。</div>
+                <div class="s-hint" id="templateStatus">未记录</div>
+              </div>
+              <div style="display:flex;gap:8px">
+                <button id="applyTemplateBtn" class="tf-btn">立即应用</button>
+                <button id="clearTemplateBtn" class="tf-btn">清除</button>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optAutoTemplate">自动应用结构模板</label>
+                <div class="s-hint">打开文件时按已记录的模板展开，适合连续阅读结构相似的文件。恢复阅读状态时，优先使用上次的展开状态。</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="optAutoTemplate" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div id="hiddenTemplateRules" class="template-rules" hidden>
+              <div class="s-label">隐藏规则</div>
+              <ul id="hiddenTemplateList"></ul>
+            </div>
+          </section>
+          <section class="settings-group">
+            <h3 class="settings-group-title">设置备份</h3>
+            <div class="settings-row">
+              <div>
+                <div class="s-label">设置导入 / 导出</div>
+                <div class="s-hint">导出阅读设置和结构模板，便于备份或迁移到另一台电脑。导入后替换对应设置，不包含已打开的数据文件。</div>
+              </div>
+              <div style="display:flex;gap:8px">
+                <button id="exportSettingsBtn" class="tf-btn">导出</button>
+                <button id="importSettingsBtn" class="tf-btn">导入</button>
+                <input id="settingsImportInput" type="file" accept=".json,application/json" hidden />
+              </div>
+            </div>
+          </section>
         </div>
-        <select id="optDefaultLevels">
-          <option value="0">全部收起</option>
-          <option value="1">1 层</option>
-          <option value="2">2 层</option>
-          <option value="3">3 层</option>
-        </select>
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="s-label">数组编号起点</div>
-          <div class="s-hint">选择数组条目显示为 0、1、2… 或 1、2、3…。仅改变阅读编号，路径中的真实下标仍从 0 开始。</div>
+        <div class="settings-page" id="settingsPage4" role="tabpanel" aria-labelledby="settingsNav4" hidden>
+          <h2 class="settings-page-title">编辑与设计</h2>
+          <section class="settings-group">
+            <h3 class="settings-group-title">设计模式</h3>
+            <div class="settings-row"><div><label class="s-label" for="optTopicDock">显示主题操作栏</label><div class="s-hint">在设计模式的画布左下角显示主题操作。</div></div><label class="switch"><input type="checkbox" id="optTopicDock" /><span class="slider"></span></label></div>
+            <div class="settings-row"><div><label class="s-label" for="optTopicDoubleClick">双击主题时</label><div class="s-hint">应用于设计模式的树形画布。根节点和数组元素可通过「编辑值」修改内容。</div></div><select id="optTopicDoubleClick"><option value="rename">修改主题名称</option><option value="value">编辑值</option></select></div>
+            <div class="settings-row"><div><label class="s-label" for="optDesignLimit">设计模式大小上限</label><div class="s-hint" id="designLimitHint">只有小于该上限的 JSON 文档可以进入设计模式。单位为 MB，默认 8，最高 32。</div></div><input id="optDesignLimit" type="number" min="1" max="32" step="1" value="8" aria-describedby="designLimitHint" /></div>
+          </section>
+          <section class="settings-group">
+            <h3 class="settings-group-title">IDE 编辑</h3>
+            <div class="settings-row"><div><label class="s-label" for="optLimitIdeComplexity">限制复杂文件使用 IDE</label><div class="s-hint">默认开启，按文本长度、行数和结构复杂度限制 IDE 的使用。关闭后，阈值以内的复杂文件也可使用 IDE；超过大文件阈值的文件仅支持树形视图。</div></div><label class="switch"><input type="checkbox" id="optLimitIdeComplexity" checked /><span class="slider"></span></label></div>
+          </section>
         </div>
-        <select id="optIndexBase">
-          <option value="0">从 0 开始</option>
-          <option value="1">从 1 开始</option>
-        </select>
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="s-label">多文件栏样式</div>
-          <div class="s-hint">调整左侧已打开文件的展示方式。将鼠标移到栏上可查看文件名，并切换到对应文件。</div>
-        </div>
-        <select id="optRailStyle">
-          <option value="default">默认竖条</option>
-          <option value="dial">悬浮细线</option>
-        </select>
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="s-label">重启时重新打开文件</div>
-          <div class="s-hint" id="reopenHint">下次启动时继续打开本次的文件；关闭此项会清除已保存的恢复记录。</div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="optReopenLast" />
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="s-label">恢复阅读状态</div>
-          <div class="s-hint">需先开启“重启时重新打开文件”。恢复上次的平移位置、缩放比例和展开层级，继续之前的阅读。</div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="optRestoreSession" />
-          <span class="slider"></span>
-        </label>
-      </div>
-      </div>
-      <div class="settings-group" id="settingsPage1" role="tabpanel" aria-labelledby="settingsNav1" hidden>
-        <div class="settings-group-title">字段内容</div>
-        <div class="settings-row">
-          <div>
-            <div class="s-label">限制内容高度</div>
-            <div class="s-hint">将过长的字段内容限制在指定行数内，让树形结构更紧凑。超出部分可点击卡片上的 … 查看全文。</div>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="optLimitValueHeight" />
-            <span class="slider"></span>
-          </label>
-        </div>
-        <div class="settings-row">
-          <div>
-            <div class="s-label">最多显示行数</div>
-            <div class="s-hint">开启“限制内容高度”后生效，只影响卡片显示，不会截断复制的内容。</div>
-          </div>
-          <select id="optValueMaxLines">
-            <option value="3">3 行</option>
-            <option value="6">6 行</option>
-            <option value="10">10 行</option>
-            <option value="20">20 行</option>
-          </select>
-        </div>
-      </div>
-      <div class="settings-group" id="settingsPage2" role="tabpanel" aria-labelledby="settingsNav2" hidden>
-        <div class="settings-group-title">JSONL</div>
-        <div class="settings-row">
-          <div>
-            <div class="s-label">以数组显示多条记录</div>
-            <div class="s-hint">多条 JSONL 记录放在同一个数组根节点下，便于逐条浏览；关闭后只显示第一条记录。</div>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="optSettingsJsonlArray" />
-            <span class="slider"></span>
-          </label>
-        </div>
-        <div class="settings-row">
-          <div>
-            <div class="s-label">严格模式</div>
-            <div class="s-hint">任意记录行解析失败或包含注释时，拒绝预览整个文件。关闭后跳过这些行；空行始终忽略。</div>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="optStrictJsonl" />
-            <span class="slider"></span>
-          </label>
+        <div class="settings-page" id="settingsPage5" role="tabpanel" aria-labelledby="settingsNav5" hidden>
+          <h2 class="settings-page-title">键盘与菜单</h2>
+          <section class="settings-group">
+            <h3 class="settings-group-title">键盘操作</h3>
+            <div class="settings-row"><div><label class="s-label" for="optVimEditing">Vim 风格快捷键</label><div class="s-hint">开启后，在树形画布上用 h、j、k、l 移动，用 / 查找。完整键位见下方说明。</div></div><label class="switch"><input type="checkbox" id="optVimEditing" /><span class="slider"></span></label></div>
+            <details class="settings-reference">
+              <summary>常用快捷键</summary>
+              <p class="s-hint">展开和收起快捷键作用于树形视图。输入框保留文字编辑快捷键。按 Shift+Alt+F 也可格式化文档。</p>
+              <dl id="shortcutHelp" class="shortcut-help"></dl>
+            </details>
+            <details class="settings-reference">
+              <summary>Vim 键位</summary>
+              <dl class="shortcut-help">
+                <dt>父节点、下一个、上一个、首个子节点</dt><dd><kbd>h / j / k / l</kbd></dd>
+                <dt>根节点 / 最后一个可见节点</dt><dd><kbd>gg / G</kbd></dd>
+                <dt>展开 / 收起 / 切换当前分支</dt><dd><kbd>zo / zc / za</kbd></dd>
+                <dt>展开全部（当前页）/ 收起全部</dt><dd><kbd>zR / zM</kbd></dd>
+                <dt>查找 / 下一个 / 上一个匹配</dt><dd><kbd>/ &nbsp; n / N</kbd></dd>
+                <dt>复制节点内容 / 撤销修改</dt><dd><kbd>yy / u</kbd></dd>
+                <dt>进入值编辑模式 / 编辑选中值 / 退出</dt><dd><kbd>i / r / Esc</kbd></dd>
+                <dt>设计模式下重命名、添加子主题、添加同级主题、删除分支</dt><dd><kbd>i 或 r / a / o / dd</kbd></dd>
+              </dl>
+            </details>
+          </section>
+          <section class="settings-group">
+            <h3 class="settings-group-title">右键菜单</h3>
+            <p class="s-hint">选择节点右键菜单中显示的项目，并调整顺序。</p>
+            <ol id="contextMenuOptions" class="context-options"></ol>
+            <button id="resetContextMenu" type="button" class="tf-btn">恢复默认</button>
+          </section>
         </div>
       </div>
-      <div class="settings-group" id="settingsPage3" role="tabpanel" aria-labelledby="settingsNav3" hidden>
-      <div class="settings-group-title">模板与备份</div>
-      <div class="settings-row">
-        <div>
-          <div class="s-label">结构模板</div>
-          <div class="s-hint">记录常用的展开层级，并管理隐藏的节点。隐藏规则按结构匹配所有文件，数组元素共用同一路径规则。</div>
-          <div class="s-hint" id="templateStatus">未记录</div>
-        </div>
-        <div style="display:flex;gap:8px">
-          <button id="applyTemplateBtn" class="tf-btn">立即应用</button>
-          <button id="clearTemplateBtn" class="tf-btn">清除</button>
-        </div>
-      </div>
-      <div id="hiddenTemplateRules" class="template-rules" hidden>
-        <div class="s-label">隐藏规则</div>
-        <ul id="hiddenTemplateList"></ul>
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="s-label">设置导入 / 导出</div>
-          <div class="s-hint">导出阅读设置和结构模板，便于备份或迁移到另一台电脑。导入后替换对应设置，不包含已打开的数据文件。</div>
-        </div>
-        <div style="display:flex;gap:8px">
-          <button id="exportSettingsBtn" class="tf-btn">导出</button>
-          <button id="importSettingsBtn" class="tf-btn">导入</button>
-          <input id="settingsImportInput" type="file" accept=".json,application/json" hidden />
-        </div>
-      </div>
-      </div>
-      <div class="settings-group" id="settingsPage4" role="tabpanel" aria-labelledby="settingsNav4" hidden>
-        <div class="settings-group-title">键盘快捷键</div>
-        <p class="s-hint">参考 IDEA 的常用键位，按当前系统显示。展开与收起仅作用于树形视图；在普通输入框中保留原有文字编辑行为。也可继续使用 Shift+Alt+F 格式化。</p>
-        <dl id="shortcutHelp" class="shortcut-help"></dl>
-        <div class="settings-group-title">Vim 风格快捷键</div>
-        <p class="s-hint">开启「阅读与布局」中的 Vim 风格快捷键后，点击树形画布使用。组合键依次按下。</p>
-        <dl class="shortcut-help">
-          <dt>父节点、下一个、上一个、首个子节点</dt><dd><kbd>h / j / k / l</kbd></dd>
-          <dt>根节点 / 最后一个可见节点</dt><dd><kbd>gg / G</kbd></dd>
-          <dt>展开 / 收起 / 切换当前分支</dt><dd><kbd>zo / zc / za</kbd></dd>
-          <dt>展开全部（当前页）/ 收起全部</dt><dd><kbd>zR / zM</kbd></dd>
-          <dt>查找 / 下一个 / 上一个匹配</dt><dd><kbd>/ &nbsp; n / N</kbd></dd>
-          <dt>复制节点内容 / 撤销修改</dt><dd><kbd>yy / u</kbd></dd>
-          <dt>进入值编辑模式 / 编辑选中值 / 退出</dt><dd><kbd>i / r / Esc</kbd></dd>
-          <dt>新建文档中重命名、添加子主题、添加同级主题、删除分支</dt><dd><kbd>i 或 r / a / o / dd</kbd></dd>
-        </dl>
-      </div>
-      <div class="settings-group" id="settingsPage5" role="tabpanel" aria-labelledby="settingsNav5" hidden>
-        <div class="settings-group-title">右键菜单</div>
-        <p class="s-hint">选择节点右键菜单中显示的项目，并调整顺序。</p>
-        <ol id="contextMenuOptions" class="context-options"></ol>
-        <button id="resetContextMenu" type="button" class="tf-btn">恢复默认</button>
-      </div>
-    </div>
     </div>
     <div id="settingsFooter" class="modal-foot" hidden>
       <button id="recordTemplateBtn2" class="tf-btn">记录当前展开为模板</button>

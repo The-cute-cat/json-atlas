@@ -3,7 +3,7 @@
 use super::{err, read_word, sidecar, write_word, Result};
 use std::{
     cmp::Reverse,
-    collections::{hash_map::RandomState, BinaryHeap},
+    collections::BinaryHeap,
     fs::{File, OpenOptions},
     hash::BuildHasher,
     io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
@@ -27,7 +27,7 @@ impl KeyReader {
             bytes: Vec::new(),
         })
     }
-    pub fn hash(&mut self, start: u64, end: u64, state: &RandomState) -> Result<u64> {
+    pub fn hash(&mut self, start: u64, end: u64, state: &super::KeyState) -> Result<u64> {
         let len = end
             .checked_sub(start)
             .filter(|n| *n <= 64 * 1024)

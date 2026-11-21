@@ -1,4 +1,3 @@
-use serde::Serialize;
 use std::{ffi::OsString, fs::File, io::Read, path::Path};
 
 pub const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
@@ -244,14 +243,6 @@ pub fn copy_name(name: &str) -> String {
     }
 }
 
-#[derive(Serialize, Debug)]
-pub struct Document {
-    path: String,
-    name: String,
-    size: u64,
-    text: String,
-}
-
 pub fn argument_paths(
     args: impl IntoIterator<Item = impl Into<OsString>>,
     cwd: &Path,
@@ -295,7 +286,7 @@ pub fn display_path(path: &Path) -> String {
     }
 }
 
-pub fn read_document(path: &str, max_bytes: u64) -> Result<Document, String> {
+pub fn read_document(path: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
     let max_bytes = max_bytes.min(MAX_FILE_BYTES);
     validate_local_path(path)?;
     let path = std::fs::canonicalize(path).map_err(|e| format!("无法打开文件：{e}"))?;
@@ -324,18 +315,7 @@ pub fn read_document(path: &str, max_bytes: u64) -> Result<Document, String> {
     if bytes.len() as u64 > max_bytes {
         return Err("文件读取期间超过内存读取阈值，请重新打开以使用磁盘索引".into());
     }
-    let size = bytes.len() as u64;
-    let text = String::from_utf8(bytes).map_err(|e| format!("文件不是有效 UTF-8：{e}"))?;
-    Ok(Document {
-        name: path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
-        path: display_path(&path),
-        size,
-        text,
-    })
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -439,12 +419,10 @@ mod tests {
     fn reads_canonical_path_and_rejects_other_file_types() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/sample.json");
         let doc = read_document(path.to_str().unwrap(), MAX_FILE_BYTES).unwrap();
-        assert!(read_document(path.to_str().unwrap(), doc.size - 1).is_err());
-        assert!(read_document(path.to_str().unwrap(), doc.size).is_ok());
-        assert_eq!(doc.name, "sample.json");
-        assert!(doc.text.contains("JSON Atlas"));
-        assert_eq!(doc.size, doc.text.len() as u64);
-        assert!(!doc.path.starts_with(r"\\?\"));
+        let size = doc.len() as u64;
+        assert!(read_document(path.to_str().unwrap(), size - 1).is_err());
+        assert!(read_document(path.to_str().unwrap(), size).is_ok());
+        assert!(String::from_utf8(doc).unwrap().contains("JSON Atlas"));
         let unsupported = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         assert!(read_document(unsupported.to_str().unwrap(), MAX_FILE_BYTES).is_err());
         assert!(read_document("missing.json", MAX_FILE_BYTES).is_err());

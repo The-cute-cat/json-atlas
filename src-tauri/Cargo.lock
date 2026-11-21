@@ -1846,6 +1846,8 @@ dependencies = [
  "regex-automata",
  "serde",
  "serde_json",
+ "sha2",
+ "siphasher",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

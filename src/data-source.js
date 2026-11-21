@@ -1,4 +1,4 @@
-import { PAGE_SIZE, searchData } from './data.js';
+import { MAX_RENDERED_CHILDREN, PAGE_SIZE, searchData } from './data.js';
 
 /** Opening supplies root metadata; pages, text and search can require I/O.
  * Branch descriptors never contain a recursive value. This first adapter still
@@ -35,10 +35,9 @@ export class MemoryDataSource {
       ...(branch ? {} : { value }) };
   }
   getRoot() { this.#check(); return this.#describe(this.#value, []); }
-  async getChildren(path, { offset = 0, key, limit = PAGE_SIZE, firstArrayOnly = false, signal, all = false } = {}) {
+  async getChildren(path, { offset = 0, key, limit = PAGE_SIZE, firstArrayOnly = false, signal } = {}) {
     this.#check(signal);
-    if(all) limit = 5000;
-    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(limit) || limit < 1 || limit > (all ? 5000 : PAGE_SIZE)) throw new Error('无效的分页参数');
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_RENDERED_CHILDREN) throw new Error('无效的分页参数');
     const value = this.#at(path);
     const array = Array.isArray(value);
     const keys = value !== null && typeof value === 'object' && !array ? this.#objectKeys(value) : [];
@@ -56,7 +55,7 @@ export class MemoryDataSource {
       items.push({ key: childKey, arrayItem: array, ...this.#describe(value[childKey], path.concat(childKey)) });
     }
     this.#check(signal);
-    return { start, end, total, items, ...(all && total > limit ? { limited: true } : {}) };
+    return { start, end, total, items };
   }
   async getText(path, { signal } = {}) {
     this.#check(signal);

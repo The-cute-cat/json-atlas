@@ -21,6 +21,8 @@ const TEXT_LIMIT: u64 = 8 * 1024 * 1024;
 #[cfg(test)]
 #[path = "indexed_bench.rs"]
 mod benchmarks;
+#[path = "index_cache.rs"]
+pub(super) mod cache;
 #[path = "jsonl_index.rs"]
 mod jsonl;
 #[path = "key_index.rs"]
@@ -30,6 +32,24 @@ pub(super) mod native_search;
 #[path = "search_regex.rs"]
 mod search_regex;
 type Result<T> = std::result::Result<T, String>;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct KeyState(u64, u64);
+
+impl KeyState {
+    fn new() -> Self {
+        let random = RandomState::new();
+        Self(random.hash_one(0u8), random.hash_one(1u8))
+    }
+}
+
+impl BuildHasher for KeyState {
+    type Hasher = siphasher::sip::SipHasher13;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        Self::Hasher::new_with_keys(self.0, self.1)
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Branch {
@@ -106,7 +126,7 @@ impl IndexState {
         }
         Ok(())
     }
-    pub fn close_session(&self, id: &str) -> Result<()> {
+    pub fn close_session(&self, id: &str, forget: bool) -> Result<()> {
         // Same lock order as begin_search closes the registration/close race.
         let mut sessions = self.sessions.lock().map_err(err)?;
         for ((owner, _), cancel) in self.searches.lock().map_err(err)?.iter() {
@@ -114,7 +134,10 @@ impl IndexState {
                 cancel.store(true, Ordering::Relaxed);
             }
         }
-        sessions.remove(id);
+        if let Some(doc) = sessions.remove(id) {
+            let doc = doc.lock().map_err(err)?;
+            cache::cancel(&doc, forget);
+        }
         Ok(())
     }
 }
@@ -586,6 +609,8 @@ impl Scanner<'_> {
 
 pub struct Indexed {
     owned: bool,
+    cache: Option<cache::Session>,
+    invalidated: bool,
     source_path: PathBuf,
     jsonl: Option<Box<jsonl::LineIndex>>,
     source: File,
@@ -599,7 +624,7 @@ pub struct Indexed {
     branch_cache: HashMap<u64, Branch>,
     keys: Option<File>,
     keys_path: PathBuf,
-    key_state: RandomState,
+    key_state: KeyState,
     width: usize,
     index_path: PathBuf,
     size: u64,
@@ -613,6 +638,12 @@ pub struct Indexed {
 }
 impl Drop for Indexed {
     fn drop(&mut self) {
+        if self.cache.as_mut().is_some_and(cache::Session::keep_files) {
+            if let Some(lines) = self.jsonl.as_mut() {
+                lines.retain_index();
+            }
+            return;
+        }
         if !self.owned {
             return;
         }
@@ -658,15 +689,20 @@ impl Indexed {
     }
     fn empty(path: &str, index_path: PathBuf) -> Result<Self> {
         let source = File::open(path).map_err(err)?;
-        let meta = source.metadata().map_err(err)?;
         let index = OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .open(&index_path)
             .map_err(err)?;
+        Self::from_files(path, index_path, source, index)
+    }
+    fn from_files(path: &str, index_path: PathBuf, source: File, index: File) -> Result<Self> {
+        let meta = source.metadata().map_err(err)?;
         Ok(Self {
             owned: true,
+            cache: None,
+            invalidated: false,
             source_path: PathBuf::from(path),
             jsonl: None,
             source,
@@ -680,7 +716,7 @@ impl Indexed {
             branch_cache: HashMap::new(),
             keys: None,
             keys_path: sidecar(&index_path, ".keys"),
-            key_state: RandomState::new(),
+            key_state: KeyState::new(),
             width: index_width(meta.len()),
             index_path,
             size: meta.len(),
@@ -702,6 +738,8 @@ impl Indexed {
         };
         let copy = Self {
             owned: false,
+            cache: None,
+            invalidated: false,
             source_path: self.source_path.clone(),
             source: File::open(&self.source_path).map_err(err)?,
             index: Some(File::open(&self.index_path).map_err(err)?),
@@ -791,6 +829,9 @@ impl Indexed {
         Ok(())
     }
     pub fn check(&self) -> Result<()> {
+        if self.invalidated {
+            return Err("文件内容已变化，正在重新建立索引".into());
+        }
         let m = self.source.metadata().map_err(err)?;
         if m.len() != self.size || m.modified().ok() != self.modified {
             return Err("文件已发生变化，请重新打开以建立索引".into());

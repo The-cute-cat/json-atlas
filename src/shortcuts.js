@@ -7,13 +7,13 @@ const bindings = {
   newDocument: ['Mod', 'N'], open: ['Mod', 'O'], save: ['Mod', 'S'], saveCopy: ['Mod', 'Shift', 'S'],
   find: ['Mod', 'F'], undo: ['Mod', 'Z'], redo: ['Mod', 'Shift', 'Z'], copyNode: ['Mod', 'C'], format: ['Mod', 'Alt', 'L'],
   settings: ['Ctrl', 'Alt', 'S'], close: ['Ctrl', 'F4'],
-  switchView: ['Mod', 'Alt', 'V'], editMode: ['Mod', 'Alt', 'E'], resetView: ['Mod', 'Alt', '0'], about: ['F1'],
+  switchView: ['Mod', 'Alt', 'V'], editMode: ['Mod', 'Alt', 'E'], designMode: ['Mod', 'Alt', 'D'], resetView: ['Mod', 'Alt', '0'], about: ['F1'],
   expandAll: ['Mod', 'Shift', 'NumpadAdd'], collapseAll: ['Mod', 'Shift', 'NumpadSubtract'],
   nextFile: ['Alt', 'ArrowRight'], previousFile: ['Alt', 'ArrowLeft'],
   nextMatch: ['F3'], previousMatch: ['Shift', 'F3']
 };
 const macBindings = {
-  settings: ['Meta', ','], close: ['Meta', 'W'],
+  designMode: ['Meta', 'Alt', 'Shift', 'D'], settings: ['Meta', ','], close: ['Meta', 'W'],
   nextFile: ['Meta', 'Shift', ']'], previousFile: ['Meta', 'Shift', '['],
   nextMatch: ['Meta', 'G'], previousMatch: ['Meta', 'Shift', 'G']
 };
