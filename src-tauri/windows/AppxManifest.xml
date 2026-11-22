@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+         IgnorableNamespaces="uap uap3 rescap">
+  <Identity Name="Thecutecat.JSONAtlas"
+            Publisher="CN=B7749F21-A79A-4441-808D-E37EA0EA0326"
+            Version="0.0.0.0"
+            ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>JSON Atlas</DisplayName>
+    <PublisherDisplayName>The_cute_cat</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-US" />
+    <Resource Language="zh-CN" />
+  </Resources>
+  <Applications>
+    <Application Id="App" Executable="json-atlas.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="JSON Atlas"
+                          Description="Explore and edit local JSON and JSONL files."
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets\Square150x150Logo.png"
+                          Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="jsonatlas" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>JSON Atlas structured data document</uap:DisplayName>
+            <uap:Logo>Assets\DocumentLogo.png</uap:Logo>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.json</uap:FileType>
+              <uap:FileType>.jsonl</uap:FileType>
+              <uap:FileType>.ndjson</uap:FileType>
+              <uap:FileType>.jsonlines</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

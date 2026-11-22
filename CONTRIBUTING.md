@@ -126,3 +126,9 @@ node scripts/check-release.js
 维护者验证安装包和发布说明后，再到 GitHub Releases 公开草稿。预发布用户可从 Releases 页面手动下载，应用内检查更新面向正式版。预发布验证完成后，将各处版本号更新为正式版（例如 `0.5.0`），提交并推送新的正式版标签 `v0.5.0`。
 
 免安装版 `JSON-Atlas-<tag>-portable.zip` 解压后直接运行 `json-atlas.exe`，依赖系统已安装 WebView2 Runtime。免安装版不注册文件关联、不提供卸载入口，草稿确认时一并验证。不要向仓库提交签名证书或其他凭据。
+
+## Microsoft Store
+
+在装有 Windows SDK 的 Windows x64 环境中，从仓库根目录运行 `./scripts/build-msix.ps1`。正式版默认将应用版本的主版本号加一并追加 `.0`，所以应用 `0.5.0` 对应 MSIX `1.5.0.0`。预发布版需显式传入低于对应正式版、且高于先前测试包的版本，例如 `-PackageVersion 1.4.999.0`。
+
+商店包生成在 `src-tauri/target/msix/`。包保留合作伙伴中心分配的标识，由 Microsoft Store 签名。提审前应在干净的测试机上验证 WebView2 启动、资源管理器文件关联，以及升级后设置和阅读会话的恢复。
