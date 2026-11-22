@@ -3,8 +3,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 import { MAX_FILE_BYTES, MAX_RENDERED_CHILDREN, PAGE_SIZE, searchData, parseDocument, encodeDataPath, normalizeDataPath } from '../src/data.js';
 import { MemoryDataSource } from '../src/data-source.js';
+import { sharedPageCache } from '../src/page-cache.js';
 import { normalizeThreshold, needsIndex, IndexedDataSource } from '../src/large-files.js';
 import { ViewportWindow } from '../src/viewport-window.js';
 import { NodeBudget } from '../src/node-budget.js';
@@ -99,21 +101,66 @@ function reader(storage = new Map(), native = {}) {
     requestAnimationFrame: callback => frames.push(callback),
     setTimeout: (callback, delay) => delay === 0 ? setTimeout(callback, 0) : 1, clearTimeout() {},
     desktop: false, connectDesktop: async () => {}, updateWindowTitle() {}, updateWindowTheme() {},
-    MAX_FILE_BYTES, MAX_RENDERED_CHILDREN, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
+    MAX_FILE_BYTES, MAX_RENDERED_CHILDREN, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, sharedPageCache, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
     valueAt, replaceValue, editObjectTopic, parseEdit, serializeDocument, ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit, normalizeTheme, watchTheme,
     encodePath: encodeDataPath, normalizePath: normalizeDataPath, compileSearch,
-    console, Blob, File, isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel, installTooltips, ...native
+    console, Blob, File, manifest, isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel, installTooltips, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
     ;({ buildDoc, resolveDoc, activateDoc, collectSession, saveSession, expandByPaths, expandLevels, expandOne, positionFindPanel,
       beginNodeEdit, applyNodeEdit, applyIdeChange, toggleIdeFold, handleIdeInput, formatIde, openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile, openPaths, showNodeLimit, collapseAll, updateVirtualization, saveCurrentDocument,
-      openPastedText, selectCopyNode,
+      openPastedText, selectCopyNode, releaseIdleDocuments,
       allDocs: () => docs,
       add: doc => docs.push(doc), configure: value => Object.assign(settings, value),
       setTemplate: value => { template = value; }, template: () => template,
       state: () => ({ activeDocId, currentRootLabel, doc: activeDoc(), view: { ...mainView.state } }) });`, context);
-  return { api, elements, storage, keyListeners, setToolbarBottom: value => {toolbarBottom=value;}, flush: async () => { while (frames.length) await frames.shift()(); } };
+  return { api, elements, storage, keyListeners, window: context.window, setToolbarBottom: value => {toolbarBottom=value;}, flush: async () => { while (frames.length) await frames.shift()(); } };
 }
+
+test('desktop settings export uses the save dialog and handles cancellation and errors', async () => {
+  const calls = [];
+  let destination = null;
+  const {api,elements} = reader(new Map(), {
+    desktop:true, updateDocumentMenu(){}, guardEditedClose:async()=>{},
+    saveDocumentCopy:async (name,text,originalPath,protectedPaths) => {
+      calls.push({name, payload:JSON.parse(text), originalPath, protectedPaths:[...protectedPaths]});
+      if(destination instanceof Error) throw destination;
+      return destination;
+    }
+  });
+  const doc = api.buildDoc('{"example":1}','example.json',13);
+  doc.path = 'D:/example.json';
+  api.add(doc);
+  api.configure({nodeSelectionStyle:true});
+  api.setTemplate({paths:['$.example']});
+  const button = elements.get('exportSettingsBtn');
+  const exportSettings = button.listeners.get('click');
+  const toast = elements.get('toast');
+  const pending = exportSettings();
+  assert.equal(button.disabled,true);
+  await exportSettings();
+  await pending;
+  assert.equal(button.disabled,false);
+  assert.equal(calls.length,1);
+  const [{name,payload,originalPath,protectedPaths}] = calls;
+  assert.equal(name,'json-atlas-settings.json');
+  assert.equal(originalPath,null);
+  assert.deepEqual(protectedPaths,['D:/example.json']);
+  assert.equal(payload.app,'json-atlas');
+  assert.equal(payload.appName,'JSON Atlas');
+  assert.equal(payload.appVersion,manifest.version);
+  assert.equal(payload.version,1);
+  assert.equal(payload.settings.nodeSelectionStyle,true);
+  assert.deepEqual(payload.template,{paths:['$.example']});
+  assert.equal(toast.classList.contains('show'),false);
+  destination = 'D:/backups/settings.json';
+  await exportSettings();
+  assert.equal(toast.textContent,'设置已导出');
+  destination = new Error('磁盘写入失败');
+  await exportSettings();
+  assert.match(toast.textContent,/导出设置失败.*磁盘写入失败/);
+  assert.equal(button.disabled,false);
+});
 
 test('design drafts recover without session restore and are cleared on save or discard', async () => {
   const storage = new Map();
@@ -267,7 +314,11 @@ test('settings category navigation switches panels and supports arrow keys witho
   const {elements,keyListeners}=reader();
   keyListeners.get('keydown')({key:'s',ctrlKey:true,altKey:true,preventDefault(){}});
   assert.equal(elements.get('settingsPage0').hidden,false);
-  elements.get('settingsNav3').click();
+  elements.get('settingsNav2').click();
+  elements.get('settingsNav2').listeners.get('keydown')({key:'ArrowDown',preventDefault(){}});
+  assert.equal(elements.get('settingsPage6').hidden,false);
+  assert.equal(elements.get('settingsFooter').hidden,true);
+  elements.get('settingsNav6').listeners.get('keydown')({key:'ArrowDown',preventDefault(){}});
   assert.equal(elements.get('settingsPage0').hidden,true);
   assert.equal(elements.get('settingsPage3').hidden,false);
   assert.equal(elements.get('recordTemplateBtn2').hidden,false);
@@ -321,7 +372,7 @@ test('native menu updates retain shortcuts when view labels and enabled states c
 });
 
 test('find shortcut opens a modeless window; dragging, pinning and remembered placement cooperate', () => {
-  const { api, elements, storage, keyListeners } = reader();
+  const { api, elements, storage, keyListeners, window, setToolbarBottom } = reader();
   const doc = api.buildDoc('{"a":1}', 'find.json', 7); api.add(doc); api.activateDoc(doc.id);
   const panel = elements.get('findPanel'), handle = elements.get('findDragHandle');
   assert.equal(panel.hidden, true);
@@ -336,6 +387,19 @@ test('find shortcut opens a modeless window; dragging, pinning and remembered pl
   handle.listeners.get('pointerdown')({button:0,pointerId:2,clientX:520,clientY:170,target:{closest:()=>null},preventDefault(){}});
   handle.listeners.get('pointermove')({pointerId:2,clientX:0,clientY:0});
   assert.equal(panel.style.left, '514px');
+  window.innerWidth = 1920;
+  api.positionFindPanel();
+  assert.equal(panel.style.left, '994px'); assert.equal(panel.style.top, '166px');
+  window.innerWidth = 640;
+  setToolbarBottom(92);
+  api.positionFindPanel();
+  assert.equal(panel.style.left, '12px'); assert.equal(panel.style.top, '204px');
+  window.innerWidth = 1920;
+  setToolbarBottom(54);
+  api.positionFindPanel();
+  assert.equal(panel.style.left, '994px'); assert.equal(panel.style.top, '166px');
+  window.innerWidth = 640;
+  api.positionFindPanel();
   elements.get('closeFindBtn').listeners.get('click')(); assert.equal(panel.hidden, true);
   const reopened = reader(storage), next = reopened.api.buildDoc('{}', 'other.json', 2);
   reopened.api.add(next); reopened.api.activateDoc(next.id);
@@ -347,12 +411,17 @@ test('find shortcut opens a modeless window; dragging, pinning and remembered pl
 
 test('find window stays below the toolbar for dragging, keyboard moves and pinned saved positions', () => {
   const storage=new Map([['json-atlas_find-window_v1',JSON.stringify({x:300,y:12,pinned:true})]]);
-  const {api,elements,setToolbarBottom}=reader(storage);
+  const {api,elements,window,setToolbarBottom}=reader(storage);
   const doc=api.buildDoc('{}','find.json',2); api.add(doc); api.activateDoc(doc.id);
   elements.get('findBtn').click();
   const panel=elements.get('findPanel'),handle=elements.get('findDragHandle');
   assert.equal(panel.style.top,'66px');
-  assert.equal(JSON.parse(storage.get('json-atlas_find-window_v1')).y,66);
+  assert.equal(panel.style.left,'814px');
+  assert.deepEqual(JSON.parse(storage.get('json-atlas_find-window_v2')), {edge:'right',inset:16,top:0,pinned:true});
+  window.innerWidth = 1920;
+  api.positionFindPanel(); assert.equal(panel.style.left,'1294px');
+  window.innerWidth = 1440;
+  api.positionFindPanel(); assert.equal(panel.style.left,'814px');
   assert.equal(panel.dataset.pinned,'true');
   elements.get('pinFindBtn').click();
   handle.listeners.get('pointerdown')({button:0,pointerId:1,clientX:320,clientY:76,target:{closest:()=>null},preventDefault(){}});
@@ -362,6 +431,9 @@ test('find window stays below the toolbar for dragging, keyboard moves and pinne
   setToolbarBottom(140); api.positionFindPanel(); assert.equal(panel.style.top,'152px');
   assert.equal(panel.style.maxHeight,'736px');
   api.positionFindPanel(99999,99999); assert.equal(panel.style.left,'818px'); assert.equal(panel.style.top,'786px');
+  api.positionFindPanel(120, 152);
+  window.innerWidth = 1920;
+  api.positionFindPanel(); assert.equal(panel.style.left,'120px');
 });
 
 test('cancelling a queued native batch skips its remaining files but permits a later batch', async () => {
@@ -386,6 +458,162 @@ test('cancelling a queued native batch skips its remaining files but permits a l
   release({path:nextFile, name:'third.json', size:2});
   await next;
   assert.deepEqual(calls, [first, nextFile]);
+});
+
+test('idle memory release retains reading state and skips files with edits', async () => {
+  const {api,flush} = reader();
+  api.configure({idleReleaseMinutes:1});
+  const first = api.buildDoc('{"nested":{"value":42}}','first.json',23);
+  const current = api.buildDoc('{}','current.json',2);
+  const edited = api.buildDoc('{}','edited.json',2);
+  const undoable = api.buildDoc('{}','undoable.json',2);
+  edited.dirty = true;
+  undoable.editHistory = [{}];
+  for(const doc of [first,current,edited,undoable]) api.add(doc);
+  api.activateDoc(first.id);
+  await flush();
+  await api.expandByPaths(['$', '$.nested'], {exact:true});
+  const source = first.source;
+  api.activateDoc(current.id);
+  for(const doc of [first,current,edited,undoable]) doc.inactiveSince = 0;
+  api.releaseIdleDocuments();
+  assert.equal(first.unloaded,'idle');
+  assert.equal(first.parsed,undefined);
+  assert.throws(() => source.getRoot(), /文档已关闭/);
+  assert.deepEqual(Array.from(first.openPaths), ['$', '$.nested']);
+  assert.equal(current.unloaded,undefined);
+  assert.equal(edited.unloaded,undefined);
+  assert.equal(undoable.unloaded,undefined);
+  api.activateDoc(first.id);
+  await flush();
+  assert.equal(first.parsed.nested.value,42);
+  assert.deepEqual(Array.from(first.openPaths), ['$', '$.nested']);
+});
+
+test('manual background release updates the visible counts and preserves protected tabs', () => {
+  const {api,elements,keyListeners} = reader();
+  const current = api.buildDoc('{}','current.json',2);
+  const background = api.buildDoc('{"clean":1}','background.json',11);
+  const dirty = api.buildDoc('{}','dirty.json',2);
+  dirty.dirty = true;
+  const deferred = api.buildDoc('{}','deferred.json',2);
+  deferred.unloaded = 'restore';
+  for(const doc of [current,background,dirty,deferred]) api.add(doc);
+  api.activateDoc(current.id);
+  const owner = 'performance-test';
+  sharedPageCache.put(owner,'root',{start:0,items:[]});
+  try{
+    keyListeners.get('keydown')({key:'s',ctrlKey:true,altKey:true,preventDefault(){}});
+    elements.get('settingsNav6').click();
+    const status = elements.get('residentFileStatus');
+    assert.equal(status.textContent,'已载入 3 个 · 待载入 1 个 · 已释放 0 个');
+    assert.match(elements.get('indexCacheStatus').textContent,/已缓存 1 页（约 .*） · 预算 32\.00 MB/);
+    elements.get('releaseBackgroundFiles').click();
+    assert.equal(status.textContent,'已载入 2 个 · 待载入 1 个 · 已释放 1 个');
+    assert.equal(background.unloaded,'idle');
+    assert.equal(dirty.unloaded,undefined);
+    const released = () => elements.get('fileRail').querySelectorAll('.file-slot.released').map(slot => slot.dataset.id);
+    assert.deepEqual(released(),[background.id]);
+    assert.equal(elements.get('releaseBackgroundFiles').disabled,true);
+    assert.equal(api.state().doc,current);
+    api.activateDoc(background.id);
+    assert.deepEqual(released(),[]);
+  }finally{
+    sharedPageCache.deleteOwner(owner);
+  }
+});
+
+test('index cache status distinguishes open indexed files from cached pages', async () => {
+  const {api,elements,keyListeners} = reader();
+  const doc = api.buildDoc('[]','indexed.json',2);
+  const source = new IndexedDataSource(async op => op === 'page'
+    ? {start:0,end:1,total:1,items:[{key:0,path:[0],type:'number',value:42,arrayItem:true}]}
+    : true, 'cache-status', {kind:'json',root:{type:'array',path:[],childCount:1}});
+  doc.source = source;
+  api.add(doc);
+  api.activateDoc(doc.id);
+  keyListeners.get('keydown')({key:'s',ctrlKey:true,altKey:true,preventDefault(){}});
+  elements.get('settingsNav6').click();
+  const status = elements.get('indexCacheStatus');
+  try{
+    assert.match(status.textContent,/索引文件 1 个 · 暂无缓存页/);
+    await source.getChildren([]);
+    elements.get('settingsNav6').click();
+    assert.match(status.textContent,/索引文件 1 个 · 已缓存 1 页（约 [1-9]/);
+  }finally{
+    source.dispose();
+  }
+});
+
+test('resident limit releases least recently read tabs and allows protected files over the limit', () => {
+  const {api,elements,keyListeners,storage} = reader();
+  const [old,recent,dirty,current] = ['old','recent','dirty','current']
+    .map(name=>api.buildDoc('{}',name+'.json',2));
+  dirty.dirty = true;
+  for(const doc of [old,recent,current]) api.add(doc);
+  old.inactiveSince = 1;
+  recent.inactiveSince = 2;
+  api.activateDoc(current.id);
+  keyListeners.get('keydown')({key:'s',ctrlKey:true,altKey:true,preventDefault(){}});
+  elements.get('settingsNav6').click();
+  const limit = elements.get('optResidentFileLimit');
+  limit.value = '2';
+  limit.listeners.get('change')();
+  assert.equal(old.unloaded,undefined);
+  elements.get('settingsClose').click();
+  assert.equal(JSON.parse(storage.get('json-atlas_settings_v1')).residentFileLimit,2);
+  assert.equal(old.unloaded,'idle');
+  assert.equal(recent.unloaded,undefined);
+
+  api.add(dirty);
+  api.configure({residentFileLimit:1});
+  current.editHistory = [{}];
+  api.activateDoc(recent.id);
+  assert.equal(recent.unloaded,undefined);
+  assert.equal(current.unloaded,undefined);
+  assert.equal(dirty.unloaded,undefined);
+  assert.equal(old.unloaded,'idle');
+  assert.equal(api.state().doc,recent);
+});
+
+test('low memory startup only opens the selected native file and restores other tabs on demand', async () => {
+  const paths = ['D:/first.json', 'D:/active.json', 'D:/last.json'];
+  const opened = [];
+  const storage = new Map([
+    ['json-atlas_settings_v1', JSON.stringify({reopenLast:true,lowMemoryMode:true})],
+    ['json-atlas_lastfile_v1', JSON.stringify({docs:paths.map(path => ({path})), activeKey:paths[1]})],
+    ['json-atlas_session_v1', JSON.stringify({docs:{['d:/last.json']:{paths:['$'],view:{x:16,y:20,scale:.8}}}})]
+  ]);
+  const {api,flush} = reader(storage, {
+    desktop:true, updateDocumentMenu(){}, guardEditedClose:async()=>{},
+    statNativeFile:async path => { opened.push(path); return {path,name:path.split('/').at(-1),size:70 * 1024 ** 2}; },
+    openIndexedFile:async ({path}) => new IndexedDataSource(async () => true, path, {
+      kind:'json', root:{type:'number',value:42,path:[],childCount:0}
+    })
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(opened,[paths[1]]);
+  assert.equal(api.state().doc.path,paths[1]);
+  assert.deepEqual(Array.from(api.allDocs(),doc=>doc.path),paths);
+  assert.equal(api.allDocs()[2].unloaded,'restore');
+  await api.activateDoc(api.allDocs()[2].id);
+  await flush();
+  assert.deepEqual(opened,[paths[1],paths[2]]);
+  assert.equal(api.state().doc.path,paths[2]);
+  assert.deepEqual(Array.from(api.state().doc.openPaths),['$']);
+  assert.equal(api.state().view.scale,.8);
+  assert.equal(api.allDocs()[0].unloaded,'restore');
+  const previous = api.allDocs()[1];
+  const source = previous.source;
+  api.configure({idleReleaseMinutes:1});
+  previous.inactiveSince = 0;
+  api.releaseIdleDocuments();
+  assert.equal(previous.unloaded,'idle');
+  assert.throws(() => source.getRoot());
+  assert.equal(previous.text,undefined);
+  await api.activateDoc(previous.id);
+  assert.equal(api.state().doc,previous);
+  assert.deepEqual(opened,[paths[1],paths[2],paths[1]]);
 });
 
 test('new and selected files preempt restoration without losing pending files or stealing focus on completion', async () => {
@@ -445,7 +673,7 @@ test('new and selected files preempt restoration without losing pending files or
   assert.equal(opened.at(-1), paths[0]);
 
   const select = loading().find(slot => slot.querySelectorAll('.file-tab-name')[0].textContent === 'last.json');
-  select.firstElementChild.click();
+  select.click();
   await tick();
   assert.equal(opened.at(-1), paths[2]);
   pending.get(paths[2])();
@@ -845,7 +1073,40 @@ test('hiding and restoring a node uses the template without collapsing open bran
   assert.deepEqual(openPaths(), paths);
 
   const list = elements.get('hiddenTemplateList');
+  const group = list.firstElementChild;
+  assert.equal(list.children.length,1);
+  assert.equal(group.firstElementChild.open,false);
+  const summary = group.firstElementChild.firstElementChild;
+  assert.deepEqual(summary.children.map(item => item.textContent),['data.json','2']);
+  const rules = group.firstElementChild.children[1];
+  const mask = rules.firstElementChild.children[2];
+  assert.equal(mask.title,'仅对当前活动文件有效');
+  mask.click();
+  await flush();
+  assert.equal(mask.textContent,'取消屏蔽');
+  assert.equal(mask.dataset.masked,'true');
+  assert.ok(nodeKeys(tree).includes('secret'));
+  assert.deepEqual(Array.from(api.template().hidden), ['$.secret', '$.other']);
+
+  const second = api.buildDoc('{"secret":2,"newRule":3}', 'second.json', 24);
+  api.add(second);
+  api.activateDoc(second.id);
+  await flush();
+  await api.expandByPaths(['$'], {exact:true});
+  assert.equal(nodeKeys(tree).includes('secret'),false);
+  hide('$.newRule');
+  await flush();
+  assert.equal(list.children.length,2);
+  assert.equal(api.template().hiddenSources['$.secret'].name,'data.json');
+  assert.equal(api.template().hiddenSources['$.newRule'].name,'second.json');
+
+  api.activateDoc(doc.id);
+  await flush();
+  assert.ok(nodeKeys(tree).includes('secret'));
+  list.firstElementChild.firstElementChild.children[1].firstElementChild.children[1].click();
+  assert.deepEqual(Array.from(api.template().hidden), ['$.other', '$.newRule']);
   list.firstElementChild.children[1].click();
+  assert.deepEqual(Array.from(api.template().hidden), ['$.newRule']);
   list.firstElementChild.children[1].click();
   await flush();
   assert.equal(api.template().hidden.length, 0);
@@ -853,6 +1114,73 @@ test('hiding and restoring a node uses the template without collapsing open bran
   assert.ok(nodeKeys(tree).includes('other'));
   assert.deepEqual(openPaths(), paths);
   assert.equal(doc.text, raw);
+});
+
+test('legacy rule sources merge by filename and settings search filters paths', () => {
+  const key = 'json-atlas_template_v1';
+  const storage = new Map([[key, JSON.stringify({
+    paths: [], hidden: ['$.first', '$.second', '$.other'],
+    hiddenSources: {
+      '$.first': {key:'C:/original/data.json',name:'data.json'},
+      '$.second': {key:'D:/copies/data.json',name:'data.json'},
+      '$.other': {key:'/old/other.json',name:'other.json'}
+    }
+  })]]);
+  const {elements,keyListeners} = reader(storage);
+  assert.deepEqual(JSON.parse(storage.get(key)).hiddenSources, {
+    '$.first': {name:'data.json'}, '$.second': {name:'data.json'}, '$.other': {name:'other.json'}
+  });
+  keyListeners.get('keydown')({key:'s',ctrlKey:true,altKey:true,preventDefault(){}});
+  const search = elements.get('hiddenTemplateSearch'), list = elements.get('hiddenTemplateList');
+  assert.equal(list.children.length,2);
+  search.value = 'DATA.JSON'; search.listeners.get('input')();
+  assert.equal(list.children.length,1);
+  assert.equal(list.firstElementChild.firstElementChild.children[1].children.length,2);
+  search.value = '$.second'; search.listeners.get('input')();
+  const details = list.firstElementChild.firstElementChild;
+  assert.equal(details.open,true);
+  assert.equal(details.children[1].children.length,1);
+  assert.equal(details.children[1].firstElementChild.firstElementChild.textContent,'$.second');
+  search.value = 'missing'; search.listeners.get('input')();
+  assert.equal(elements.get('hiddenTemplateEmpty').hidden,false);
+  search.value = '$.second'; search.listeners.get('input')();
+  list.firstElementChild.children[1].click();
+  assert.deepEqual(JSON.parse(storage.get(key)).hidden,['$.other']);
+});
+
+test('the blank canvas menu masks and restores rules for the active file only', async () => {
+  const {api,elements} = reader();
+  api.setTemplate({paths:[],hidden:['$["合同输出删除"]','$[0].secret','$[0]["a.b"]'],savedAt:1});
+  const text = '{"other":0}\n{"secret":1,"a.b":null}\n';
+  const first = api.buildDoc(text,'first.jsonl',text.length);
+  const second = api.buildDoc('{"secret":2}','second.json',12);
+  api.add(first); api.add(second); api.activateDoc(first.id);
+  const source = first.source;
+  const readPage = source.getChildren.bind(source);
+  source.getChildren = (path, options) => readPage(path, {...options,limit:1});
+  Object.assign(elements.get('ctxMenu'),{offsetWidth:160,offsetHeight:170});
+  elements.get('viewport').listeners.get('contextmenu')({
+    clientX:30,clientY:45,target:{closest:()=>null},preventDefault(){},stopPropagation(){}
+  });
+  assert.equal(elements.get('canvasMenu').hidden,false);
+  assert.equal(elements.get('ctxMenu').style.left,'30px');
+  elements.get('ctxCanvasRules').click();
+  assert.equal(elements.get('canvasRulesDialog').open,true);
+  await new Promise(resolve => setImmediate(resolve));
+  const list = elements.get('canvasRulesList');
+  assert.deepEqual(list.children.map(row => row.firstElementChild.textContent), ['$[0].secret','$[0]["a.b"]']);
+  const row = list.firstElementChild;
+  const mask = row.children[1];
+  mask.click();
+  assert.equal(first.maskedHiddenRules.has('$[0].secret'),true);
+  assert.equal(mask.textContent,'取消屏蔽');
+  assert.equal(elements.get('canvasRulesDialog').open,true);
+  mask.click();
+  assert.equal(first.maskedHiddenRules.has('$[0].secret'),false);
+  mask.click();
+  api.activateDoc(second.id);
+  assert.equal(elements.get('canvasRulesDialog').open,false);
+  assert.equal(second.maskedHiddenRules,undefined);
 });
 
 test('recording the current expansion keeps the hidden-field configuration', () => {
@@ -1317,8 +1645,14 @@ test('opt-in Vim keys navigate visible nodes, fold branches, and resume on the c
   assert.equal(press('j'),false);
   elements.get('optVimEditing').checked = true;
   elements.get('optVimEditing').listeners.get('change')({target:elements.get('optVimEditing')});
-  assert(tree.classList.contains('vim-node-selection'));
   assert.equal(press('j'),true); assert.equal(selected(),'$.branch');
+  assert(!tree.classList.contains('show-node-selection'));
+  const outline = elements.get('optNodeSelectionStyle');
+  outline.listeners.get('change')({target:{checked:true}});
+  assert(tree.classList.contains('show-node-selection'));
+  outline.listeners.get('change')({target:{checked:false}});
+  assert(!tree.classList.contains('show-node-selection'));
+  assert.equal(selected(),'$.branch');
   press('l'); await new Promise(resolve => setImmediate(resolve));
   assert.equal(selected(),'$.branch.hitOne');
   press('h'); assert.equal(selected(),'$.branch');

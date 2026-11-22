@@ -1,5 +1,7 @@
+import manifest from '../package.json';
 import { pagedChildren, discardPagedTree } from './paging.js';
 import { MemoryDataSource } from './data-source.js';
+import { sharedPageCache } from './page-cache.js';
 import { normalizeThreshold, needsIndex } from './large-files.js';
 import { ViewportWindow } from './viewport-window.js';
 import { NodeBudget } from './node-budget.js';
@@ -77,6 +79,9 @@ function updateIdeScope(){
 const macPlatform = isMacPlatform(navigator);
 const primaryModifier = macPlatform ? '⌘' : 'Ctrl';
 const shortcutText = action => shortcutLabel(action, macPlatform);
+const MAX_EDIT_HISTORY = 50;
+const MIN_EDIT_HISTORY = 10;
+const EDIT_HISTORY_TEXT_BUDGET = 64 * 1024 * 1024;
 function editRevision(doc){
   return {parsed:doc.parsed, records:doc.records, dirty:!!doc.dirty, text:doc.text, editedSize:doc.editedSize,
     untypedTopics:doc.untypedTopics,
@@ -92,8 +97,20 @@ function rememberEdit(doc, inputType = null){
   doc.diskText ??= doc.text;
   const last = doc.ideEditGroup, now = Date.now();
   if(!inputType || last?.type !== inputType || now - last.time > 500){
-    (doc.editHistory ||= []).push(editRevision(doc));
-    if(doc.editHistory.length > 10) doc.editHistory.shift();
+    const history = doc.editHistory ||= [];
+    history.push(editRevision(doc));
+    // Revisions keep full document text and may also retain an invalid IDE draft.
+    let textBytes = 0;
+    const maxSteps = Math.min(history.length, MAX_EDIT_HISTORY);
+    for(let steps = 1; steps <= maxSteps; steps++){
+      const {text, ideDraft} = history.at(-steps);
+      textBytes += 2 * ((text?.length ?? 0) + (ideDraft !== text ? (ideDraft?.length ?? 0) : 0));
+      if(steps >= MIN_EDIT_HISTORY && textBytes >= EDIT_HISTORY_TEXT_BUDGET){
+        history.splice(0, history.length - steps);
+        break;
+      }
+    }
+    if(history.length > MAX_EDIT_HISTORY) history.shift();
   }
   doc.ideEditGroup = inputType ? {type:inputType, time:now} : null;
   doc.redoHistory = [];
@@ -616,11 +633,20 @@ const quickNextMatchBtn = document.getElementById('quickNextMatchBtn');
 const findPanel = document.getElementById('findPanel');
 const findDragHandle = document.getElementById('findDragHandle');
 const pinFindBtn = document.getElementById('pinFindBtn');
-let findPlacement = { x: null, y: null, pinned: false };
+const findPlacementKey = 'json-atlas_find-window_v2';
+const findPlacement = { edge: 'right', inset: 16, top: 0, pinned: false };
+let legacyFindPlacement = null;
 try {
-  const saved = JSON.parse(localStorage.getItem('json-atlas_find-window_v1'));
-  if(saved && Number.isFinite(saved.x) && Number.isFinite(saved.y))
-    findPlacement = { x: saved.x, y: saved.y, pinned: saved.pinned === true };
+  const saved = JSON.parse(localStorage.getItem(findPlacementKey));
+  if(saved && ['left', 'right'].includes(saved.edge) && Number.isFinite(saved.inset) && Number.isFinite(saved.top)){
+    Object.assign(findPlacement, { edge: saved.edge, inset: saved.inset, top: saved.top, pinned: saved.pinned === true });
+  } else {
+    const legacy = JSON.parse(localStorage.getItem('json-atlas_find-window_v1'));
+    if(legacy && Number.isFinite(legacy.x) && Number.isFinite(legacy.y)){
+      legacyFindPlacement = legacy;
+      findPlacement.pinned = legacy.pinned === true;
+    }
+  }
 } catch { /* Ignore unavailable storage or obsolete placement. */ }
 let findDrag = null;
 const searchOptions = { caseSensitive: false, wholeWord: false, regex: false, scopePath: null };
@@ -685,6 +711,7 @@ function jsonlModeHints(){
 let docs = [];
 let activeDocId = null;
 let docSeq = 0;
+let memoryReleaseTimer;
 
 function activeDoc(){
   return docs.find(d => d.id === activeDocId) || null;
@@ -697,6 +724,7 @@ function makeDoc(name, size, text, kind){
   return {
     id: 'doc' + (++docSeq),
     name, size, text, kind,
+    inactiveSince: Date.now(),
     parsed: undefined,   /* kind === 'json' 时的解析结果 */
     records: null,       /* kind === 'jsonl' 时的记录数组 */
     bad: [],             /* JSONL 里不合规的行（解析失败行 + 注释行） */
@@ -803,18 +831,89 @@ function snapshotDoc(){
   doc.rootLabel = currentRootLabel;
 }
 
+function normalizeIdleRelease(value){
+  return [1,5,15,30,60].includes(Number(value)) ? Number(value) : 0;
+}
+
+function normalizeResidentLimit(value){
+  return [1,2,4,8,16].includes(Number(value)) ? Number(value) : 0;
+}
+
+function canReleaseDocument(doc){
+  return doc.id !== activeDocId && !doc.unloaded && !doc.dirty && !doc.temporary &&
+    !doc.saving && !doc.indexRebuild && !doc.editHistory?.length && !doc.redoHistory?.length &&
+    (!selectedLoad?.key || selectedLoad.key !== docKey(doc)) &&
+    !!((desktop && doc.path) || typeof doc.text === 'string');
+}
+
+function scheduleMemoryRelease(){
+  clearTimeout(memoryReleaseTimer);
+  if(!settings.idleReleaseMinutes) return;
+  const idleTime = settings.idleReleaseMinutes * 60000;
+  let next = Infinity;
+  for(const doc of docs){
+    if(canReleaseDocument(doc)) next = Math.min(next, doc.inactiveSince + idleTime);
+  }
+  if(Number.isFinite(next)) memoryReleaseTimer = setTimeout(releaseIdleDocuments, Math.max(0, next - Date.now()));
+}
+
+function releaseDocument(doc){
+  doc.source?.dispose();
+  Object.assign(doc, {
+    unloaded:'idle', source:undefined, parsed:undefined, records:null, bad:[], data:undefined,
+    ideDraft:undefined, ideProjection:undefined, ideRows:undefined, ideScopePairs:undefined
+  });
+  if(desktop && doc.path){
+    doc.text = undefined;
+    doc.savedText = undefined;
+    doc.diskText = undefined;
+  }
+}
+
+function enforceResidentLimit(){
+  if(!settings.residentFileLimit) return 0;
+  const excess = docs.filter(doc => !doc.unloaded).length - settings.residentFileLimit;
+  if(excess <= 0) return 0;
+  const candidates = docs.filter(canReleaseDocument)
+    .sort((first, second) => first.inactiveSince - second.inactiveSince)
+    .slice(0, excess);
+  candidates.forEach(releaseDocument);
+  return candidates.length;
+}
+
+function releaseIdleDocuments(){
+  if(!settings.idleReleaseMinutes) return;
+  const cutoff = Date.now() - settings.idleReleaseMinutes * 60000;
+  const candidates = docs.filter(doc => doc.inactiveSince <= cutoff && canReleaseDocument(doc));
+  candidates.forEach(releaseDocument);
+  if(candidates.length) renderRail();
+  scheduleMemoryRelease();
+}
+
 /* 激活某个文档：折算解析结果 → 铺到全局镜像 → 渲染 → 恢复它自己的阅读状态 */
 function activateDoc(id, designPath = null){
   const doc = docs.find(d => d.id === id);
   if(!doc) return;
+  if(doc.unloaded){
+    if(desktop && doc.path) return queueFiles([{path:doc.path, resumeId:doc.id}]);
+    Object.assign(doc, parseDocument(doc.text, doc.name));
+    delete doc.unloaded;
+  }
   selectedLoad = null;
   loadingStatus.hidden = true;
   if(activeDoc()) activeDoc().ideEditGroup = null;
 
   vimPrefix = null;
   closeMenu();
-  if(activeDocId && activeDocId !== id) snapshotDoc();
+  const previousDoc = activeDoc();
+  if(previousDoc && previousDoc !== doc){
+    snapshotDoc();
+    previousDoc.inactiveSince = Date.now();
+  }
+  const changedDoc = activeDocId !== id;
   activeDocId = id;
+  if(changedDoc && canvasRulesDialog.open && canvasRulesDoc !== doc) canvasRulesDialog.close();
+  if(changedDoc && settingsMask.classList.contains('open')) updateTemplateStatus();
   if(doc.design && !canDesign(doc)) leaveDesign(doc);
   expansionGeneration++;
   viewportWindow.clear();
@@ -841,6 +940,8 @@ function activateDoc(id, designPath = null){
 
   updateDocHeader(doc);
   syncEditing();
+  enforceResidentLimit();
+  scheduleMemoryRelease();
   renderRail();
   saveReopenCopy();
 
@@ -916,6 +1017,8 @@ function closeDoc(id){
     return;
   }
   persistDesignDraft(closing);
+  const loading = fileLoads.find(job => job.file.resumeId === id);
+  if(loading) cancelFileLoad(loading);
   closing.indexRebuild?.abort();
   closing.source?.dispose({ forget:true });
 
@@ -924,12 +1027,15 @@ function closeDoc(id){
 
   if(!docs.length){
     withdrawView();
-  }else if(wasActive){
-    activateDoc(docs[Math.min(idx, docs.length - 1)].id);
+  }else if(wasActive || (!activeDoc() && !selectedLoad && loading)){
+    const next = docs[Math.min(idx, docs.length - 1)];
+    if(next.unloaded && desktop && next.path) withdrawView();
+    activateDoc(next.id);
   }else{
     renderRail();
   }
 
+  scheduleMemoryRelease();
   saveReopenCopy();
   saveSession();
   syncEditing();
@@ -971,6 +1077,7 @@ function resetSearchState(){
 
 /* ---------- 左侧条纹栏 ---------- */
 function fileProblem(doc){
+  if(doc.unloaded) return {};
   const error = resolveDoc(doc).error;
   const info = doc.source?.indexed ? doc.source.info : null;
   const skipped = info ? (info.badCount || 0) + (info.commentCount || 0) : doc.bad?.length || 0;
@@ -978,6 +1085,7 @@ function fileProblem(doc){
 }
 /* 条纹信息里的一行摘要：类型 / 记录数 / 体积 */
 function railMeta(doc, problem = fileProblem(doc)){
+  if(doc.unloaded) return doc.unloaded === 'idle' ? '内存已释放 · 点击重新载入' : '待载入 · 点击打开';
   const bits = [doc.kind === 'jsonl' ? 'JSONL' : 'JSON'];
   if(doc.temporary) bits.unshift('临时文件');
   if(doc.dirty) bits.push('未保存');
@@ -1086,6 +1194,7 @@ else window.addEventListener('resize', syncRailPreview);
 
 function renderRail(){
   pendingRailRefresh = false;
+  refreshMemoryStats();
   const previousScroll = railList?.scrollTop || 0;
   applyRailStyle();
   fileRail.innerHTML = '';
@@ -1113,6 +1222,7 @@ function renderRail(){
     slot.className = 'file-slot'
       + (doc.id === activeDocId ? ' active' : '')
       + (loading ? ' loading' : '')
+      + (!loading && doc.unloaded === 'idle' ? ' released' : '')
       + (job && job === selectedLoad ? ' requested' : '')
       + (problem.error ? ' error' : problem.skipped ? ' warning' : '');
     slot.dataset.id = doc.id;
@@ -1147,9 +1257,13 @@ function renderRail(){
     });
 
     tab.append(dot, info, close);
-    tab.addEventListener('click', () => {
+    const openFile = () => {
       if(job) prioritizeFileLoad(job);
       else if(doc.id !== activeDocId || selectedLoad) activateDoc(doc.id);
+    };
+    tab.addEventListener('click', openFile);
+    slot.addEventListener('click', event => {
+      if(event.target === slot) openFile();
     });
 
     slot.appendChild(tab);
@@ -1206,9 +1320,9 @@ function scheduleRailRefresh(){
 }
 
 function syncPendingRail(){
-  const pendingOnly = !docs.length && fileLoads.length > 0;
+  const pendingOnly = !activeDoc() && (docs.length > 0 || fileLoads.length > 0);
   viewer.classList.toggle('pending-files', pendingOnly);
-  if(docs.length) return;
+  if(activeDoc()) return;
   viewer.style.display = pendingOnly ? 'flex' : 'none';
   landing.style.display = pendingOnly ? 'none' : 'grid';
 }
@@ -1375,6 +1489,7 @@ function queueFiles(files, sessions, preferred){
     const key = file.path && filePathKey(file.path);
     const existing = key && fileLoads.find(job => job.key === key);
     if(existing){
+      if(file.resumeId) existing.file.resumeId = file.resumeId;
       if(sessions) existing.sessions = sessions;
       else existing.batch = batch;
       return existing;
@@ -1541,9 +1656,22 @@ async function loadFile(file, sessions, job = null){
     // Windows paths are case insensitive; native canonical paths identify documents.
     doc.identity = doc.path && filePathKey(doc.path);
     if(doc.kind === 'jsonl') doc.bad ||= [];
-    const duplicate = docs.find(d => doc.path ? docKey(d) === docKey(doc)
+    const resumed = docs.find(d => d.id === file.resumeId);
+    const duplicate = resumed || docs.find(d => doc.path ? docKey(d) === docKey(doc)
       : !file.temporary && !d.temporary && !d.path && d.name === doc.name && d.size === doc.size && d.text === doc.text);
-    if(duplicate){
+    if(duplicate?.unloaded){
+      Object.assign(duplicate, {
+        name:doc.name, path:doc.path, identity:doc.identity, size:doc.size, text:doc.text, kind:doc.kind,
+        parsed:doc.parsed, records:doc.records, bad:doc.bad, totalLines:doc.totalLines,
+        error:doc.error, source:indexedSource, inactiveSince:Date.now()
+      });
+      restoreDocSession(duplicate, duplicate.resumeSession);
+      delete duplicate.resumeSession;
+      delete duplicate.unloaded;
+      attached = true;
+      if(!job || selectedLoad === job || !activeDoc()) activateDoc(duplicate.id);
+      scheduleIndexVerification(duplicate);
+    }else if(duplicate){
       if(duplicate.dirty && !await confirmDiscardEdits()) return;
       if(controller.signal.aborted) return;
       duplicate.dirty = false; duplicate.editHistory = [];
@@ -1573,6 +1701,8 @@ async function loadFile(file, sessions, job = null){
       if(!job || selectedLoad === job || (!activeDoc() && !selectedLoad)) activateDoc(doc.id);
       scheduleIndexVerification(doc);
     }
+    if(enforceResidentLimit()) scheduleRailRefresh();
+    scheduleMemoryRelease();
     if(!job) saveReopenCopy();
   }catch(error){
     if(error.name !== 'AbortError') showToast('打开失败：' + (error.message || String(error)));
@@ -1632,7 +1762,11 @@ async function rebuildChangedIndex(doc, source){
     replacement?.dispose();
     if(doc.indexRebuild === controller){
       doc.indexRebuild = null;
-      if(docs.includes(doc)) renderRail();
+      if(docs.includes(doc)){
+        enforceResidentLimit();
+        scheduleMemoryRelease();
+        renderRail();
+      }
     }
   }
 }
@@ -1652,7 +1786,9 @@ function saveReopenCopy(){
   }
 
   if(desktop){
-    const files = new Map(docs.filter(doc => doc.path).map(doc => [docKey(doc), { path:doc.path }]));
+    const files = new Map(docs.filter(doc => doc.path).map(doc => [docKey(doc), {
+      path:doc.path, name:doc.name, size:doc.size, kind:doc.kind
+    }]));
     for(const job of fileLoads) if(job.key && !files.has(job.key)) files.set(job.key, { path:job.path });
     const snapshot = { version: 3,
       activeKey: selectedLoad?.key || (activeDoc() ? docKey(activeDoc()) : files.keys().next().value),
@@ -1709,7 +1845,7 @@ function collectSession(){
     if(session) map[job.key] = session;
   }
   docs.forEach(d => {
-    map[docKey(d)] = {
+    map[docKey(d)] = d.resumeSession || {
       paths:d.openPaths, view:d.view, pageOffsets:d.pageOffsets,
       viewMode:d.viewOverride, design:d.design || undefined, designPreviousView:d.designPreviousView,
       ide:d.ideZoom || d.ideSelection || d.ideFolds?.size ? {
@@ -1784,7 +1920,7 @@ function withdrawView(){
   viewportWindow.clear();
   discardPagedTree(tree);
   activeDocId = null;
-  docs = [];
+  if(settingsMask.classList.contains('open')) updateTemplateStatus();
   parsedData = null;
   currentRootLabel = 'root';
   updateWindowTitle(null);
@@ -2306,6 +2442,7 @@ function normalizeContextMenu(value){
   for(const id of remaining) items.push({id, enabled:!contextMenuHiddenByDefault.has(id)});
   return items;
 }
+const canvasMenu = document.getElementById('canvasMenu');
 const ctxCopyPath = document.getElementById('ctxCopyPath');
 const ctxExpandSubtreeBtn = document.getElementById('ctxExpandSubtree');
 const ctxCollapseBtn = document.getElementById('ctxCollapse');
@@ -2341,10 +2478,13 @@ function isBranchEl(node){
 
 function openMenu(x, y){
   const topic = designTarget(ctxTarget);
-  if(!topic && !settings.contextMenu.some(item => item.enabled)) return;
+  if(!topic && !settings.contextMenu.some(item => item.enabled)) {
+    closeMenu();
+    return;
+  }
+  canvasMenu.hidden = true;
   topicMenu.hidden = !topic;
   ctxMenu.classList.toggle('topic-menu', !!topic);
-  ctxMenu.style.display = 'block';
 
   /* 叶子节点禁用展开项 */
   const branch = isBranchEl(ctxTarget);
@@ -2363,6 +2503,11 @@ function openMenu(x, y){
   document.getElementById('ctxHideNode').disabled = ctxTarget.dataset.path === '$' || !!activeDoc()?.design;
   document.getElementById('ctxEditNode').title = canEditNode(ctxTarget) ? '修改当前工作副本中的节点值' : '索引大文件与字符串内嵌的虚拟节点暂不支持编辑';
 
+  showContextMenu(x, y);
+}
+
+function showContextMenu(x, y){
+  ctxMenu.style.display = 'block';
   const mw = ctxMenu.offsetWidth;
   const mh = ctxMenu.offsetHeight;
   ctxMenu.style.left = Math.max(8, Math.min(x, window.innerWidth - mw - 8)) + 'px';
@@ -2378,9 +2523,12 @@ window.addEventListener('resize', closeMenu);
 document.getElementById('ctxHideNode').addEventListener('click', () => {
   const path = ctxTarget?.dataset.path;
   closeMenu();
-  if(!path || path === '$' || !activeDoc()) return;
-  const hidden = getHiddenSet();
-  hidden.add(normalizePath(path));
+  const doc = activeDoc();
+  if(!path || path === '$' || !doc) return;
+  const rule = normalizePath(path);
+  doc.maskedHiddenRules?.delete(rule);
+  const hidden = getHiddenSet(null);
+  hidden.add(rule);
   saveHiddenRules(hidden);
   showToast('节点已隐藏，可在「模板与备份」中恢复');
 });
@@ -2397,6 +2545,35 @@ tree.addEventListener('contextmenu', e => {
   selectCopyNode(node);
   openMenu(e.clientX, e.clientY);
 });
+
+viewport.addEventListener('contextmenu', e => {
+  const doc = activeDoc();
+  if(!doc || doc.error || ideActive || templateEditing ||
+    e.target.closest('.node-card,button,input,textarea,select,a,[contenteditable]')) return;
+  e.preventDefault();
+  e.stopPropagation();
+  ctxTarget = null;
+  canvasMenu.hidden = false;
+  topicMenu.hidden = true;
+  ctxMenu.classList.add('topic-menu');
+  document.getElementById('ctxCanvasExpand').textContent = expandAllBtn.textContent;
+  document.getElementById('ctxCanvasExpand').disabled = expandAllBtn.disabled;
+  document.getElementById('ctxCanvasCollapse').disabled = collapseAllBtn.disabled;
+  document.getElementById('ctxCanvasRules').disabled = !!doc.design;
+  showContextMenu(e.clientX, e.clientY);
+});
+
+for(const [id, action] of [
+  ['ctxCanvasExpand', () => expandAllBtn.click()],
+  ['ctxCanvasCollapse', () => collapseAllBtn.click()],
+  ['ctxCanvasReset', () => resetViewBtn.click()],
+  ['ctxCanvasRules', openCanvasRules]
+]){
+  document.getElementById(id).addEventListener('click', () => {
+    closeMenu();
+    action();
+  });
+}
 
 ctxCopyPath.addEventListener('click', async () => {
   const path = ctxTarget?.dataset.path;
@@ -2630,6 +2807,9 @@ let settings = {
   defaultLevels: 0,
   indexBase: 0,              /* 数组索引编号起始值：0 基 / 1 基（仅影响显示） */
   reopenLast: false,
+  lowMemoryMode: false,
+  idleReleaseMinutes: 0,
+  residentFileLimit: 0,
   restoreSession: true,      /* 刷新后恢复上次的阅读位置与展开状态（跟随 reopenLast 生效） */
   jsonlWrapArray: true,
   strictJsonl: false,
@@ -2649,6 +2829,8 @@ try{
   }
 }catch(_){}
 settings.largeFileThresholdMiB = normalizeThreshold(settings.largeFileThresholdMiB);
+settings.idleReleaseMinutes = normalizeIdleRelease(settings.idleReleaseMinutes);
+settings.residentFileLimit = normalizeResidentLimit(settings.residentFileLimit);
 settings.designLimitMiB = normalizeDesignLimit(settings.designLimitMiB);
 settings.indexRebuild = settings.indexRebuild === 'always' ? 'always' : 'smart';
 settings.viewMode = normalizeViewMode(settings.viewMode);
@@ -2662,12 +2844,28 @@ document.getElementById('optTheme').addEventListener('change', e => {
 });
 try{
   const t = JSON.parse(localStorage.getItem(TEMPLATE_KEY));
-  if(t && Array.isArray(t.paths)) template = t;
+  template = normalizeTemplateSources(t);
+  if(template && t.hiddenSources !== undefined) saveTemplate();
 }catch(_){ template = null; }
 
 function saveSettings(){
   try{ localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }catch(_){}
 }
+function ruleSourceName(source){
+  const name = typeof source === 'string' ? source : source?.name;
+  return typeof name === 'string' ? name.split(/[\\/]/).at(-1) : '';
+}
+
+function normalizeTemplateSources(value){
+  if(!Array.isArray(value?.paths)) return null;
+  if(value.hiddenSources === undefined) return value;
+  const sources = Object.entries(value.hiddenSources || {}).flatMap(([path, source]) => {
+    const name = ruleSourceName(source);
+    return name ? [[path, {name}]] : [];
+  });
+  return {...value, hiddenSources:Object.fromEntries(sources)};
+}
+
 function saveTemplate(){
   try{ localStorage.setItem(TEMPLATE_KEY, JSON.stringify(template)); }catch(_){}
 }
@@ -2682,8 +2880,10 @@ function isPathPrefix(prefix, path, normalize = true){
 }
 
 /* 隐藏字段集合（模板.hidden） */
-function getHiddenSet(){
-  return new Set(Array.isArray(template?.hidden) ? template.hidden.filter(path => typeof path === 'string' && path !== '$') : []);
+function getHiddenSet(doc = activeDoc()){
+  return new Set(Array.isArray(template?.hidden)
+    ? template.hidden.filter(path => typeof path === 'string' && path !== '$' && !doc?.maskedHiddenRules?.has(path))
+    : []);
 }
 
 function refreshTemplateVisibility(){
@@ -2693,10 +2893,23 @@ function refreshTemplateVisibility(){
 }
 
 function saveHiddenRules(hidden){
+  const doc = activeDoc();
+  const previous = getHiddenSet(null);
+  const name = ruleSourceName(doc?.name);
+  const source = name ? {name} : null;
+  const hiddenSources = Object.fromEntries([...hidden].map(path => [
+    path, previous.has(path) ? template?.hiddenSources?.[path] ?? null : source
+  ]));
+  for(const item of docs){
+    for(const path of item.maskedHiddenRules || []){
+      if(!hidden.has(path)) item.maskedHiddenRules.delete(path);
+    }
+  }
   template = {
     paths: template?.paths || [],
     hidden: [...hidden],
-    file: activeDoc()?.name || template?.file || '',
+    hiddenSources,
+    file: doc?.name || template?.file || '',
     savedAt: Date.now()
   };
   saveTemplate();
@@ -2715,6 +2928,7 @@ function recordTemplate(){
   if(!paths.length){ showToast('当前全部收起，没有可记录的层级'); return; }
 
   template = {
+    ...template,
     paths,
     /* 结构模板 = 展开层级 + 隐藏字段：这里只改展开层级，保留已有的隐藏配置 */
     hidden: (template && template.hidden) || [],
@@ -2858,6 +3072,10 @@ optIndexRebuild.addEventListener('change', () => {
   changeReadingSetting('indexRebuild', optIndexRebuild.value === 'always' ? 'always' : 'smart');
 });
 const optReopenLast = document.getElementById('optReopenLast');
+const optLowMemoryMode = document.getElementById('optLowMemoryMode');
+const optIdleRelease = document.getElementById('optIdleRelease');
+const optResidentFileLimit = document.getElementById('optResidentFileLimit');
+const releaseBackgroundFiles = document.getElementById('releaseBackgroundFiles');
 const optRestoreSession = document.getElementById('optRestoreSession');
 const exportSettingsBtn = document.getElementById('exportSettingsBtn');
 const importSettingsBtn = document.getElementById('importSettingsBtn');
@@ -2868,32 +3086,221 @@ const clearTemplateBtn = document.getElementById('clearTemplateBtn');
 const recordTemplateBtn = document.getElementById('recordTemplateBtn');
 const recordTemplateBtn2 = document.getElementById('recordTemplateBtn2');
 
+const openHiddenRuleGroups = new Set();
+const hiddenTemplateSearch = document.getElementById('hiddenTemplateSearch');
+const canvasRulesDialog = document.getElementById('canvasRulesDialog');
+let canvasRulesDoc = null, canvasRulesScan = null;
+
+function makeRuleButton(text, label, handler){
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = text;
+  button.setAttribute('aria-label', label);
+  button.addEventListener('click', handler);
+  return button;
+}
+
+function makeRuleMask(doc, path){
+  const mask = makeRuleButton('屏蔽', `屏蔽规则 ${path}`, () => {
+    if(!doc || activeDoc() !== doc) return;
+    const masked = doc.maskedHiddenRules ??= new Set();
+    if(masked.has(path)) masked.delete(path);
+    else masked.add(path);
+    updateMask();
+    if(!ideActive) refreshTemplateVisibility();
+  });
+  const updateMask = () => {
+    const masked = doc?.maskedHiddenRules?.has(path) === true;
+    mask.textContent = masked ? '取消屏蔽' : '屏蔽';
+    mask.dataset.masked = String(masked);
+    mask.setAttribute('aria-label', `${mask.textContent}规则 ${path}`);
+  };
+  mask.disabled = !doc || !!doc.design;
+  mask.title = '仅对当前活动文件有效';
+  updateMask();
+  return mask;
+}
+
+async function findMatchingHiddenRules(source, rules, signal){
+  const root = {children:new Map()};
+  const matches = new Set();
+  for(const rule of rules){
+    const parts = [...rule.matchAll(/\.([A-Za-z_$][\w$]*)|\[(0|"(?:\\.|[^"\\])*")\]/g)];
+    let keys;
+    try { keys = parts.map(part => part[1] ?? JSON.parse(part[2])); }
+    catch { continue; }
+    if(!keys.length || encodePath(keys) !== rule) continue;
+    let branch = root;
+    for(const key of keys){
+      if(!branch.children.has(key)) branch.children.set(key, {children:new Map()});
+      branch = branch.children.get(key);
+    }
+    branch.rule = rule;
+  }
+
+  let pages = 0;
+  async function visit(dataSource, node, branch){
+    signal.throwIfAborted();
+    if(branch.rule){
+      matches.add(branch.rule);
+      delete branch.rule;
+    }
+    if(!branch.children.size) return;
+
+    if(node.type === 'string' && !node.truncated){
+      const value = parseJsonInString(node.value);
+      if(value === undefined) return;
+      const embedded = new MemoryDataSource(value);
+      try { await visit(embedded, embedded.getRoot(), branch); }
+      finally { embedded.dispose(); }
+      return;
+    }
+    if(node.type !== 'array' && node.type !== 'object') return;
+
+    // A normalized array step applies to every element. Object keys are unique
+    // in the reader, so each relevant key only needs one lookup per object.
+    const remaining = new Set([...branch.children.keys()].filter(key => node.type === 'array' ? key === 0 : typeof key === 'string'));
+    for(let offset = 0; remaining.size && offset < node.childCount;){
+      const page = await dataSource.getChildren(node.path, {offset, signal, cache:false});
+      signal.throwIfAborted();
+      for(const item of page.items){
+        const key = item.arrayItem ? 0 : item.key;
+        if(!remaining.has(key)) continue;
+        const child = branch.children.get(key);
+        await visit(dataSource, item, child);
+        if(!child.rule && !child.children.size){
+          branch.children.delete(key);
+          remaining.delete(key);
+        } else if(node.type === 'object') remaining.delete(key);
+        if(!remaining.size) break;
+      }
+      if(page.end <= offset) break;
+      offset = page.end;
+      if(++pages % 32 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+  if(root.children.size) await visit(source, source.getRoot(), root);
+  return [...rules].filter(rule => matches.has(rule));
+}
+
+async function openCanvasRules(){
+  const doc = activeDoc();
+  if(!doc?.source || doc.design || doc.error || ideActive || canvasRulesDialog.open) return;
+  canvasRulesDoc = doc;
+  const scan = new AbortController();
+  canvasRulesScan?.abort();
+  canvasRulesScan = scan;
+  const list = document.getElementById('canvasRulesList');
+  const status = document.getElementById('canvasRulesEmpty');
+  const group = document.getElementById('canvasRulesGroup');
+  list.replaceChildren();
+  status.hidden = false;
+  status.textContent = '正在匹配当前文件中的规则…';
+  group.hidden = true;
+  document.getElementById('canvasRulesFile').textContent = doc.name;
+  canvasRulesDialog.showModal();
+
+  try{
+    const rules = await findMatchingHiddenRules(doc.source, getHiddenSet(null), scan.signal);
+    if(scan.signal.aborted || !canvasRulesDialog.open || activeDoc() !== doc) return;
+    status.hidden = !!rules.length;
+    status.textContent = '当前文件没有匹配的隐藏规则。';
+    group.hidden = !rules.length;
+    for(const path of rules){
+      const row = document.createElement('li');
+      const code = document.createElement('code');
+      code.textContent = path;
+      row.append(code, makeRuleMask(doc, path));
+      list.appendChild(row);
+    }
+  }catch(error){
+    if(!scan.signal.aborted && canvasRulesDialog.open && activeDoc() === doc){
+      status.textContent = '无法检查当前文件的隐藏规则：' + error.message;
+    }
+  }
+}
+
+document.getElementById('canvasRulesClose').addEventListener('click', () => canvasRulesDialog.close());
+canvasRulesDialog.addEventListener('close', () => {
+  if(canvasRulesDialog.open) return;
+  canvasRulesScan?.abort();
+  canvasRulesScan = null;
+  canvasRulesDoc = null;
+});
+
 function renderHiddenRules(hidden){
   const list = document.getElementById('hiddenTemplateList');
   document.getElementById('hiddenTemplateRules').hidden = !hidden.size;
   list.replaceChildren();
+  const query = hiddenTemplateSearch.value.trim().toLowerCase();
+  const groups = new Map();
   for(const path of hidden){
-    const row = document.createElement('li');
-    const code = document.createElement('code');
-    code.textContent = path;
-    const restore = document.createElement('button');
-    restore.type = 'button';
-    restore.className = 'tf-btn';
-    restore.textContent = '恢复';
-    restore.setAttribute('aria-label', `恢复 ${path}`);
-    restore.addEventListener('click', () => {
-      const rules = getHiddenSet();
-      rules.delete(path);
+    const key = ruleSourceName(template?.hiddenSources?.[path]) || null;
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(path);
+  }
+  for(const key of openHiddenRuleGroups){
+    if(!groups.has(key)) openHiddenRuleGroups.delete(key);
+  }
+  const doc = activeDoc();
+  for(const [key, paths] of groups){
+    const name = key ?? '来源未知';
+    const matches = name.toLowerCase().includes(query)
+      ? paths : paths.filter(path => path.toLowerCase().includes(query));
+    if(!matches.length) continue;
+    const group = document.createElement('li');
+    group.className = 'hidden-rule-group';
+    const details = document.createElement('details');
+    details.open = !!query || openHiddenRuleGroups.has(key);
+    details.addEventListener('toggle', () => {
+      if(query || details.isConnected === false) return;
+      if(details.open) openHiddenRuleGroups.add(key);
+      else openHiddenRuleGroups.delete(key);
+    });
+    const summary = document.createElement('summary');
+    const fileName = document.createElement('span');
+    fileName.className = 'hidden-rule-file';
+    fileName.textContent = name;
+    const count = document.createElement('span');
+    count.className = 'hidden-rule-count';
+    count.textContent = String(paths.length);
+    summary.setAttribute('aria-label', `${name}，${paths.length} 条规则`);
+    summary.title = name;
+    summary.append(fileName, count);
+    const rows = document.createElement('ul');
+    for(const path of matches){
+      const row = document.createElement('li');
+      const code = document.createElement('code');
+      code.textContent = path;
+      const remove = makeRuleButton('删除', `删除规则 ${path}`, () => {
+        const rules = getHiddenSet(null);
+        rules.delete(path);
+        saveHiddenRules(rules);
+        document.getElementById('settingsNav3').focus();
+      });
+      remove.className = 'hidden-rule-delete';
+      row.append(code, remove, makeRuleMask(doc, path));
+      rows.appendChild(row);
+    }
+    const removeGroup = makeRuleButton('删除该组', `删除 ${name} 创建的规则`, () => {
+      const rules = getHiddenSet(null);
+      for(const path of paths) rules.delete(path);
       saveHiddenRules(rules);
       document.getElementById('settingsNav3').focus();
     });
-    row.append(code, restore);
-    list.appendChild(row);
+    removeGroup.title = '删除此文件名下的全部规则';
+    removeGroup.className = 'hidden-rule-delete hidden-rule-delete-group';
+    details.append(summary, rows);
+    group.append(details, removeGroup);
+    list.appendChild(group);
   }
+  document.getElementById('hiddenTemplateEmpty').hidden = !hidden.size || !!list.firstElementChild;
 }
 
+hiddenTemplateSearch.addEventListener('input', () => renderHiddenRules(getHiddenSet(null)));
+
 function updateTemplateStatus(){
-  const hidden = getHiddenSet();
+  const hidden = getHiddenSet(null);
   renderHiddenRules(hidden);
   if(template && (template.paths.length || hidden.size)){
     const d = new Date(template.savedAt);
@@ -2913,7 +3320,7 @@ function updateTemplateStatus(){
 
 function applyContextMenuSettings(){
   const buttons = new Map(contextMenuItems.map(({id, button}) => [id, button]));
-  ctxMenu.replaceChildren(topicMenu, ...settings.contextMenu.map(({id, enabled}) => {
+  ctxMenu.replaceChildren(canvasMenu, topicMenu, ...settings.contextMenu.map(({id, enabled}) => {
     const button = buttons.get(id);
     button.hidden = !enabled;
     return button;
@@ -2969,7 +3376,7 @@ document.getElementById('resetContextMenu').addEventListener('click', () => {
 });
 applyContextMenuSettings();
 
-const settingsPageCount = 6;
+const settingsPages = [0, 1, 2, 6, 3, 4, 5];
 const settingsNavLayout = window.matchMedia?.('(max-width: 700px)');
 function updateSettingsNavOrientation(){
   document.getElementById('settingsNav').setAttribute('aria-orientation', settingsNavLayout?.matches ? 'horizontal' : 'vertical');
@@ -2977,9 +3384,38 @@ function updateSettingsNavOrientation(){
 settingsNavLayout?.addEventListener('change', updateSettingsNavOrientation);
 updateSettingsNavOrientation();
 let settingsPage = 0;
+let memoryStatsTimer;
+
+function refreshMemoryStats(){
+  clearTimeout(memoryStatsTimer);
+  if(settingsPage !== 6 || !settingsMask.classList.contains('open')) return;
+  const resident = docs.filter(doc => !doc.unloaded).length;
+  const released = docs.filter(doc => doc.unloaded === 'idle').length;
+  const deferred = docs.length - resident - released;
+  const indexed = docs.filter(doc => doc.source?.indexed).length;
+  const cache = sharedPageCache.stats;
+  const queue = fileLoads.length ? ` · 读取队列 ${fileLoads.length} 个` : '';
+  document.getElementById('residentFileStatus').textContent =
+    `已载入 ${resident} 个 · 待载入 ${deferred} 个 · 已释放 ${released} 个${queue}`;
+  document.getElementById('indexCacheStatus').textContent =
+    `索引文件 ${indexed} 个 · ${cache.entries ? `已缓存 ${cache.entries} 页（约 ${formatBytes(cache.bytes)}）` : '暂无缓存页'} · 预算 ${formatBytes(cache.budget)}`
+    + (indexed && !cache.entries ? '。展开节点时按需读取子页。' : '');
+  releaseBackgroundFiles.disabled = !docs.some(canReleaseDocument);
+  memoryStatsTimer = setTimeout(refreshMemoryStats, 1000);
+}
+
+releaseBackgroundFiles.addEventListener('click', () => {
+  const candidates = docs.filter(canReleaseDocument);
+  if(!candidates.length) return;
+  candidates.forEach(releaseDocument);
+  scheduleMemoryRelease();
+  renderRail();
+  showToast(`已释放 ${candidates.length} 个后台文件`);
+});
+
 function showSettingsPage(index, focus = false){
-  settingsPage = (index + settingsPageCount) % settingsPageCount;
-  for(let i = 0; i < settingsPageCount; i++){
+  settingsPage = index;
+  for(const i of settingsPages){
     const button = document.getElementById(`settingsNav${i}`);
     button.setAttribute('aria-selected', String(i === settingsPage));
     button.tabIndex = i === settingsPage ? 0 : -1;
@@ -2989,17 +3425,19 @@ function showSettingsPage(index, focus = false){
   document.getElementById('settingsContent').scrollTop = 0;
   document.getElementById('recordTemplateBtn2').hidden = settingsPage !== 3;
   document.getElementById('settingsFooter').hidden = settingsPage !== 3;
+  refreshMemoryStats();
 }
-for(let i = 0; i < settingsPageCount; i++){
+for(const i of settingsPages){
   const button = document.getElementById(`settingsNav${i}`);
   button.addEventListener('click', () => showSettingsPage(i));
   button.addEventListener('keydown', e => {
     const horizontal = settingsNavLayout?.matches;
-    const next = e.key === (horizontal ? 'ArrowRight' : 'ArrowDown') ? i+1
-      : e.key === (horizontal ? 'ArrowLeft' : 'ArrowUp') ? i-1
-      : e.key === 'Home' ? 0 : e.key === 'End' ? settingsPageCount - 1 : null;
+    const index = settingsPages.indexOf(i), count = settingsPages.length;
+    const next = e.key === (horizontal ? 'ArrowRight' : 'ArrowDown') ? (index + 1) % count
+      : e.key === (horizontal ? 'ArrowLeft' : 'ArrowUp') ? (index + count - 1) % count
+      : e.key === 'Home' ? 0 : e.key === 'End' ? count - 1 : null;
     if(next === null) return;
-    e.preventDefault(); showSettingsPage(next, true);
+    e.preventDefault(); showSettingsPage(settingsPages[next], true);
   });
 }
 function openSettings(){
@@ -3015,6 +3453,9 @@ function openSettings(){
   optIndexBase.value = settings.indexBase === 1 ? '1' : '0';
   optRailStyle.value = settings.railStyle === 'dial' ? 'dial' : 'default';
   optReopenLast.checked = settings.reopenLast;
+  optLowMemoryMode.checked = settings.lowMemoryMode;
+  optIdleRelease.value = String(settings.idleReleaseMinutes);
+  optResidentFileLimit.value = String(settings.residentFileLimit);
   optSettingsJsonlArray.checked = settings.jsonlWrapArray !== false;
   optStrictJsonl.checked = !!settings.strictJsonl;
   optLimitValueHeight.checked = !!settings.limitValueHeight;
@@ -3025,9 +3466,11 @@ function openSettings(){
   updateTemplateStatus();
   renderContextMenuSettings();
   settingsMask.classList.add('open');
+  refreshMemoryStats();
 }
 function closeSettings(){
   settingsMask.classList.remove('open');
+  refreshMemoryStats();
   flushReadingSettings();
 }
 
@@ -3068,6 +3511,8 @@ function flushReadingSettings(){
     syncDocumentView(doc, view, false);
   }
   if(designLimitChanged) syncEditing();
+  if(changed('residentFileLimit') && enforceResidentLimit()) renderRail();
+  if(changed('idleReleaseMinutes') || changed('residentFileLimit')) scheduleMemoryRelease();
 
   const measureValues = changed('limitValueHeight') || (settings.limitValueHeight && changed('valueMaxLines'));
   if(changed('legacyTreeLayout')) applyTreeLayout(!measureValues);
@@ -3150,11 +3595,12 @@ function applyTreeLayout(measure = true){
 }
 
 document.getElementById('optNodeSelectionStyle').addEventListener('change', e => {
-  settings.nodeSelectionStyle = e.target.checked; applyIdeFoldVisibility(); saveSettings();
+  settings.nodeSelectionStyle = e.target.checked; applyNodeSelectionStyle(); saveSettings();
 });
-function applyIdeFoldVisibility(){
+function applyNodeSelectionStyle(){
   tree.classList.toggle('show-node-selection', settings.nodeSelectionStyle === true);
-  tree.classList.toggle('vim-node-selection', settings.vimEditing === true);
+}
+function applyIdeFoldVisibility(){
   document.getElementById('ideView').classList.toggle('ide-fold-always-visible', settings.ideFoldAlwaysVisible === true);
 }
 document.getElementById('optIdeFoldAlwaysVisible').addEventListener('change', e => {
@@ -3178,6 +3624,7 @@ optRailStyle.addEventListener('change', () => {
 /* 会话恢复依附于「刷新后继续打开」：上级关掉时联动项不可用 */
 function syncReopenControls(){
   optRestoreSession.disabled = !settings.reopenLast;
+  optLowMemoryMode.disabled = !settings.reopenLast;
 }
 
 optReopenLast.addEventListener('change', () => {
@@ -3185,6 +3632,15 @@ optReopenLast.addEventListener('change', () => {
   syncReopenControls();
 });
 
+optLowMemoryMode.addEventListener('change', () => {
+  changeReadingSetting('lowMemoryMode', optLowMemoryMode.checked);
+});
+optResidentFileLimit.addEventListener('change', () => {
+  changeReadingSetting('residentFileLimit', normalizeResidentLimit(optResidentFileLimit.value));
+});
+optIdleRelease.addEventListener('change', () => {
+  changeReadingSetting('idleReleaseMinutes', normalizeIdleRelease(optIdleRelease.value));
+});
 optRestoreSession.addEventListener('change', () => {
   changeReadingSetting('restoreSession', optRestoreSession.checked);
 });
@@ -3274,19 +3730,36 @@ async function rebuildJsonlRoot(){
 }
 
 /* ---------- 设置导入 / 导出 ---------- */
-exportSettingsBtn.addEventListener('click', () => {
+exportSettingsBtn.addEventListener('click', async () => {
+  if(exportSettingsBtn.disabled) return;
   const payload = {
     app: 'json-atlas',
+    appName: 'JSON Atlas',
+    appVersion: manifest.version,
     version: 1,
     exportedAt: new Date().toISOString(),
     settings,
-    template
+    template: normalizeTemplateSources(template)
   };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const name = 'json-atlas-settings.json';
+  const text = JSON.stringify(payload, null, 2);
+  if(desktop){
+    exportSettingsBtn.disabled = true;
+    try{
+      const path = await saveDocumentCopy(name, text, null, docs.map(doc => doc.path).filter(Boolean));
+      if(path) showToast('设置已导出');
+    }catch(error){
+      showToast('导出设置失败：' + (error.message || String(error)));
+    }finally{
+      exportSettingsBtn.disabled = false;
+    }
+    return;
+  }
+  const blob = new Blob([text], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'json-atlas-settings.json';
+  a.download = name;
   a.click();
   URL.revokeObjectURL(url);
   showToast('设置已导出');
@@ -3331,6 +3804,9 @@ settingsImportInput.addEventListener('change', () => {
         defaultLevels: parseInt(s.defaultLevels, 10) || 0,
         indexBase: parseInt(s.indexBase, 10) === 1 ? 1 : 0,
         reopenLast: !!s.reopenLast,
+        lowMemoryMode: s.lowMemoryMode === true,
+        idleReleaseMinutes: normalizeIdleRelease(s.idleReleaseMinutes),
+        residentFileLimit: normalizeResidentLimit(s.residentFileLimit),
         restoreSession: s.restoreSession === undefined ? true : !!s.restoreSession,
         jsonlWrapArray: s.jsonlWrapArray === undefined ? true : !!s.jsonlWrapArray,
         strictJsonl: !!s.strictJsonl,
@@ -3340,10 +3816,9 @@ settingsImportInput.addEventListener('change', () => {
         contextMenu: normalizeContextMenu(s.contextMenu)
       };
 
-      if(payload.template && Array.isArray(payload.template.paths)){
-        template = payload.template;
-      }else if('template' in payload){
-        template = null;
+      if('template' in payload){
+        template = normalizeTemplateSources(payload.template);
+        for(const doc of docs) delete doc.maskedHiddenRules;
       }
 
       applyTheme(settings.theme);
@@ -3352,6 +3827,7 @@ settingsImportInput.addEventListener('change', () => {
       if(settingsMask.classList.contains('open')) openSettings();
       applyRailStyle();
       applyContextMenuSettings();
+      applyNodeSelectionStyle();
       applyIdeFoldVisibility();
       flushReadingSettings();
       showToast('设置已导入');
@@ -3367,6 +3843,7 @@ settingsImportInput.addEventListener('change', () => {
 applyValueHeightSetting();
 syncReopenControls();
 applyTreeLayout();
+applyNodeSelectionStyle();
 applyIdeFoldVisibility();
 
 let nativeRestore = null;
@@ -3387,7 +3864,8 @@ let nativeRestore = null;
 
   const sessions = readSessions();
   if(desktop){
-    nativeRestore = { paths: list.map(item => item.path).filter(Boolean), sessions, activeKey: rec.activeKey };
+    const files = list.filter(item => typeof item?.path === 'string' && item.path);
+    nativeRestore = { files, sessions, activeKey: rec.activeKey };
     return;
   }
 
@@ -3396,7 +3874,9 @@ let nativeRestore = null;
 
     const size = Number(item.size) || new Blob([item.text]).size;
     if(needsIndex(size, settings.largeFileThresholdMiB)) return;
-    const doc = buildDoc(item.text, item.name, size);
+    const kind = item.kind === 'jsonl' || /\.(jsonl|ndjson|jsonlines)$/i.test(item.name) ? 'jsonl' : 'json';
+    const doc = settings.lowMemoryMode ? makeDoc(item.name, size, item.text, kind) : buildDoc(item.text, item.name, size);
+    if(settings.lowMemoryMode) doc.unloaded = 'restore';
     doc.temporary = !!item.temporary; doc.dirty = !!item.dirty;
     doc.design = item.design === true && doc.kind === 'json';
     if(Number.isSafeInteger(item.editedSize) || doc.dirty || doc.design) setEditedText(doc, item.text);
@@ -3488,6 +3968,7 @@ applyTemplateBtn.addEventListener('click', async () => {
 
 clearTemplateBtn.addEventListener('click', () => {
   template = null;
+  for(const doc of docs) delete doc.maskedHiddenRules;
   try{ localStorage.removeItem(TEMPLATE_KEY); }catch(_){}
   updateTemplateStatus();
   /* 就地重建当前文档：模板隐藏掉的字段要当场恢复显示，而不是等下次切文件 */
@@ -3526,7 +4007,7 @@ function openEditor(){
   viewer.classList.add('template-editing');
   fileSub.textContent = '模板编辑模式 · 勾选显示字段';
   fileSub.title = '';
-  editorHidden = getHiddenSet();
+  editorHidden = getHiddenSet(null);
   renderEditorTree();
   editorView.reset();
   void expandOne(editorTree.firstElementChild);
@@ -4013,7 +4494,6 @@ document.getElementById('optTopicDoubleClick').addEventListener('change', e => {
 document.getElementById('optVimEditing').addEventListener('change', e => {
   settings.vimEditing = e.target.checked;
   vimPrefix = null;
-  applyIdeFoldVisibility();
   saveSettings();
 });
 document.getElementById('optTopicDock').addEventListener('change', e => {
@@ -4106,7 +4586,12 @@ async function saveCurrentDocument(copy = false){
       document.getElementById('saveConflictDialog').showModal();
     }else showToast((copy ? '另存为失败：' : '保存失败：') + error);
   }
-  finally { doc.saving = false; if(doc === activeDoc()) syncEditing(); }
+  finally {
+    doc.saving = false;
+    if(doc === activeDoc()) syncEditing();
+    if(enforceResidentLimit()) renderRail();
+    scheduleMemoryRelease();
+  }
 }
 document.getElementById('saveConflictCancel').addEventListener('click', () => document.getElementById('saveConflictDialog').close());
 document.getElementById('saveConflictCopy').addEventListener('click', () => {
@@ -4263,7 +4748,7 @@ viewport.addEventListener('blur', () => { vimPrefix = null; });
 document.addEventListener('pointerdown', () => { vimPrefix = null; });
 document.addEventListener('keydown', e => {
   if(['valueEditDialog','designTopicDialog','discardEditDialog','deleteTopicDialog','saveConflictDialog'].some(id => document.getElementById(id).open)) return;
-  if(document.getElementById('aboutDialog').open || document.getElementById('updateDialog').open) return;
+  if(canvasRulesDialog.open || document.getElementById('aboutDialog').open || document.getElementById('updateDialog').open) return;
   if(e.isComposing || e.getModifierState?.('AltGraph')) { vimPrefix = null; return; }
   const overlayOpen = ['settingsMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'));
   if(e.key !== 'Escape' && overlayOpen) { vimPrefix = null; return; }
@@ -4358,19 +4843,36 @@ document.addEventListener('keydown', e => {
 
 /* ---------- 搜索 ---------- */
 function saveFindPlacement(){
-  try { localStorage.setItem('json-atlas_find-window_v1', JSON.stringify(findPlacement)); } catch { /* Optional preference. */ }
+  if(legacyFindPlacement) return;
+  try { localStorage.setItem(findPlacementKey, JSON.stringify(findPlacement)); } catch { /* Optional preference. */ }
 }
-function positionFindPanel(x = findPlacement.x, y = findPlacement.y){
+function positionFindPanel(x, y){
   if(findPanel.hidden) return;
   const width = window.innerWidth, height = window.innerHeight;
   const toolbarBottom = document.querySelector('.toolbar').getBoundingClientRect().bottom;
   const minTop = Math.max(12, toolbarBottom + 12);
   findPanel.style.maxHeight = `${Math.max(32, height - minTop - 12)}px`;
   const rect = findPanel.getBoundingClientRect();
-  findPlacement.x = clamp(x ?? width - rect.width - 16, 12, Math.max(12, width - rect.width - 12));
-  findPlacement.y = clamp(y ?? minTop, minTop, Math.max(minTop, height - rect.height - 12));
-  findPanel.style.left = `${findPlacement.x}px`;
-  findPanel.style.top = `${findPlacement.y}px`;
+  const freeWidth = width - rect.width;
+  if(legacyFindPlacement){
+    // Old default placements were saved as pixels along the toolbar. Restore their right anchor.
+    if(legacyFindPlacement.y > minTop + 1){
+      x ??= legacyFindPlacement.x;
+      y ??= legacyFindPlacement.y;
+    }
+    legacyFindPlacement = null;
+  }
+  const anchoredLeft = findPlacement.edge === 'left' ? findPlacement.inset : freeWidth - findPlacement.inset;
+  const left = clamp(x ?? anchoredLeft, 12, Math.max(12, freeWidth - 12));
+  const top = clamp(y ?? minTop + findPlacement.top, minTop, Math.max(minTop, height - rect.height - 12));
+  if(x !== undefined){
+    findPlacement.edge = left <= freeWidth / 2 ? 'left' : 'right';
+    findPlacement.inset = Math.max(12, findPlacement.edge === 'left' ? left : freeWidth - left);
+  }
+  if(y !== undefined) findPlacement.top = top - minTop;
+  findPanel.style.left = `${left}px`;
+  findPanel.style.top = `${top}px`;
+  return { left, top };
 }
 function updateFindPin(){
   findPanel.dataset.pinned = String(findPlacement.pinned);
@@ -4406,8 +4908,8 @@ pinFindBtn.addEventListener('click', () => {
 });
 findDragHandle.addEventListener('pointerdown', e => {
   if(e.button !== 0 || findPlacement.pinned || e.target.closest('button')) return;
-  positionFindPanel();
-  findDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, left: findPlacement.x, top: findPlacement.y };
+  const { left, top } = positionFindPanel();
+  findDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, left, top };
   findDragHandle.setPointerCapture(e.pointerId);
   e.preventDefault();
 });
@@ -4423,14 +4925,12 @@ findDragHandle.addEventListener('keydown', e => {
   if(e.target !== findDragHandle || findPlacement.pinned) return;
   const delta = { ArrowLeft: [-10,0], ArrowRight: [10,0], ArrowUp: [0,-10], ArrowDown: [0,10] }[e.key];
   if(!delta) return;
-  e.preventDefault(); positionFindPanel(findPlacement.x + delta[0], findPlacement.y + delta[1]); saveFindPlacement();
+  const { left, top } = positionFindPanel();
+  e.preventDefault();
+  positionFindPanel(delta[0] ? left + delta[0] : undefined, delta[1] ? top + delta[1] : undefined);
+  saveFindPlacement();
 });
-let findPlacementTimer;
-window.addEventListener('resize', () => {
-  positionFindPanel();
-  clearTimeout(findPlacementTimer);
-  findPlacementTimer = setTimeout(saveFindPlacement, 200);
-});
+window.addEventListener('resize', () => positionFindPanel());
 if(typeof ResizeObserver !== 'undefined') {
   const observer = new ResizeObserver(() => positionFindPanel());
   observer.observe(findPanel);
@@ -4881,7 +5381,26 @@ installTooltips(document, window);
     else if(action === 'format-json') formatIde();
   });
   if(nativeRestore){
-    await openPaths(nativeRestore.paths, nativeRestore.sessions, nativeRestore.activeKey);
+    if(settings.lowMemoryMode){
+      const keys = new Set(docs.filter(doc => doc.path).map(docKey));
+      for(const file of nativeRestore.files){
+        const key = filePathKey(file.path);
+        if(keys.has(key)) continue;
+        keys.add(key);
+        const name = file.name || file.path.split(/[\\/]/).pop();
+        const doc = makeDoc(name, file.size, undefined, file.kind);
+        Object.assign(doc, {path:file.path, identity:key, unloaded:'restore', loadOrder:++loadSequence,
+          resumeSession:nativeRestore.sessions[key]});
+        docs.push(doc);
+      }
+      if(!activeDoc() && docs.length){
+        const lastKey = typeof nativeRestore.activeKey === 'string' && filePathKey(nativeRestore.activeKey);
+        const active = docs.find(doc => docKey(doc) === lastKey) || docs.at(-1);
+        await activateDoc(active.id);
+      }
+    }else{
+      await openPaths(nativeRestore.files.map(file => file.path), nativeRestore.sessions, nativeRestore.activeKey);
+    }
     nativeRestore = null;
     const current = activeDoc();
     scheduleIndexVerification(current);

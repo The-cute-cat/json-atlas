@@ -192,6 +192,13 @@
   </form>
 </dialog>
 <div id="ctxMenu">
+  <div id="canvasMenu" hidden>
+    <button id="ctxCanvasExpand" type="button">展开全部</button>
+    <button id="ctxCanvasCollapse" type="button">全部收起</button>
+    <button id="ctxCanvasReset" type="button">重置视图</button>
+    <div class="ctx-sep"></div>
+    <button id="ctxCanvasRules" type="button">管理隐藏规则…</button>
+  </div>
   <div id="topicMenu" hidden>
     <button id="ctxTopicCopy" type="button">复制主题内容</button>
     <button id="ctxTopicValue" type="button">编辑值…</button>
@@ -212,6 +219,15 @@
   <button id="ctxCopy">复制节点内容</button>
 </div>
 
+<dialog id="canvasRulesDialog" class="value-edit-dialog" aria-labelledby="canvasRulesTitle">
+  <h2 id="canvasRulesTitle">当前文件的隐藏规则</h2>
+  <p id="canvasRulesFile" class="s-hint"></p>
+  <p class="s-hint">规则按路径匹配当前文件。屏蔽后的规则可在这里恢复。</p>
+  <p id="canvasRulesEmpty" class="s-hint" role="status" hidden>当前文件没有匹配的隐藏规则。</p>
+  <div class="hidden-rule-group" id="canvasRulesGroup" hidden><ul id="canvasRulesList"></ul></div>
+  <div class="edit-actions"><button id="canvasRulesClose" type="button" autofocus>完成</button></div>
+</dialog>
+
 <div id="settingsMask">
   <div class="modal-box">
     <div class="modal-head">
@@ -226,6 +242,7 @@
         <button type="button" id="settingsNav0" role="tab" aria-controls="settingsPage0" aria-selected="true" tabindex="0">外观与视图</button>
         <button type="button" id="settingsNav1" role="tab" aria-controls="settingsPage1" aria-selected="false" tabindex="-1">树形阅读</button>
         <button type="button" id="settingsNav2" role="tab" aria-controls="settingsPage2" aria-selected="false" tabindex="-1">文件与恢复</button>
+        <button type="button" id="settingsNav6" role="tab" aria-controls="settingsPage6" aria-selected="false" tabindex="-1">性能与内存</button>
         <button type="button" id="settingsNav3" role="tab" aria-controls="settingsPage3" aria-selected="false" tabindex="-1">模板与备份</button>
         <button type="button" id="settingsNav4" role="tab" aria-controls="settingsPage4" aria-selected="false" tabindex="-1">编辑与设计</button>
         <button type="button" id="settingsNav5" role="tab" aria-controls="settingsPage5" aria-selected="false" tabindex="-1">键盘与菜单</button>
@@ -320,31 +337,6 @@
         <div class="settings-page" id="settingsPage2" role="tabpanel" aria-labelledby="settingsNav2" hidden>
           <h2 class="settings-page-title">文件与恢复</h2>
           <section class="settings-group">
-            <h3 class="settings-group-title">大文件</h3>
-            <div class="settings-row">
-              <div>
-                <label class="s-label" for="optLargeFileThreshold">大文件处理阈值</label>
-                <div class="s-hint" id="largeFileThresholdHint">打开文件时，阈值以内使用内存解析，超过阈值时桌面版使用磁盘索引，浏览器预览会拒绝打开。调整后，下次打开文件会按新阈值选择读取方式。1 MB = 1024 × 1024 字节。</div>
-              </div>
-              <select id="optLargeFileThreshold" aria-describedby="largeFileThresholdHint">
-                <option value="32">32 MB</option>
-                <option value="64" selected>64 MB</option>
-                <option value="128">128 MB</option>
-                <option value="256">256 MB</option>
-              </select>
-            </div>
-            <div class="settings-row">
-              <div>
-                <label class="s-label" for="optIndexRebuild">大文件索引重建</label>
-                <div class="s-hint" id="indexRebuildHint">桌面版。智能重建可复用已保存的索引，并在显示内容后校验哈希。文件大小变更或缺少已保存的哈希时会重建。</div>
-              </div>
-              <select id="optIndexRebuild" aria-describedby="indexRebuildHint">
-                <option value="smart" selected>智能重建</option>
-                <option value="always">始终重建</option>
-              </select>
-            </div>
-          </section>
-          <section class="settings-group">
             <h3 class="settings-group-title">JSONL</h3>
             <div class="settings-row">
               <div>
@@ -391,6 +383,92 @@
             </div>
           </section>
         </div>
+        <div class="settings-page" id="settingsPage6" role="tabpanel" aria-labelledby="settingsNav6" hidden>
+          <h2 class="settings-page-title">性能与内存</h2>
+          <section class="settings-group">
+            <h3 class="settings-group-title">当前状态</h3>
+            <div class="settings-row">
+              <div>
+                <div class="s-label">文件载入</div>
+                <div class="s-hint" id="residentFileStatus"></div>
+              </div>
+              <button class="tf-btn" id="releaseBackgroundFiles" type="button">释放后台文件</button>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="s-label">索引子页缓存</div>
+                <div class="s-hint" id="indexCacheStatus"></div>
+                <div class="s-hint">用量仅估算前端保留的索引子页。该预算由所有索引文件共享。</div>
+              </div>
+            </div>
+          </section>
+          <section class="settings-group">
+            <h3 class="settings-group-title">内存管理</h3>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optIdleRelease">自动释放闲置文件</label>
+                <div class="s-hint">离开文件达到指定时间后释放解析数据和索引缓存。再次选中标签会重新载入。保留正在阅读、有未保存修改或可撤销操作的文件。</div>
+              </div>
+              <select id="optIdleRelease">
+                <option value="0">关闭</option>
+                <option value="1">1 分钟</option>
+                <option value="5">5 分钟</option>
+                <option value="15">15 分钟</option>
+                <option value="30">30 分钟</option>
+                <option value="60">60 分钟</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optResidentFileLimit">同时载入文件上限</label>
+                <div class="s-hint">超过上限时优先释放最久未阅读的文件。当前文件和有编辑记录的文件保留，因此载入数量可能暂时超过上限。</div>
+              </div>
+              <select id="optResidentFileLimit">
+                <option value="0">不限</option>
+                <option value="1">1 个</option>
+                <option value="2">2 个</option>
+                <option value="4">4 个</option>
+                <option value="8">8 个</option>
+                <option value="16">16 个</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optLowMemoryMode">小内存模式</label>
+                <div class="s-hint">启用「文件与恢复 → 重启时重新打开文件」后，启动时只载入上次活动的文件。其余标签在选中时载入。</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="optLowMemoryMode" />
+                <span class="slider"></span>
+              </label>
+            </div>
+          </section>
+          <section class="settings-group">
+            <h3 class="settings-group-title">大文件</h3>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optLargeFileThreshold">大文件处理阈值</label>
+                <div class="s-hint" id="largeFileThresholdHint">打开文件时，阈值以内使用内存解析，超过阈值时桌面版使用磁盘索引，浏览器预览会拒绝打开。调整后，下次打开文件会按新阈值选择读取方式。1 MB = 1024 × 1024 字节。</div>
+              </div>
+              <select id="optLargeFileThreshold" aria-describedby="largeFileThresholdHint">
+                <option value="32">32 MB</option>
+                <option value="64" selected>64 MB</option>
+                <option value="128">128 MB</option>
+                <option value="256">256 MB</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optIndexRebuild">大文件索引重建</label>
+                <div class="s-hint" id="indexRebuildHint">桌面版。智能重建可复用已保存的索引，并在显示内容后校验哈希。文件大小变更或缺少已保存的哈希时会重建。</div>
+              </div>
+              <select id="optIndexRebuild" aria-describedby="indexRebuildHint">
+                <option value="smart" selected>智能重建</option>
+                <option value="always">始终重建</option>
+              </select>
+            </div>
+          </section>
+        </div>
         <div class="settings-page" id="settingsPage3" role="tabpanel" aria-labelledby="settingsNav3" hidden>
           <h2 class="settings-page-title">模板与备份</h2>
           <section class="settings-group">
@@ -417,8 +495,12 @@
               </label>
             </div>
             <div id="hiddenTemplateRules" class="template-rules" hidden>
-              <div class="s-label">隐藏规则</div>
+              <div class="hidden-rule-heading">
+                <label class="s-label" for="hiddenTemplateSearch">隐藏规则</label>
+                <input id="hiddenTemplateSearch" type="search" placeholder="搜索文件名或规则路径" aria-label="搜索文件名或规则路径" />
+              </div>
               <ul id="hiddenTemplateList"></ul>
+              <p id="hiddenTemplateEmpty" class="s-hint" role="status" hidden>没有匹配的文件或规则。</p>
             </div>
           </section>
           <section class="settings-group">
@@ -426,7 +508,7 @@
             <div class="settings-row">
               <div>
                 <div class="s-label">设置导入 / 导出</div>
-                <div class="s-hint">导出阅读设置和结构模板，便于备份或迁移到另一台电脑。导入后替换对应设置，不包含已打开的数据文件。</div>
+                <div class="s-hint">导出应用版本、阅读设置和结构模板。隐藏规则的来源只记录文件名。导入后替换对应设置。</div>
               </div>
               <div style="display:flex;gap:8px">
                 <button id="exportSettingsBtn" class="tf-btn">导出</button>
