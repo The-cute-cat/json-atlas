@@ -191,12 +191,6 @@ h1 span {
   font:600 20px Consolas,monospace;
   color:var(--accent)
 }
-.outline-label {
-  margin-left:auto;
-  color:var(--muted);
-  font:10px Consolas,monospace;
-  letter-spacing:.1em
-}
 .outline ol {
   list-style:none;
   padding:12px 24px;
@@ -292,11 +286,6 @@ h2 {
   border-top:1px solid var(--line);
   padding-top:24px
 }
-.feature-number {
-  font-size:11px;
-  color:var(--accent);
-  letter-spacing:.07em
-}
 .features h3 {
   font-size:18px;
   line-height:1.5;
@@ -333,6 +322,30 @@ h2 {
 .views strong {
   color:var(--ink);
   font-weight:600
+}
+.performance {
+  border-top:1px solid var(--line)
+}
+.performance-shot {
+  margin:36px auto 0;
+  max-width:900px
+}
+.performance-shot .image-frame {
+  display:block
+}
+.performance-shot figcaption {
+  margin-top:10px;
+  color:var(--muted);
+  font-size:12px
+}
+.platform-note {
+  margin:20px 0 0;
+  color:var(--muted);
+  font-size:13px
+}
+.platform-note a,.edition-note a,.section-heading p>a {
+  text-decoration:underline;
+  text-underline-offset:3px
 }
 .editions {
   background:#eef2f3;
