@@ -107,6 +107,7 @@ async fn indexed_document(
                 .unwrap_or_default()
                 .as_nanos();
             let last_progress = Cell::new(None);
+            let total_bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
             indexed::cache::open(
                 &path,
                 &dir,
@@ -114,9 +115,10 @@ async fn indexed_document(
                 &job_cancel,
                 &|bytes| {
                     let now = Instant::now();
-                    if last_progress
-                        .get()
-                        .is_some_and(|last| now.duration_since(last) < Duration::from_millis(125))
+                    if total_bytes != Some(bytes)
+                        && last_progress.get().is_some_and(|last| {
+                            now.duration_since(last) < Duration::from_millis(125)
+                        })
                     {
                         return;
                     }

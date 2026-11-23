@@ -709,6 +709,8 @@ test('new toolbar queries restore plain matching and synchronize both search fie
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(elements.get('quickSearchCount').textContent, '1 / 2');
   quick.value = 'CAT'; quick.listeners.get('input')({});
+  assert.equal(elements.get('quickSearchCount').textContent, '搜索中…');
+  assert.equal(elements.get('quickNextMatchBtn').disabled, true);
   await quick.listeners.get('keydown')({key:'Enter',preventDefault(){},stopPropagation(){}});
   assert.equal(input.value, 'CAT'); assert.equal(elements.get('quickSearchCount').textContent, '1 / 3');
   elements.get('clearSearchBtn').listeners.get('click')();
@@ -1183,6 +1185,49 @@ test('the blank canvas menu masks and restores rules for the active file only', 
   assert.equal(second.maskedHiddenRules,undefined);
 });
 
+test('switching files preserves unapplied template changes on the originating tab', async () => {
+  const {api,elements} = reader();
+  const first = api.buildDoc('{"secret":1}', 'first.json', 12);
+  const second = api.buildDoc('{"secret":2}', 'second.json', 12);
+  api.add(first); api.add(second); api.activateDoc(first.id);
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  const checkbox = () => elements.get('editorTree').querySelectorAll('.ed-check')
+    .find(control=>!control.disabled);
+  api.openEditor(); await tick();
+  checkbox().checked = false;
+  checkbox().listeners.get('change')();
+  api.activateDoc(second.id);
+  api.openEditor(); await tick();
+  assert.equal(checkbox().checked,true);
+  api.activateDoc(first.id);
+  api.openEditor(); await tick();
+  assert.equal(checkbox().checked,false);
+  elements.get('editorSaveBtn').click();
+  assert.deepEqual(Array.from(api.template().hidden),['$.secret']);
+});
+
+test('undo and redo restore the expansion state of tree edits', async () => {
+  const {api,elements,flush} = reader();
+  const doc = api.buildDoc('{"a":{"b":{"c":1}}}', 'tree.json', 19);
+  api.add(doc); api.activateDoc(doc.id);
+  await flush();
+  const tree = elements.get('tree');
+  await api.expandByPaths(['$','$.a','$.a.b'],{exact:true});
+  const open = () => tree.querySelectorAll('.tree-node.open').map(node=>node.dataset.path);
+  const node = tree.querySelectorAll('.tree-node').find(node=>node.dataset.path==='$.a');
+  api.beginNodeEdit(node);
+  elements.get('valueEditType').value = 'number';
+  elements.get('valueEditText').value = '2';
+  api.applyNodeEdit(); await flush();
+  assert.equal(doc.parsed.a,2);
+  assert.deepEqual(open(),['$']);
+  elements.get('undoEditBtn').click(); await flush();
+  assert.deepEqual(open(),['$','$.a','$.a.b']);
+  elements.get('redoEditBtn').click(); await flush();
+  assert.equal(doc.parsed.a,2);
+  assert.deepEqual(open(),['$']);
+});
+
 test('recording the current expansion keeps the hidden-field configuration', () => {
   const { api, elements } = reader();
   api.setTemplate({ paths: ['$'], hidden: ['$.secret'], file: 'data.json', savedAt: 1 });
@@ -1591,6 +1636,8 @@ test('save shortcut writes the active revision and undo remains dirty relative t
   assert(prevented); assert.deepEqual(writes[0], [doc.path, '{"n":2}', '{"n":1}']);
   assert.equal(doc.dirty,false); assert.equal(elements.get('saveBtn').disabled,true);
   elements.get('undoEditBtn').click(); assert.equal(doc.text,'{"n":1}'); assert.equal(doc.dirty,true);
+  elements.get('redoEditBtn').click(); assert.equal(doc.text,'{"n":2}'); assert.equal(doc.dirty,false);
+  elements.get('undoEditBtn').click();
   await api.saveCurrentDocument(); assert.equal(writes[1][2],'{"n":2}'); assert.equal(doc.dirty,false);
 });
 

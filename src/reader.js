@@ -82,23 +82,24 @@ const shortcutText = action => shortcutLabel(action, macPlatform);
 const MAX_EDIT_HISTORY = 50;
 const MIN_EDIT_HISTORY = 10;
 const EDIT_HISTORY_TEXT_BUDGET = 64 * 1024 * 1024;
-function editRevision(doc){
+function editRevision(doc, includeTreeState = false){
   return {parsed:doc.parsed, records:doc.records, dirty:!!doc.dirty, text:doc.text, editedSize:doc.editedSize,
     untypedTopics:doc.untypedTopics,
-    ideDraft:doc.ideDraft, ideError:doc.ideError, bad:doc.bad, totalLines:doc.totalLines};
+    ideDraft:doc.ideDraft, ideError:doc.ideError, bad:doc.bad, totalLines:doc.totalLines,
+    ...(includeTreeState ? {openPaths:doc.openPaths, pageOffsets:doc.pageOffsets} : {})};
 }
 function setEditedText(doc, text, size = new Blob([text]).size){
   doc.text = text;
   doc.editedSize = size;
 }
-function rememberEdit(doc, inputType = null){
+function rememberEdit(doc, inputType = null, includeTreeState = false){
   doc.ideFolds?.clear();
   doc.savedText ??= doc.text;
   doc.diskText ??= doc.text;
   const last = doc.ideEditGroup, now = Date.now();
   if(!inputType || last?.type !== inputType || now - last.time > 500){
     const history = doc.editHistory ||= [];
-    history.push(editRevision(doc));
+    history.push(editRevision(doc, includeTreeState));
     // Revisions keep full document text and may also retain an invalid IDE draft.
     let textBytes = 0;
     const maxSteps = Math.min(history.length, MAX_EDIT_HISTORY);
@@ -506,8 +507,8 @@ function commitTopicEdit({doc, path}, action, name){
   const size = new Blob([text]).size;
   if(size >= designLimitBytes()) throw new Error(designLimitMessage());
   snapshotDoc();
-  rememberEdit(doc);
-  Object.assign(doc.editHistory.at(-1), { topicSelection:path, openPaths:doc.openPaths });
+  rememberEdit(doc, null, true);
+  doc.editHistory.at(-1).topicSelection = path;
   const open = (doc.openPaths || []).flatMap(remapOpenPath);
   for(let i = 0; i <= parent.length; i++) open.push(encodePath(parent.slice(0, i)));
   doc.openPaths = [...new Set(open)];
@@ -586,9 +587,9 @@ function applyNodeEdit(){
   const designSize = designText === null ? undefined : new Blob([designText]).size;
   if(designSize !== undefined && designSize >= designLimitBytes()) throw new Error(designLimitMessage());
   snapshotDoc();
-  rememberEdit(doc);
+  rememberEdit(doc, null, true);
   if(doc.design){
-    Object.assign(doc.editHistory.at(-1), { topicSelection:state.path, openPaths:doc.openPaths });
+    doc.editHistory.at(-1).topicSelection = state.path;
     const changed = encodePath(state.path);
     if(doc.untypedTopics){
       doc.untypedTopics = new Set([...doc.untypedTopics].filter(path => path !== changed && !isPathPrefix(changed, path, false)));
@@ -1071,7 +1072,7 @@ function resetSearchState(){
   searchScopeBtn.title = '仅在选中节点内查找：先点击一个节点';
   tree.querySelectorAll('.search-scope-node').forEach(n => n.classList.remove('search-scope-node'));
   setSearchError('');
-  tree.querySelectorAll('.match,.current-match').forEach(n => n.classList.remove('match','current-match'));
+  clearSearchHighlights();
   pathText.textContent = '路径：$';
 }
 
@@ -1600,7 +1601,7 @@ function parseInBackground(payload, signal){
 async function loadFile(file, sessions, job = null){
   const threshold = settings.largeFileThresholdMiB;
   if(!file.path && needsIndex(file.size, threshold)){
-    showToast(`文件超过 ${threshold} MB，当前入口无法建立磁盘索引`);
+    showToast(`文件超过 ${threshold} MB 的读取上限。请在设置中提高阈值，或用桌面版从本机路径打开。`);
     return;
   }
   if(!file.path && !/\.(json|jsonl|ndjson|jsonlines|txt)$/i.test(file.name)){
@@ -1620,17 +1621,22 @@ async function loadFile(file, sessions, job = null){
     if(controller.signal.aborted) return;
     let result, text, source = metadata;
     if(file.path && needsIndex(metadata.size, threshold)){
-      loadingLabel.textContent = '正在后台建立索引 · 0% · ' + metadata.name;
+      loadingLabel.textContent = '正在扫描文件 · ' + metadata.name;
       indexedSource = await openIndexedFile(metadata, {
         signal: controller.signal, wrap: settings.jsonlWrapArray !== false, strict: !!settings.strictJsonl,
         reuse: settings.indexRebuild === 'smart',
         progress(bytes){
           if(controller.signal.aborted || loadingStatus.hidden) return;
-          const percent = Math.min(99, Math.floor(bytes / Math.max(1, metadata.size) * 100));
+          const percent = Math.min(100, Math.floor(bytes / Math.max(1, metadata.size) * 100));
           if(percent === lastPercent) return;
           lastPercent = percent;
-          loadingProgress.value = percent;
-          loadingLabel.textContent = `正在后台建立索引 · ${percent}% · ${metadata.name}`;
+          if(percent === 100){
+            loadingProgress.removeAttribute('value');
+            loadingLabel.textContent = '正在完成索引 · ' + metadata.name;
+          }else{
+            loadingProgress.value = percent;
+            loadingLabel.textContent = `正在扫描文件 · ${percent}% · ${metadata.name}`;
+          }
         }
       });
       result = { kind: indexedSource.info.kind }; text = '';
@@ -1674,6 +1680,7 @@ async function loadFile(file, sessions, job = null){
     }else if(duplicate){
       if(duplicate.dirty && !await confirmDiscardEdits()) return;
       if(controller.signal.aborted) return;
+      if(duplicate === activeDoc()) snapshotDoc();
       duplicate.dirty = false; duplicate.editHistory = [];
       duplicate.redoHistory = []; duplicate.ideEditGroup = null;
       persistDesignDraft(duplicate);
@@ -1774,7 +1781,7 @@ async function rebuildChangedIndex(doc, source){
 /* ---------- 「刷新后继续打开」：整组文件 + 各自的阅读会话 ---------- */
 /* 把已打开的文件集合写入本地，刷新后整体恢复。
    未开启该设置时不碰 localStorage；配额不足时退化为只保存当前文件 */
-function saveReopenCopy(){
+function saveReopenCopy(notify = showToast){
   if(!settings.reopenLast) return;
 
   if(!docs.length && !fileLoads.length){
@@ -1794,7 +1801,7 @@ function saveReopenCopy(){
       activeKey: selectedLoad?.key || (activeDoc() ? docKey(activeDoc()) : files.keys().next().value),
       docs: [...files.values()], savedAt: Date.now() };
     try{ localStorage.setItem(LASTFILE_KEY, JSON.stringify(snapshot)); }
-    catch(_){ showToast('未能保存文件列表'); }
+    catch(_){ notify('未能保存文件列表'); }
     return;
   }
   if(!docs.length) return;
@@ -1825,9 +1832,9 @@ function saveReopenCopy(){
       docs: [{ name: cur.name, size: cur.size, editedSize:cur.editedSize, kind: cur.kind, text: cur.text, rootLabel: cur.rootLabel, temporary:!!cur.temporary, dirty:!!cur.dirty, design:!!cur.design }],
       savedAt: Date.now()
     }));
-    showToast('打开的文件较多，刷新后只会恢复当前文件');
+    notify('恢复空间不足，刷新后只会打开当前文件');
   }catch(_){
-    showToast('文件过大，未能保存刷新恢复副本');
+    notify('文件过大，未能保存刷新恢复副本');
   }
 }
 
@@ -1867,7 +1874,7 @@ function scheduleSessionSave(){
   sessionSaveTimer = setTimeout(saveSession, 400);
 }
 
-function saveSession(){
+function saveSession(notify = showToast){
   clearTimeout(sessionSaveTimer);
   sessionSaveTimer = null;
 
@@ -1878,7 +1885,7 @@ function saveSession(){
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
     sessionSaveFailed = false;
   }catch(_){
-    if(!sessionSaveFailed) showToast('未能保存阅读位置');
+    if(!sessionSaveFailed) notify('未能保存阅读位置');
     sessionSaveFailed = true;
   }
 }
@@ -1894,7 +1901,7 @@ function applySessionView(view){
 }
 
 /* 页面隐藏 / 关闭前补一次，避免最后几百毫秒的操作没落盘 */
-window.addEventListener('pagehide', saveSession);
+window.addEventListener('pagehide', () => saveSession());
 
 /* 打开时的展开策略：模板优先，其次默认层级。
    「刷新后恢复」由 activateDoc 直接按文档自己的会话铺开，不走这里 */
@@ -1967,8 +1974,13 @@ const reclaimNodesBtn = document.getElementById('reclaimNodesBtn');
 function updateNodeBudgetNotice(count){
   nodeBudgetNotice.hidden = !nodeBudget.update(count);
 }
+const nodeLimitToastTime = new WeakMap();
 function showNodeLimit(scope = tree, message = '已达到 5000 个显示节点，可精简远处内容后继续展开'){
-  showToast(message);
+  const now = Date.now();
+  if(now - (nodeLimitToastTime.get(scope) ?? -Infinity) >= 1600){
+    nodeLimitToastTime.set(scope, now);
+    showToast(message);
+  }
   if(scope === tree){ nodeBudget.notify(); updateNodeBudgetNotice(); }
 }
 reclaimNodesBtn.addEventListener('click', () => {
@@ -2022,7 +2034,7 @@ function updateVirtualization(){
 function syncReadingActions(){
   const indexed = !!activeDoc()?.source?.indexed;
   expandAllBtn.textContent = indexed ? '展开当前页' : '展开全部';
-  expandAllBtn.title = (indexed ? '展开当前页的节点，最多显示约 5000 个节点' : '展开全部节点，最多显示约 5000 个节点') + `（${shortcutText('expandAll')}）`;
+  expandAllBtn.title = (indexed ? '逐层展开各分支的当前页，最多显示约 5000 个节点' : '展开全部节点，最多显示约 5000 个节点') + `（${shortcutText('expandAll')}）`;
   document.getElementById('ctxExpandSubtree').textContent = indexed ? '展开当前页的下级' : '展开全部下级';
 }
 
@@ -2384,11 +2396,13 @@ async function expandVisible(root, scope = tree){
   const generation = ++expansionGeneration;
   const docId = activeDocId;
   const stack = [root];
-  let visited = 0;
+  let visited = 0, stoppedAtLimit = false;
   while(stack.length){
     if(generation !== expansionGeneration || docId !== activeDocId || !root.isConnected) return;
     if(scope.querySelectorAll('.tree-node').length >= 5000){
-      showNodeLimit(scope); break;
+      showNodeLimit(scope);
+      stoppedAtLimit = true;
+      break;
     }
     const node = stack.pop();
     if(node.isConnected === false) continue;
@@ -2402,7 +2416,7 @@ async function expandVisible(root, scope = tree){
   }
   updateVirtualization();
   scheduleOverflowSweep();
-  if(scope.querySelector('.page-navigation')) showToast('已展开当前页；可在分支底部加载更多');
+  if(!stoppedAtLimit && scope.querySelector('.page-navigation')) showToast('已展开各分支的当前页。可在分支底部加载更多。');
 }
 
 function expandAll(){ return expandVisible(tree.firstElementChild); }
@@ -2655,7 +2669,7 @@ async function openModal(node){
   modalTitle.textContent = node._key;
   modalPath.textContent = node.dataset.path;
   modalBody.textContent = full.length > MODAL_TRUNCATE
-    ? full.slice(0, MODAL_TRUNCATE) + '\n\n…（内容过长，弹窗内截断显示；复制仍为完整内容）'
+    ? full.slice(0, MODAL_TRUNCATE) + `\n\n…（已显示 ${MODAL_TRUNCATE.toLocaleString()} / ${full.length.toLocaleString()} 个字符；可复制完整内容）`
     : full;
   modalBody._full = full;
 
@@ -2705,7 +2719,7 @@ const TEMPLATE_KEY = 'json-atlas_template_v1';
 const LASTFILE_KEY = 'json-atlas_lastfile_v1';
 const DESIGN_DRAFT_PREFIX = 'json-atlas_design-draft_v1:';
 
-function persistDesignDraft(doc, discard = false){
+function persistDesignDraft(doc, discard = false, notify = showToast){
   if(!doc.design && !doc.draftKey) return;
   const keep = doc.dirty && !discard;
   if(!keep && !doc.draftKey) return;
@@ -2724,7 +2738,7 @@ function persistDesignDraft(doc, discard = false){
     }
     doc.draftWriteFailed = false;
   }catch(_){
-    if(!doc.draftWriteFailed) showToast(keep ? '暂存设计失败，请手动保存' : '未能清理设计草稿');
+    if(!doc.draftWriteFailed) notify(keep ? '暂存设计失败，请手动保存' : '未能清理设计草稿');
     doc.draftWriteFailed = true;
   }
 }
@@ -3992,6 +4006,8 @@ const editorView = createCanvasView(editorViewport, editorWorld, editorZoomLabel
 
 /* 编辑器工作副本：打开时从模板拷贝，保存时写回 */
 let editorHidden = new Set();
+let editorBaseline = new Set(), editorDoc = null;
+const editorDrafts = new WeakMap();
 
 function openEditor(){
   /* 用文档而不是 parsedData 判断：根值是 null / false / 0 也是合法数据 */
@@ -4005,17 +4021,32 @@ function openEditor(){
   syncDocumentMenu();
   enterEditorFind();
   viewer.classList.add('template-editing');
-  fileSub.textContent = '模板编辑模式 · 勾选显示字段';
+  fileSub.textContent = '模板编辑模式 · 勾选显示字段 · 切换文件时保留草稿';
   fileSub.title = '';
-  editorHidden = getHiddenSet(null);
+  editorDoc = doc;
+  editorBaseline = getHiddenSet(null);
+  editorHidden = new Set(editorBaseline);
+  const draft = editorDrafts.get(doc);
+  if(draft){
+    for(const path of draft.show) editorHidden.delete(path);
+    for(const path of draft.hide) editorHidden.add(path);
+  }
   renderEditorTree();
   editorView.reset();
   void expandOne(editorTree.firstElementChild);
   editorViewport.focus({preventScroll:true});
 }
 
-function closeEditor(){
+function closeEditor(discardChanges = false){
   if(!templateEditing) return;
+  if(discardChanges) editorDrafts.delete(editorDoc);
+  else{
+    const show = [...editorBaseline].filter(path => !editorHidden.has(path));
+    const hide = [...editorHidden].filter(path => !editorBaseline.has(path));
+    if(show.length || hide.length) editorDrafts.set(editorDoc, {show, hide});
+    else editorDrafts.delete(editorDoc);
+  }
+  editorDoc = null;
   templateEditing = false;
   syncDesignControls();
   syncDocumentMenu();
@@ -4175,13 +4206,13 @@ function editorCollapseAll(){
 }
 
 editorBtn.addEventListener('click', () => { closeMoreMenu(); openEditor(); });
-editorClose.addEventListener('click', () => { closeEditor(); document.getElementById('moreBtn').focus(); });
+editorClose.addEventListener('click', () => { closeEditor(true); document.getElementById('moreBtn').focus(); });
 editorZoomInBtn.addEventListener('click', () => editorView.zoomAt(1.12));
 editorZoomOutBtn.addEventListener('click', () => editorView.zoomAt(0.89));
 
 editorSaveBtn.addEventListener('click', () => {
   if(!templateEditing) return;
-  closeEditor();
+  closeEditor(true);
   saveHiddenRules(editorHidden);
   showToast(editorHidden.size
     ? `已应用：隐藏 ${editorHidden.size} 个字段`
@@ -4525,8 +4556,8 @@ function stepEditHistory(redo = false){
   const { topicSelection, ...revision } = previous;
   snapshotDoc();
   const opposite = redo ? (doc.editHistory ||= []) : (doc.redoHistory ||= []);
-  const current = editRevision(doc);
-  if(topicSelection) Object.assign(current, {topicSelection:selectedCopyNode?._path, openPaths:doc.openPaths});
+  const current = editRevision(doc, Object.hasOwn(revision, 'openPaths'));
+  if(doc.design && selectedCopyNode) current.topicSelection = selectedCopyNode._path;
   opposite.push(current);
   doc.ideEditGroup = null;
   doc.ideFolds?.clear(); Object.assign(doc, revision);
@@ -4555,11 +4586,12 @@ async function saveCurrentDocument(copy = false){
   }
   const revision = doc.text;
   const extension = doc.kind === 'jsonl' ? 'jsonl' : 'json';
-  const name = doc.temporary || (!desktop && doc.design) ? doc.name : doc.name.replace(/\.[^.]+$/, '') + '-edited.' + extension;
-  const wasTemporary = doc.temporary;
+  // The native copy dialog must suggest a distinct path from the open file.
+  const name = desktop && doc.path && !doc.temporary ? doc.name.replace(/\.[^.]+$/, '') + '-edited.' + extension : doc.name;
+  const savesOriginal = desktop && doc.path && !copy;
   doc.saving = true; syncEditing();
   try {
-    if(desktop && doc.path && !copy){
+    if(savesOriginal){
       await saveNativeDocument(doc.path, revision, doc.diskText ?? doc.savedText ?? doc.text);
       doc.diskText = revision;
     }else if(desktop){
@@ -4577,12 +4609,14 @@ async function saveCurrentDocument(copy = false){
       if(doc.design) doc.temporary = false;
     }
     doc.savedText = revision; doc.dirty = doc.text !== revision;
-    persistDesignDraft(doc);
-    renderRail(); saveReopenCopy(); saveSession();
+    const messages = [savesOriginal ? '已保存到原文件' : desktop ? '已另存为文件' : '已开始下载'];
+    const notify = message => messages.push(message);
+    persistDesignDraft(doc, false, notify);
+    renderRail(); saveReopenCopy(notify); saveSession(notify);
     if(doc === activeDoc()){ updateDocHeader(doc); syncEditing(); updateWindowTitle(doc.name); }
-    showToast(desktop && doc.path && (!copy || wasTemporary) ? '已保存' : '已导出修改副本');
+    showToast(messages.join('。'));
   } catch(error){
-    if(!copy && doc === activeDoc() && String(error).includes('文件已被其他程序修改')){
+    if(savesOriginal && doc === activeDoc() && String(error).includes('文件已被其他程序修改')){
       document.getElementById('saveConflictDialog').showModal();
     }else showToast((copy ? '另存为失败：' : '保存失败：') + error);
   }
@@ -4654,7 +4688,9 @@ function visibleNeighbor(node, direction){
   }
   for(let parent = canvasParent(node); parent; parent = canvasParent(node)){
     const siblings = visibleChildren(parent);
-    const sibling = siblings[siblings.indexOf(node) + direction];
+    const index = siblings.indexOf(node);
+    if(index < 0) return parent;
+    const sibling = siblings[index + direction];
     if(sibling) return direction > 0 ? sibling : lastVisibleNode(sibling);
     if(direction < 0) return parent;
     node = parent;
@@ -4832,7 +4868,11 @@ document.addEventListener('keydown', e => {
     clearTimeout(searchTimer);
     expansionGeneration++;
     searchGeneration++;
-    if(searchCount.textContent === '搜索中…') setSearchCount('已取消');
+    if(searchCount.textContent === '搜索中…'){
+      clearTimeout(searchTimer);
+      clearSearchHighlights();
+      setSearchCount('已取消');
+    }
     if(selectedLoad === runningLoad && runningLoad) cancelFileLoad(runningLoad);
     else if(!runningLoad) activeLoad?.abort();
     closeMenu();
@@ -5034,19 +5074,26 @@ function queueSearch(e){
   quickSearchInput.value = searchInput.value;
   searchGeneration++; focusGeneration++;
   matches = []; nextMatchBtn.disabled = true; prevMatchBtn.disabled = true; setSearchError('');
-  quickNextMatchBtn.disabled = true;
+  lastSearchSignature = null;
   clearTimeout(searchTimer);
-  if(e?.isComposing) return;
+  if(e?.isComposing){ setSearchCount('输入中…'); return; }
+  if(!searchInput.value){ void searchTree(''); return; }
+  setSearchCount('搜索中…');
   searchTimer = setTimeout(() => searchTree(searchInput.value), 160);
 }
 searchInput.addEventListener('input', queueSearch);
 searchInput.addEventListener('compositionend', () => queueSearch());
 
-async function searchTree(query){
+function clearSearchHighlights(){
   document.getElementById('ideLines').querySelectorAll('.current-match').forEach(n => n.classList.remove('current-match'));
+  tree.querySelectorAll('.match,.current-match').forEach(n => n.classList.remove('match','current-match'));
+}
+
+async function searchTree(query){
   quickSearchInput.value = query;
   const generation = ++searchGeneration;
-  tree.querySelectorAll('.match,.current-match').forEach(n => n.classList.remove('match','current-match'));
+  focusGeneration++;
+  lastSearchSignature = null;
   matches = [];
   currentMatchIndex = -1;
   nextMatchBtn.disabled = true;
@@ -5054,13 +5101,13 @@ async function searchTree(query){
   setSearchError('');
   searchTruncated = false; searchCount.title = ''; quickSearchCount.title = '';
   const q = query;
-  if(!q){ setSearchCount(''); return; }
+  if(!q){ clearSearchHighlights(); setSearchCount(''); return; }
   try { compileSearch(q, searchOptions); }
-  catch(error){ setSearchCount('表达式无效'); setSearchError(error.message); return; }
+  catch(error){ clearSearchHighlights(); setSearchCount('表达式无效'); setSearchError(error.message); return; }
   setSearchCount('搜索中…');
   const temporarySource = ideActive ? new MemoryDataSource((activeDoc()?.ideDraft ?? activeDoc()?.text ?? '').split(/\r?\n/)) : null;
   const source = temporarySource || activeDoc()?.source;
-  if(!source || !activeDoc() || activeDoc().error){ temporarySource?.dispose(); setSearchCount('0'); return; }
+  if(!source || !activeDoc() || activeDoc().error){ temporarySource?.dispose(); clearSearchHighlights(); setSearchCount('0'); return; }
   let result;
   try{ result = await source.search(q, {
     rootLabel: currentRootLabel, indexBase: settings.indexBase, hidden: ideActive || activeDoc()?.design ? new Set() : getHiddenSet(),
@@ -5068,10 +5115,11 @@ async function searchTree(query){
     ...(ideActive ? {textLines:true, scopePath:null} : {}),
     cancelled: () => generation !== searchGeneration
   }); }catch(error){
-    if(generation === searchGeneration){ setSearchCount('搜索失败'); setSearchError(error.message); }
+    if(generation === searchGeneration){ clearSearchHighlights(); setSearchCount('搜索失败'); setSearchError(error.message); }
     return;
   }finally{ temporarySource?.dispose(); }
   if(!result || generation !== searchGeneration) return;
+  clearSearchHighlights();
   matches = result.hits;
   searchTruncated = result.truncated;
   lastSearchSignature = JSON.stringify([query, searchOptions]);
@@ -5335,6 +5383,7 @@ function initializeShortcutHints(){
     resetViewBtn:['resetView','重置视图'], aboutBtn:['about','关于 JSON Atlas']
   };
   for(const [id,[action,label]] of Object.entries(buttons)) document.getElementById(id).title = `${label}（${shortcutText(action)}）`;
+  document.getElementById('redoEditBtn').title += '。撤销后可以重做，继续编辑会清除重做记录。';
   const help = document.getElementById('shortcutHelp');
   help.replaceChildren();
   for(const [action,label] of Object.entries({newDocument:'新建空白文档',open:'打开文件',save:'保存',saveCopy:'另存为副本',close:'关闭当前文件',undo:'撤销修改',redo:'重做修改',copyNode:'复制选中节点内容',find:'查找',nextMatch:'下一个匹配',previousMatch:'上一个匹配',format:'格式化文档',settings:'打开设置',switchView:'切换树形 / IDE 视图',editMode:'切换树形编辑模式',designMode:'切换设计模式',resetView:'重置视图 / IDE 字号',about:'关于 JSON Atlas',expandAll:'展开全部 / 当前页',collapseAll:'全部收起',nextFile:'下一个文件',previousFile:'上一个文件'})){

@@ -822,6 +822,7 @@ impl Indexed {
         // Only invalid JSON may fall back to JSONL. Disk failures are fatal.
         self.syntax_failed = parsed.is_err() && !s.io_failed;
         parsed?;
+        progress(s.pos);
         s.buffer.flush(s.index)?;
         let nodes = s.nodes;
         self.build_children(0, nodes, cancel)?;

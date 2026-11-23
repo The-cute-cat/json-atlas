@@ -76,7 +76,7 @@ export class MemoryDataSource {
           worker.terminate(); error ? reject(error) : resolve(result);
         };
         const abort = () => finish(null, null);
-        const armTimeout = () => { clearTimeout(timeout); timeout = setTimeout(() => finish(new Error('正则匹配耗时过长，请简化表达式后重试')), 5000); };
+        const armTimeout = () => { clearTimeout(timeout); timeout = setTimeout(() => finish(new Error('正则匹配耗时过长，请简化表达式或缩小搜索范围后重试')), 5000); };
         options.signal?.addEventListener('abort', abort, { once: true });
         interval = setInterval(() => { if (this.#closed || cancelled() || options.signal?.aborted) abort(); }, 40);
         armTimeout();
