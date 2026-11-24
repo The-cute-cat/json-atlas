@@ -38,7 +38,7 @@
 
 在线版首次打开需加载站点资源，文件内容在浏览器中处理。试用页可另存为单个 HTML 离线运行；浏览器限制可能影响后台任务。大文件建议使用桌面版，首次索引耗时取决于数据与设备。
 
-当前代码版本 **0.5.0-beta.1**。已发布版本以 [Releases](https://github.com/The-cute-cat/json-atlas/releases) 为准。改动见 [更新记录](../CHANGELOG.md)，开发与构建说明见 [贡献指南](../CONTRIBUTING.md)。
+当前代码版本 **0.5.0-beta.2**。已发布版本以 [Releases](https://github.com/The-cute-cat/json-atlas/releases) 为准。改动见 [更新记录](../CHANGELOG.md)，开发与构建说明见 [贡献指南](../CONTRIBUTING.md)。
 
 ## 下载与安装
 

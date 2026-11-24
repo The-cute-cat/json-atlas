@@ -113,7 +113,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --release --locked indexed::benc
 在 PowerShell 中可执行版本一致性检查：
 
 ```powershell
-$env:RELEASE_TAG = 'v0.5.0-beta.1'
+$env:RELEASE_TAG = 'v0.5.0-beta.2'
 node scripts/check-release.js
 ```
 

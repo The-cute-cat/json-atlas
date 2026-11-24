@@ -14,7 +14,7 @@ JSON Atlas is a free, open-source reader and editor for local JSON, JSONL, and N
 
 ![A sample API response on the JSON Atlas tree canvas](assets/screenshots/hero.png)
 
-Current code version **0.5.0-beta.1**. Published builds are listed on [Releases](https://github.com/The-cute-cat/json-atlas/releases); changes are tracked in the [changelog](CHANGELOG.md) and build instructions in the [contribution guide](CONTRIBUTING.md).
+Current code version **0.5.0-beta.2**. Published builds are listed on [Releases](https://github.com/The-cute-cat/json-atlas/releases); changes are tracked in the [changelog](CHANGELOG.md) and build instructions in the [contribution guide](CONTRIBUTING.md).
 
 On first launch, the interface uses the first supported language in your preferred language list. English and Simplified Chinese are supported, with English as the fallback. To change the saved choice, use **Settings → Appearance and view → Interface language** (`设置 → 外观与视图 → 界面语言`), then reopen the app or refresh the page.
 
