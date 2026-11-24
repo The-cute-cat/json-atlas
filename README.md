@@ -2,7 +2,7 @@
 
 [English](README.md) · [简体中文](docs/README.zh-CN.md) · [日本語](docs/README.ja.md) · [Español](docs/README.es.md) · [Français](docs/README.fr.md)
 
-**Explore JSON and JSONL one level at a time on an interactive tree canvas.**
+**Open just the JSON branches you want to read.**
 
 JSON Atlas is a free, open-source reader and editor for local JSON, JSONL, and NDJSON files. Expand nested data, find fields by key or value, and edit the source in the IDE view. The app parses, indexes, and searches file contents locally; nothing is uploaded.
 
@@ -16,7 +16,11 @@ JSON Atlas is a free, open-source reader and editor for local JSON, JSONL, and N
 
 Current code version **0.5.0-beta.1**. Published builds are listed on [Releases](https://github.com/The-cute-cat/json-atlas/releases); changes are tracked in the [changelog](CHANGELOG.md) and build instructions in the [contribution guide](CONTRIBUTING.md).
 
-The interface is currently in Simplified Chinese. This guide includes the Chinese labels for key commands and settings.
+On first launch, the interface uses the first supported language in your preferred language list. English and Simplified Chinese are supported, with English as the fallback. To change the saved choice, use **Settings → Appearance and view → Interface language** (`设置 → 外观与视图 → 界面语言`), then reopen the app or refresh the page.
+
+### Why I built it
+
+I often opened a JSON file looking for one field and found branches I didn't need taking up most of the screen. The deeper the nesting, the harder it was to follow the branch I cared about. I built JSON Atlas so I could open that branch one level at a time and leave the rest collapsed.
 
 ### What it's for
 
@@ -126,7 +130,7 @@ Select a tree node card and press Ctrl/⌘+C to copy its content, same as the ri
 
 Right-click *Copy path* copies the node's full JSON path, for example `$.records[0].metadata`, using bracket notation for special field names. Click a node's arrow to expand one level.
 
-Right-click *Hide node* adds that path to the template's hide rules. Rules match by structure across files, and array items share one path rule. Restore them one by one in **Settings → Templates and backup** (`设置 → 模板与备份`). Hiding affects only the tree view and its search, not the file content. **Settings → Keyboard and menus → Context menu** (`设置 → 键盘与菜单 → 右键菜单`) adjusts which items appear and their order.
+Right-click a node and choose **Temporarily hide node** to hide its path in the current file's tree view and search. Array items share one path rule. To restore a path, right-click the blank canvas and choose **Manage hidden rules**. Temporary rules clear when you close the file. Use the template editor to save rules that apply across files. **Settings → Keyboard and menus → Context menu** (`设置 → 键盘与菜单 → 右键菜单`) adjusts which items appear and their order.
 
 From **More → Template editor**, check the fields to show on the current canvas; search finds fields by key. Arrays show only the first item's structure. **Apply template** saves visibility rules; **Exit template editor** discards changes and returns to reading.
 

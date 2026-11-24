@@ -1,19 +1,20 @@
+import { msg, t } from './i18n.js';
 import { needsIndex } from './large-files.js';
 
 export const normalizeViewMode = value => ['tree', 'auto', 'ide'].includes(value) ? value : 'tree';
 
 export function parseIdeText(text, kind) {
   const parse = value => JSON.parse(value, (_key, item) => {
-    if(typeof item === 'number' && !Number.isFinite(item)) throw new Error('数字超出可表示范围');
+    if(typeof item === 'number' && !Number.isFinite(item)) throw new Error(t('数字超出可表示范围'));
     return item;
   });
   if(kind !== 'jsonl') return {parsed:parse(text.replace(/^\uFEFF/, ''))};
   const records = [], lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
   lines.forEach((line, i) => {
     if(!line.trim()) return;
-    try { records.push(parse(line)); } catch(error) { throw new Error(`第 ${i + 1} 行：${error.message}`); }
+    try { records.push(parse(line)); } catch(error) { throw new Error(msg`第 ${i + 1} 行：${error.message}`); }
   });
-  if(!records.length) throw new Error('JSONL 至少需要一条记录');
+  if(!records.length) throw new Error(t('JSONL 至少需要一条记录'));
   return {records, bad:[], totalLines:lines.length};
 }
 export function formatIdeText(text, kind) {
@@ -132,8 +133,8 @@ export function renderIde(container, lines, document, onFold) {
     const decoration = line.decoration || decorations[i];
     if(onFold && decoration.foldEnd !== undefined) {
       const arrow = document.createElement('button'); arrow.className = 'ide-fold'; arrow.type = 'button';
-      const label = line.folded ? '展开结构' : '折叠结构';
-      arrow.setAttribute('aria-label', `${label}，第 ${original + 1} 行`);
+      const label = line.folded ? t('展开结构') : t('折叠结构');
+      arrow.setAttribute('aria-label', msg`${label}，第 ${original + 1} 行`);
       arrow.setAttribute('aria-expanded', String(!line.folded));
       arrow.addEventListener('click', () => onFold(original)); number.appendChild(arrow);
     }

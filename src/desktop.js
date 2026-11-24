@@ -1,6 +1,7 @@
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { getLanguage, translateNativeError } from './i18n.js';
 import { IndexedDataSource } from './large-files.js';
 
 export const desktop = isTauri();
@@ -15,15 +16,32 @@ export function updateWindowTheme(theme, resolved) {
   }).catch(console.error);
 }
 let menuUpdate = Promise.resolve();
+let menuLanguageSet = false;
 export function updateDocumentMenu(items) {
   if(!desktop) return;
-  menuUpdate = menuUpdate.then(() => invoke('sync_document_menu', { items })).catch(console.error);
+  menuUpdate = menuUpdate.then(async () => {
+    if (!menuLanguageSet && getLanguage() === 'en') {
+      try {
+        await invoke('use_english_menu');
+        menuLanguageSet = true;
+      } catch (error) {
+        console.error(error);
+      }
+    }
+    await invoke('sync_document_menu', { items });
+  }).catch(console.error);
 }
-export const readNativeFile = (path, maxBytes) => invoke('read_document', { path, maxBytes });
-export const selectNativeFiles = () => invoke('select_documents');
+function invokeDocument(command, args) {
+  return invoke(command, args).catch(error => {
+    const original = error instanceof Error ? error.message : String(error);
+    throw new Error(translateNativeError(original), { cause: error });
+  });
+}
+export const readNativeFile = (path, maxBytes) => invokeDocument('read_document', { path, maxBytes });
+export const selectNativeFiles = () => invokeDocument('select_documents');
 export const openReleasePage = () => invoke('open_release_page');
-export const saveDocumentCopy = (name, text, originalPath, protectedPaths = []) => invoke('save_document_copy', { name, text, originalPath, protectedPaths });
-export const saveNativeDocument = (path, text, expectedText) => invoke('save_document', { path, text, expectedText });
+export const saveDocumentCopy = (name, text, originalPath, protectedPaths = []) => invokeDocument('save_document_copy', { name, text, originalPath, protectedPaths });
+export const saveNativeDocument = (path, text, expectedText) => invokeDocument('save_document', { path, text, expectedText });
 export async function guardEditedClose(hasChanges, confirmDiscard, saveSession) {
   await getCurrentWebviewWindow().onCloseRequested(async event => {
     saveSession();
@@ -32,8 +50,7 @@ export async function guardEditedClose(hasChanges, confirmDiscard, saveSession) 
     if (await confirmDiscard()) await getCurrentWebviewWindow().destroy();
   });
 }
-const indexRequest = (op, id, args = {}, path = null) => invoke('indexed_document', { op, id, args, path })
-  .catch(error => { throw error instanceof Error ? error : new Error(String(error)); });
+const indexRequest = (op, id, args = {}, path = null) => invokeDocument('indexed_document', { op, id, args, path });
 // Unlike randomUUID, getRandomValues is available even on a custom WebView scheme.
 const indexId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
   byte => byte.toString(16).padStart(2, '0')).join('');

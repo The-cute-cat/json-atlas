@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { normalizeThreshold, needsIndex, IndexedDataSource } from '../src/large-files.js';
 import { MemoryDataSource } from '../src/data-source.js';
 import { PageCache } from '../src/page-cache.js';
+import { setLanguage } from '../src/i18n.js';
+
+test.before(() => setLanguage('zh-CN'));
 
 function nativeFixture() {
   const calls = [], pending = [];

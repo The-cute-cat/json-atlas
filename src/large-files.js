@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 import { PAGE_SIZE, encodeDataPath, normalizeDataPath } from './data.js';
 import { sharedPageCache } from './page-cache.js';
 import { compileSearch, pathInside } from './search-pattern.js';
@@ -25,7 +26,7 @@ export class IndexedDataSource {
   }
   #check(signal) {
     signal?.throwIfAborted();
-    if (this.#closed) throw new Error('文档已关闭');
+    if (this.#closed) throw new Error(t('文档已关闭'));
   }
   matches(value) { return !this.#closed && value === this; }
   getRoot() { this.#check(); return this.#root; }
@@ -46,12 +47,12 @@ export class IndexedDataSource {
   #group(path, limit, firstArrayOnly) { return JSON.stringify([this.wrap, path, limit, firstArrayOnly]); }
   #checkVersion(version, signal) {
     this.#check(signal);
-    if (version !== this.#version) throw new DOMException('文档视图已改变', 'AbortError');
+    if (version !== this.#version) throw new DOMException(t('文档视图已改变'), 'AbortError');
   }
   async getChildren(path, { offset = 0, key, limit = PAGE_SIZE, firstArrayOnly = false, signal, cache = true } = {}) {
     this.#check(signal);
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > PAGE_SIZE) {
-      throw new Error('无效的分页参数');
+      throw new Error(t('无效的分页参数'));
     }
     const version = this.#version, group = this.#group(path, limit, firstArrayOnly);
     const cached = cache && this.#cache.lookup(this.#owner, group, { offset: Math.floor(offset / limit) * limit, key });
@@ -172,7 +173,7 @@ export class IndexedDataSource {
             const pages = await this.#call('searchPages', { paths: candidates.map(node => node.path) }, signal);
             this.#checkVersion(version, signal);
             if (cancelled()) return null;
-            if (!Array.isArray(pages) || pages.length !== candidates.length) throw new Error('搜索批次无效');
+            if (!Array.isArray(pages) || pages.length !== candidates.length) throw new Error(t('搜索批次无效'));
             // Replace speculative results: nested trees cannot grow this cache.
             batches.clear();
             for (let i = 1; i < pages.length; i++) batches.set(JSON.stringify(candidates[i].path), pages[i]);

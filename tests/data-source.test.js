@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MemoryDataSource } from '../src/data-source.js';
+import { setLanguage } from '../src/i18n.js';
+
+test.before(() => setLanguage('zh-CN'));
 
 test('regex worker receives only cloneable search options and stops on cancellation or dispose', async () => {
   const original = globalThis.Worker, workers = [];

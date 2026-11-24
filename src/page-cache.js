@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 // This is a retained-data estimate, not a measurement of the JS engine heap.
 export function estimatePageBytes(page) {
   let bytes = 0;
@@ -19,7 +20,7 @@ export function estimatePageBytes(page) {
 export class PageCache {
   #entries = new Map(); #bytes = 0;
   constructor({ budget = 32 * 1024 * 1024, maxEntries = 512 } = {}) {
-    if (!Number.isSafeInteger(budget) || budget < 0 || !Number.isSafeInteger(maxEntries) || maxEntries < 0) throw new Error('无效的缓存预算');
+    if (!Number.isSafeInteger(budget) || budget < 0 || !Number.isSafeInteger(maxEntries) || maxEntries < 0) throw new Error(t('无效的缓存预算'));
     this.budget = budget; this.maxEntries = maxEntries;
   }
   get stats() {

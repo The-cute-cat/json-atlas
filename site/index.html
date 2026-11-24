@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>JSON Atlas · 看清 JSON 的每一层</title>
-  <meta name="description" content="在树形画布中查找、编辑和设计 JSON，按页阅读大型 JSON 与 JSONL。支持多文件会话恢复和内存管理，文件在本机处理。" />
+  <title>JSON Atlas · 只展开你想看的分支</title>
+  <meta name="description" content="在树形画布中只展开你想看的 JSON 分支，其余内容保持收起。支持按分支搜索、按页阅读大型 JSON 和 JSONL，文件在本机处理。" />
   <meta name="theme-color" content="#f7f8fa" />
   <link rel="icon" href="assets/app-icon.png" />
   <link rel="canonical" href="https://the-cute-cat.github.io/json-atlas/" />
   <meta property="og:type" content="website" />
   <meta property="og:locale" content="zh_CN" />
   <meta property="og:url" content="https://the-cute-cat.github.io/json-atlas/" />
-  <meta property="og:title" content="JSON Atlas · 看清 JSON 的每一层" />
-  <meta property="og:description" content="展开并搜索 JSON 与 JSONL，在画布中设计结构，或切换到 IDE 编辑。桌面版支持磁盘索引和多文件会话恢复。" />
+  <meta property="og:title" content="JSON Atlas · 只展开你想看的分支" />
+  <meta property="og:description" content="嵌套再深，也可以沿着关心的分支逐层往下读。在树形画布中展开、收起和搜索 JSON 与 JSONL。" />
   <meta property="og:image" content="https://the-cute-cat.github.io/json-atlas/assets/screenshots/hero.png" />
   <meta property="og:image:alt" content="JSON Atlas 的树形画布与字段搜索界面" />
   <meta name="twitter:card" content="summary_large_image" />
@@ -31,14 +31,14 @@
     <section class="hero wrap">
       <div class="hero-copy">
         <p class="eyebrow"><span class="dot"></span> 本地 JSON / JSONL 阅读与编辑</p>
-        <h1>看清 JSON 的<br /><span>每一层。</span></h1>
-        <p class="lede">把接口响应、配置和逐行记录展开成树，按键名或值定位字段。需要调整结构时，在画布中设计 JSON，或切换到 IDE 编辑原文。</p>
+        <h1>只展开你想看的<br /><span>JSON 分支。</span></h1>
+        <p class="lede">嵌套一深，暂时用不上的分支就占满了屏幕，想看的字段反而难找。用树形画布沿着关心的分支逐层往下读，其余分支可以一直收着。</p>
         <div class="actions"><a class="button primary" href="app.html">在浏览器中试用 <span aria-hidden="true">→</span></a><a class="button secondary" href="#editions">下载 Windows 版</a></div>
         <p class="hero-note">免费开源 · 无需账号 · 文件在本机解析</p>
       </div>
       <aside class="outline" aria-label="阅读流程">
         <div class="outline-head"><span class="code">{ }</span><span>从结构到内容</span></div>
-        <ol><li><span>01</span><div><strong>展开结构</strong><p>保留上下文，逐层查看对象和数组</p></div></li><li><span>02</span><div><strong>定位字段</strong><p>搜索键名或值，跳到对应节点</p></div></li><li><span>03</span><div><strong>阅读与修改</strong><p>在画布中添加主题，或切换到 IDE 编辑</p></div></li></ol>
+        <ol><li><span>01</span><div><strong>按分支展开</strong><p>沿着关心的路径查看对象和数组</p></div></li><li><span>02</span><div><strong>定位字段</strong><p>搜索键名或值，跳到对应节点</p></div></li><li><span>03</span><div><strong>阅读与修改</strong><p>在画布中添加主题，或切换到 IDE 编辑</p></div></li></ol>
         <a href="app.html">打开试用版，选择一个本地文件 <span aria-hidden="true">↗</span></a>
       </aside>
     </section>
@@ -49,7 +49,7 @@
     <section id="workflow" class="section wrap">
       <div class="section-heading"><h2>阅读、查找与编辑</h2></div>
       <div class="features">
-        <article><h3>逐层阅读对象与数组</h3><p>在画布上平移、缩放和展开节点，也能读取字符串中嵌入的 JSON。隐藏规则可在设置中按文件名或路径搜索，也能在当前画布中临时屏蔽匹配的规则。</p></article>
+        <article><h3>展开关心的分支</h3><p>每次展开一层，父节点留在画布上，方便看清字段属于哪个对象或数组。遇到反复干扰阅读的字段，可以用隐藏规则从树形视图中隐藏它。</p></article>
         <article><h3>按键名或值查找</h3><p>搜索键名或值，支持大小写、全词和常用正则。可限定到选中分支，命中后定位到节点并查看路径。</p></article>
         <article><h3>设计结构，编辑原文</h3><p>新建空白 JSON，或对符合大小限制的 JSON 启用设计模式，在画布中添加、重命名或删除主题。IDE 支持高亮、折叠和格式化。当前开发版提供重做及最多 50 步撤销。</p></article>
       </div>

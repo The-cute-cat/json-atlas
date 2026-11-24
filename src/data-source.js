@@ -1,3 +1,4 @@
+import { getLanguage, t } from './i18n.js';
 import { MAX_RENDERED_CHILDREN, PAGE_SIZE, searchData } from './data.js';
 
 /** Opening supplies root metadata; pages, text and search can require I/O.
@@ -12,13 +13,13 @@ export class MemoryDataSource {
   matches(value) { return !this.#closed && Object.is(this.#value, value); }
   #check(signal) {
     signal?.throwIfAborted();
-    if (this.#closed) throw new Error('文档已关闭');
+    if (this.#closed) throw new Error(t('文档已关闭'));
   }
   #at(path) {
     this.#check();
     let value = this.#value;
     for (const key of path) {
-      if (value === null || typeof value !== 'object' || !Object.hasOwn(value, key)) throw new Error('节点不存在');
+      if (value === null || typeof value !== 'object' || !Object.hasOwn(value, key)) throw new Error(t('节点不存在'));
       value = value[key];
     }
     return value;
@@ -37,7 +38,7 @@ export class MemoryDataSource {
   getRoot() { this.#check(); return this.#describe(this.#value, []); }
   async getChildren(path, { offset = 0, key, limit = PAGE_SIZE, firstArrayOnly = false, signal } = {}) {
     this.#check(signal);
-    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_RENDERED_CHILDREN) throw new Error('无效的分页参数');
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_RENDERED_CHILDREN) throw new Error(t('无效的分页参数'));
     const value = this.#at(path);
     const array = Array.isArray(value);
     const keys = value !== null && typeof value === 'object' && !array ? this.#objectKeys(value) : [];
@@ -45,7 +46,7 @@ export class MemoryDataSource {
     let index = offset;
     if (key !== undefined) {
       index = array ? key : keys.indexOf(String(key));
-      if (!Number.isSafeInteger(index) || index < 0 || index >= total) throw new Error('节点不存在');
+      if (!Number.isSafeInteger(index) || index < 0 || index >= total) throw new Error(t('节点不存在'));
     }
     const start = Math.floor(Math.max(0, Math.min(index, Math.max(0, total - 1))) / limit) * limit;
     const end = Math.min(start + limit, total);
@@ -76,15 +77,15 @@ export class MemoryDataSource {
           worker.terminate(); error ? reject(error) : resolve(result);
         };
         const abort = () => finish(null, null);
-        const armTimeout = () => { clearTimeout(timeout); timeout = setTimeout(() => finish(new Error('正则匹配耗时过长，请简化表达式或缩小搜索范围后重试')), 5000); };
+        const armTimeout = () => { clearTimeout(timeout); timeout = setTimeout(() => finish(new Error(t('正则匹配耗时过长，请简化表达式或缩小搜索范围后重试'))), 5000); };
         options.signal?.addEventListener('abort', abort, { once: true });
         interval = setInterval(() => { if (this.#closed || cancelled() || options.signal?.aborted) abort(); }, 40);
         armTimeout();
         worker.onmessage = ({ data }) => this.#closed || cancelled() || options.signal?.aborted
           ? finish(null, null) : data.progress ? armTimeout() : finish(data.error ? new Error(data.error) : null, data.result);
-        worker.onerror = event => finish(new Error(event.message || '后台搜索失败'));
+        worker.onerror = event => finish(new Error(event.message || t('后台搜索失败')));
         const { rootLabel, indexBase, hidden, caseSensitive, wholeWord, regex, limit, scopePath, textLines } = options;
-        try { worker.postMessage({ value: this.#value, query, options: { rootLabel, indexBase, hidden, caseSensitive, wholeWord, regex, limit, scopePath, textLines } }); }
+        try { worker.postMessage({ value: this.#value, query, language: getLanguage(), options: { rootLabel, indexBase, hidden, caseSensitive, wholeWord, regex, limit, scopePath, textLines } }); }
         catch (error) { finish(error); }
       });
     }

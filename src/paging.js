@@ -1,3 +1,4 @@
+import { msg, t } from './i18n.js';
 import { MAX_RENDERED_CHILDREN, PAGE_SIZE } from './data.js';
 
 export function pageRange(length, index = 0) {
@@ -45,7 +46,7 @@ export function pagedChildren(node, container, source, path, render, changed, fi
     if (mountedStart < 0) {
       const loading = document.createElement('div');
       loading.className = 'page-navigation';
-      loading.textContent = '正在加载…';
+      loading.textContent = t('正在加载…');
       container.replaceChildren(loading);
     }
     pending = Promise.resolve().then(async () => {
@@ -76,10 +77,10 @@ export function pagedChildren(node, container, source, path, render, changed, fi
           const {start, end, total} = page;
           const navigation = document.createElement('div');
           navigation.className = 'page-navigation';
-          const previous = navButton('上一页', start === 0, start - limit);
+          const previous = navButton(t('上一页'), start === 0, start - limit);
           const label = document.createElement('span');
           label.textContent = `${start + 1}–${end} / ${total}`;
-          const next = navButton('加载更多', end >= total, end);
+          const next = navButton(t('加载更多'), end >= total, end);
           navigation.append(previous, label, next);
           children.push(navigation);
         }
@@ -101,16 +102,16 @@ export function pagedChildren(node, container, source, path, render, changed, fi
         if (mountedStart < 0) {
           const message = document.createElement('div');
           message.className = 'page-navigation';
-          message.textContent = '加载失败：' + node._pageError;
+          message.textContent = t('加载失败：') + node._pageError;
           const retry = document.createElement('button');
-          retry.textContent = '重试';
+          retry.textContent = t('重试');
           retry.onclick = e => { e.stopPropagation(); show(key, offset); };
           message.appendChild(retry);
           container.replaceChildren(message);
         } else {
           const navigation = container.children[container.children.length - 1];
           if (navigation?.className === 'page-navigation') {
-            navigation.children[1].textContent = '加载失败，可再次翻页重试';
+            navigation.children[1].textContent = t('加载失败，可再次翻页重试');
           }
         }
         changed();
@@ -135,8 +136,8 @@ export function pagedChildren(node, container, source, path, render, changed, fi
       if (!run.length) return;
       const key = run[0]._pageKey;
       const hint = document.createElement('div'); hint.className = 'trimmed-range';
-      const label = document.createElement('span'); label.textContent = `已精简 ${run.length} 项远处内容`;
-      const restore = document.createElement('button'); restore.type = 'button'; restore.textContent = '查看此处';
+      const label = document.createElement('span'); label.textContent = msg`已精简 ${run.length} 项远处内容`;
+      const restore = document.createElement('button'); restore.type = 'button'; restore.textContent = t('查看此处');
       restore.onclick = e => { e.stopPropagation(); show(key); };
       hint.append(label, restore); kept.push(hint);
       for (const child of run) discardPagedTree(child);

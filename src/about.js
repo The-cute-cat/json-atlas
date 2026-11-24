@@ -1,3 +1,4 @@
+import { msg, t } from './i18n.js';
 import manifest from '../package.json';
 import licenseText from '../LICENSE?raw';
 
@@ -5,7 +6,7 @@ const dialog = document.getElementById('aboutDialog');
 const status = document.getElementById('aboutStatus');
 const projectUrl = 'https://github.com/The-cute-cat/json-atlas';
 
-document.getElementById('aboutVersion').textContent = `版本 ${manifest.version}`;
+document.getElementById('aboutVersion').textContent = msg`版本 ${manifest.version}`;
 document.getElementById('aboutLicenseText').textContent = licenseText;
 
 export function openAbout() {
@@ -31,8 +32,8 @@ dialog.addEventListener('click', event => {
 document.getElementById('aboutCopyProject').addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(projectUrl);
-    status.textContent = '项目地址已复制';
+    status.textContent = t('项目地址已复制');
   } catch {
-    status.textContent = '未能复制，请选择上方项目地址手动复制';
+    status.textContent = t('未能复制，请选择上方项目地址手动复制');
   }
 });

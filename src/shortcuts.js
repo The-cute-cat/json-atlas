@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 export function isMacPlatform(platform = globalThis.navigator) {
   return /mac|iphone|ipad|ipod/i.test(platform?.userAgentData?.platform || platform?.platform || platform?.userAgent || '');
 }
@@ -27,7 +28,7 @@ const keysFor = (action, mac) => (mac && macBindings[action]) || bindings[action
 
 export function shortcutLabel(action, mac = isMacPlatform()) {
   const names = { Mod: mac ? '⌘' : 'Ctrl', Meta: '⌘', Ctrl: 'Ctrl', Alt: mac ? '⌥' : 'Alt',
-    ArrowRight: '→', ArrowLeft: '←', NumpadAdd: '小键盘 +', NumpadSubtract: '小键盘 −' };
+    ArrowRight: '→', ArrowLeft: '←', NumpadAdd: t('小键盘 +'), NumpadSubtract: t('小键盘 −') };
   return keysFor(action, mac).map(key => names[key] || key).join('+');
 }
 

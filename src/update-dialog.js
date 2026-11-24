@@ -1,3 +1,4 @@
+import { msg, t } from './i18n.js';
 import manifest from '../package.json';
 import { desktop, openReleasePage } from './desktop.js';
 import { checkLatestRelease } from './releases.js';
@@ -59,11 +60,11 @@ if (desktop) {
       if (!automatic.checked || !version || version === dismissed) return;
       noticeVersion = version;
       notice.hidden = false;
-      message.textContent = `发现新版本 v${version}`;
+      message.textContent = msg`发现新版本 v${version}`;
     } catch { /* Background checks stay silent when GitHub is unavailable. */ }
   }
 
-  document.getElementById('updateVersion').textContent = `当前版本 ${manifest.version}`;
+  document.getElementById('updateVersion').textContent = msg`当前版本 ${manifest.version}`;
   automatic.checked = updatePreference(autoCheckKey) !== 'false';
   automatic.addEventListener('change', () => {
     updatePreference(autoCheckKey, String(automatic.checked));
@@ -73,23 +74,23 @@ if (desktop) {
   check.addEventListener('click', async () => {
     check.disabled = true;
     releaseButton.hidden = true;
-    result.textContent = '正在检查 GitHub Releases…';
+    result.textContent = t('正在检查 GitHub Releases…');
     try {
       const version = await fetchUpdate();
       recordCheck();
-      result.textContent = version ? `发现新版本 v${version}` : '没有可用的新版本';
+      result.textContent = version ? msg`发现新版本 v${version}` : t('没有可用的新版本');
       releaseButton.hidden = !version;
     } catch {
-      result.textContent = '无法检查更新，请稍后重试';
+      result.textContent = t('无法检查更新，请稍后重试');
     } finally {
       check.disabled = false;
     }
   });
   releaseButton.addEventListener('click', () => {
-    openReleasePage().catch(() => { result.textContent = '无法打开浏览器，请访问项目的 GitHub Releases 页面'; });
+    openReleasePage().catch(() => { result.textContent = t('无法打开浏览器，请访问项目的 GitHub Releases 页面'); });
   });
   document.getElementById('updateNoticeOpen').addEventListener('click', () => {
-    openReleasePage().then(dismissNotice).catch(() => { message.textContent = '无法打开浏览器'; });
+    openReleasePage().then(dismissNotice).catch(() => { message.textContent = t('无法打开浏览器'); });
   });
   document.getElementById('updateNoticeDismiss').addEventListener('click', dismissNotice);
   setTimeout(checkAutomatically, 2500);

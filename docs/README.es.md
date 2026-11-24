@@ -14,7 +14,7 @@ JSON Atlas es una aplicación gratuita y de código abierto para leer y editar a
 
 Para Windows 10 y 11 de 64 bits, elige el instalador EXE o MSI. Se requiere Microsoft Edge WebView2. También hay un paquete portátil y una versión para el navegador. La versión de un solo archivo HTML funciona sin conexión. Consulta la [guía de instalación](../README.md#install) para ver los detalles de Windows y de la versión preliminar para equipos Apple Silicon con macOS 15 o posterior.
 
-La interfaz está actualmente en chino simplificado. En la aplicación de escritorio, abre la configuración desde **Ver → Configuración** (`查看 → 设置…`). Usa **Archivo → Guardar** (`文件 → 保存`) o **Guardar como** (`另存为…`) y **Ver → Buscar** (`查看 → 查找…`).
+En el primer inicio, la aplicación usa el primer idioma compatible de tu lista de preferencias. Admite inglés y chino simplificado. Si no encuentra una coincidencia, usa inglés. Puedes cambiar el idioma en **Settings → Appearance and view → Interface language** (`设置 → 外观与视图 → 界面语言`) y volver a abrir la aplicación o recargar la página. En la aplicación de escritorio, abre la configuración desde **Ver → Configuración** (`查看 → 设置…`). Usa **Archivo → Guardar** (`文件 → 保存`) o **Guardar como** (`另存为…`) y **Ver → Buscar** (`查看 → 查找…`).
 
 ## Primeros pasos
 

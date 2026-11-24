@@ -392,6 +392,7 @@ fn main() {
             save_document_copy,
             save_document,
             window::sync_document_menu,
+            window::use_english_menu,
             menu_theme::sync_menu_theme,
             set_document_title,
             open_release_page

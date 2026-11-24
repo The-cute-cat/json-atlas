@@ -214,7 +214,7 @@
   <button id="ctxExpandSubtree">展开全部下级</button>
   <button id="ctxCollapse">收起该节点（含下级）</button>
   <button id="ctxEditNode">编辑节点…</button>
-  <button id="ctxHideNode">隐藏节点</button>
+  <button id="ctxHideNode">临时隐藏节点</button>
   <button id="ctxViewFull">查看完整内容</button>
   <button id="ctxCopy">复制节点内容</button>
 </div>
@@ -222,7 +222,7 @@
 <dialog id="canvasRulesDialog" class="value-edit-dialog" aria-labelledby="canvasRulesTitle">
   <h2 id="canvasRulesTitle">当前文件的隐藏规则</h2>
   <p id="canvasRulesFile" class="s-hint"></p>
-  <p class="s-hint">规则按路径匹配当前文件。屏蔽后的规则可在这里恢复。</p>
+  <p class="s-hint">临时隐藏只对当前文件有效，关闭文件后自动清除。模板规则可在此为当前文件屏蔽或重新启用。</p>
   <p id="canvasRulesEmpty" class="s-hint" role="status" hidden>当前文件没有匹配的隐藏规则。</p>
   <div class="hidden-rule-group" id="canvasRulesGroup" hidden><ul id="canvasRulesList"></ul></div>
   <div class="edit-actions"><button id="canvasRulesClose" type="button" autofocus>完成</button></div>
@@ -252,6 +252,16 @@
           <h2 class="settings-page-title">外观与视图</h2>
           <section class="settings-group">
             <h3 class="settings-group-title">界面外观</h3>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optLanguage">界面语言</label>
+                <div class="s-hint" id="languageHint">重新打开应用或刷新网页后生效。</div>
+              </div>
+              <select id="optLanguage" aria-describedby="languageHint">
+                <option value="zh-CN" lang="zh-CN">简体中文</option>
+                <option value="en" lang="en">English</option>
+              </select>
+            </div>
             <div class="settings-row"><div><label class="s-label" for="optTheme">外观主题</label><div class="s-hint">白天模式适合明亮环境，夜间模式减少暗处的屏幕亮度。默认跟随系统，系统切换外观时会自动更新。</div></div><select id="optTheme"><option value="system">跟随系统</option><option value="light">白天模式</option><option value="dark">夜间模式</option></select></div>
             <div class="settings-row">
               <div>
@@ -294,6 +304,17 @@
                 <option value="1">1 层</option>
                 <option value="2">2 层</option>
                 <option value="3">3 层</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <div>
+                <label class="s-label" for="optBranchLineAction">点击分支竖线</label>
+                <div class="s-hint" id="branchLineActionHint">在树形画布上点击连接子节点的竖线，可回到这条分支的父节点。</div>
+              </div>
+              <select id="optBranchLineAction" aria-describedby="branchLineActionHint">
+                <option value="off">关闭</option>
+                <option value="jump">跳到父节点</option>
+                <option value="collapse">跳到父节点并收起分支</option>
               </select>
             </div>
             <div class="settings-row"><div><label class="s-label" for="optNodeSelectionStyle">显示节点选中描边</label><div class="s-hint">默认关闭。关闭仅隐藏描边，点击选中节点后仍可按 Ctrl/⌘+C 复制内容。</div></div><label class="switch"><input type="checkbox" id="optNodeSelectionStyle" /><span class="slider"></span></label></div>

@@ -1,3 +1,4 @@
+import { getLanguage, initializeLanguage, msg, normalizeLanguage, saveLanguage, t } from './i18n.js';
 import manifest from '../package.json';
 import { pagedChildren, discardPagedTree } from './paging.js';
 import { MemoryDataSource } from './data-source.js';
@@ -16,6 +17,8 @@ import { openUpdateCheck } from './update-dialog.js';
 import { isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel } from './shortcuts.js';
 import { MAX_FILE_BYTES, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath } from './data.js';
 import { updateDocumentMenu, saveNativeDocument, saveDocumentCopy, guardEditedClose, desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
+
+initializeLanguage(document);
 
 let expansionGeneration = 0;
 let templateEditing = false;
@@ -149,7 +152,7 @@ function renderIdeBuffer(doc){
     .map(token => ({start:{line:line.path[0],column:token.start},end:token.partner,
       colour:Number(token.className.slice(-1)),indent:line.text.match(/^[\t ]*/)[0].replaceAll('\t','  ').length})));
   const status = document.getElementById('ideStatus');
-  status.textContent = doc.ideError ? '语法错误：' + doc.ideError : plain ? '大段文本已暂停高亮' : '';
+  status.textContent = doc.ideError ? t('语法错误：') + doc.ideError : plain ? t('大段文本已暂停高亮') : '';
   status.hidden = !status.textContent;
   status.title = status.textContent; status.classList.toggle('invalid', !!doc.ideError);
   syncIdeScroll();
@@ -176,7 +179,7 @@ function handleIdeInput(text, inputType){
   if(doc.ideFolds?.size && doc.ideProjection){
     const result = ideProjectedEdit((doc.ideDraft ?? doc.text ?? '').replace(/\r\n/g,'\n'), doc.ideProjection, text);
     doc.ideFolds.clear();
-    if(!result){ renderIdeBuffer(doc); showToast('已展开折叠内容，请继续编辑'); return; }
+    if(!result){ renderIdeBuffer(doc); showToast(t('已展开折叠内容，请继续编辑')); return; }
     applyIdeChange(result.text); input.setSelectionRange?.(result.caret, result.caret);
   } else applyIdeChange(text, inputType);
 }
@@ -208,7 +211,7 @@ function applyIdeChange(text, inputType){
 }
 function leaveIde(){
   const doc = activeDoc();
-  if(ideActive && doc?.ideError){ showToast('请先修正 JSON 语法，再切换到树形视图'); return false; }
+  if(ideActive && doc?.ideError){ showToast(t('请先修正 JSON 语法，再切换到树形视图')); return false; }
   return true;
 }
 function formatIde(){
@@ -222,9 +225,9 @@ function formatIde(){
     renderIdeBuffer(doc); input.value = formatted; syncIdeScroll(); input.focus();
   } catch(error){
     const status = document.getElementById('ideStatus');
-    status.textContent = '无法格式化：' + error.message; status.title = status.textContent; status.classList.add('invalid');
+    status.textContent = t('无法格式化：') + error.message; status.title = status.textContent; status.classList.add('invalid');
     status.hidden = false;
-    showToast('无法格式化：' + error.message);
+    showToast(t('无法格式化：') + error.message);
   }
 }
 function syncDocumentMenu(){
@@ -236,17 +239,17 @@ function syncDocumentMenu(){
     ['undo-edit','undoEditBtn'], ['redo-edit','redoEditBtn'], ['save','saveBtn'], ['save-copy','saveCopyBtn'], ['format-json','formatIdeBtn']
   ].map(([id, buttonId]) => {
     const button = document.getElementById(buttonId);
-    if(id === 'save' && templateEditing) return {id, text:'应用模板', enabled:true};
+    if(id === 'save' && templateEditing) return {id, text:t('应用模板'), enabled:true};
     return {id, text:button.textContent, shortcut:actions[id] ? shortcutText(actions[id]) : null,
       enabled:!templateEditing && !!doc && !button.disabled && !(id === 'edit-mode' && ideActive)};
   }).concat([
     {id:'open',enabled:!templateEditing},
     {id:'new-document',enabled:!templateEditing},
-    {id:'close',text:'关闭当前文件',shortcut:shortcutText('close'),enabled:!templateEditing && !!doc},
+    {id:'close',text:t('关闭当前文件'),shortcut:shortcutText('close'),enabled:!templateEditing && !!doc},
     {id:'find',enabled:!!doc},
-    {id:'reset',text:'重置视图',shortcut:shortcutText('resetView'),enabled:!!doc && !doc.error},
-    {id:'settings',text:'设置…',shortcut:shortcutText('settings'),enabled:!templateEditing},
-    {id:'about',text:'关于 JSON Atlas',shortcut:macPlatform ? null : shortcutText('about'),enabled:!templateEditing},
+    {id:'reset',text:t('重置视图'),shortcut:shortcutText('resetView'),enabled:!!doc && !doc.error},
+    {id:'settings',text:t('设置…'),shortcut:shortcutText('settings'),enabled:!templateEditing},
+    {id:'about',text:t('关于 JSON Atlas'),shortcut:macPlatform ? null : shortcutText('about'),enabled:!templateEditing},
     {id:'check-update',enabled:!templateEditing}
   ], macPlatform ? [copyNodeMenuState()] : []));
 }
@@ -292,13 +295,13 @@ function syncDocumentView(doc, {active, canUseIde, large} = documentViewState(do
     updateIdeScope();
   }else if(!ideActive && refreshBuffer){ document.getElementById('ideLines').replaceChildren(); ideLocations = new Map(); document.getElementById('ideStatus').hidden = true; }
   const switcher = document.getElementById('switchViewBtn');
-  switcher.textContent = ideActive ? '树形视图' : 'IDE 视图';
+  switcher.textContent = ideActive ? t('树形视图') : t('IDE 视图');
   switcher.disabled = !ideActive && !canUseIde;
-  switcher.title = switcher.disabled ? (large ? '大文件仅支持树形视图' : '当前文档无法切换到 IDE 视图')
-    : `切换当前文件的查看方式（${shortcutText('switchView')}）`;
+  switcher.title = switcher.disabled ? (large ? t('大文件仅支持树形视图') : t('当前文档无法切换到 IDE 视图'))
+    : msg`切换当前文件的查看方式（${shortcutText('switchView')}）`;
   for(const id of ['expandAllBtn','collapseAllBtn','resetViewBtn','recordTemplateBtn','editorBtn']) document.getElementById(id).hidden = ideActive;
   document.getElementById('editModeBtn').hidden = ideActive || !!doc.design;
-  document.querySelector('.statusbar .help').textContent = ideActive ? `直接编辑 · ${primaryModifier} + ＋ / − 缩放 · ${primaryModifier} + 0 重置 · ${shortcutText('format')} 格式化` : `空白处拖动 · 滚轮平移 · ${primaryModifier} + 滚轮缩放 · 右键节点展开/收起子树`;
+  document.querySelector('.statusbar .help').textContent = ideActive ? msg`直接编辑 · ${primaryModifier} + ＋ / − 缩放 · ${primaryModifier} + 0 重置 · ${shortcutText('format')} 格式化` : msg`空白处拖动 · 滚轮平移 · ${primaryModifier} + 滚轮缩放 · 右键节点展开/收起子树`;
   document.getElementById('formatIdeBtn').disabled = !ideActive;
   searchScopeBtn.disabled = ideActive;
   if(ideActive) setEditMode(false);
@@ -320,7 +323,7 @@ function syncEditing(){
   if(!doc || doc.error || doc.source?.indexed || doc.design) editMode = false;
   viewer.classList.toggle('editing', editMode);
   document.getElementById('editModeBtn').setAttribute('aria-pressed', String(editMode));
-  document.getElementById('editModeBtn').textContent = editMode ? '退出编辑' : '编辑模式';
+  document.getElementById('editModeBtn').textContent = editMode ? t('退出编辑') : t('编辑模式');
   document.getElementById('editModeBtn').disabled = !doc || !!doc.error || !!doc.source?.indexed || !!doc.design;
   document.getElementById('undoEditBtn').disabled = !doc?.editHistory?.length;
   document.getElementById('redoEditBtn').disabled = !doc?.redoHistory?.length;
@@ -334,9 +337,9 @@ function setEditMode(on, notify = false){
   editMode = !!on;
   syncEditing();
   if(!notify) return;
-  if(previous !== editMode) showToast(editMode ? '已进入编辑模式' : '已返回阅读模式');
+  if(previous !== editMode) showToast(editMode ? t('已进入编辑模式') : t('已返回阅读模式'));
   else if(on && !editMode){
-    showToast(activeDoc()?.source?.indexed ? '索引大文件暂只读' : '当前文档无法进入编辑模式');
+    showToast(activeDoc()?.source?.indexed ? t('索引大文件暂只读') : t('当前文档无法进入编辑模式'));
   }
 }
 
@@ -350,7 +353,7 @@ function designLimitBytes(){
 }
 
 function designLimitMessage(){
-  return `设计模式仅支持小于 ${settings.designLimitMiB} MB 的 JSON 文档`;
+  return msg`设计模式仅支持小于 ${settings.designLimitMiB} MB 的 JSON 文档`;
 }
 
 function canDesign(doc){
@@ -395,13 +398,13 @@ function syncDesignControls(){
   const doc = activeDoc(), target = designTarget();
   const visible = !!doc?.design && canDesign(doc) && !ideActive && !templateEditing;
   const button = document.getElementById('designModeBtn');
-  button.textContent = doc?.design ? '退出设计模式' : '设计模式';
+  button.textContent = doc?.design ? t('退出设计模式') : t('设计模式');
   button.setAttribute('aria-pressed', String(!!doc?.design));
   button.disabled = !doc || (!doc.design && !canDesign(doc));
   button.title = button.disabled && doc ? designLimitMessage() : button.textContent + '（' + shortcutText('designMode') + '）';
   const status = document.getElementById('editModeStatus');
   status.hidden = !visible && !editMode;
-  status.textContent = visible ? '设计模式' : '编辑模式 · Esc 退出';
+  status.textContent = visible ? t('设计模式') : t('编辑模式 · Esc 退出');
   document.getElementById('designDock').hidden = !visible || settings.showTopicDock !== true;
   viewer.classList.toggle('designing', visible);
   const card = target?.child ? selectedCopyNode._card : null;
@@ -417,7 +420,7 @@ function syncDesignControls(){
         commitTopicAction(target, 'child');
       });
     }
-    const label = target.child === 'array' ? '添加数组元素' : '新增子主题';
+    const label = target.child === 'array' ? t('添加数组元素') : t('新增子主题');
     topicAddButton.title = label;
     topicAddButton.setAttribute('aria-label', label);
     if(topicAddButton.parentElement !== card) card.appendChild(topicAddButton);
@@ -425,8 +428,8 @@ function syncDesignControls(){
   for(const [id, action] of [['designChild','child'], ['designSibling','sibling'], ['designRename','rename'], ['designDelete','delete']]){
     document.getElementById(id).disabled = !target?.[action];
   }
-  document.getElementById('designChild').textContent = target?.child === 'array' ? '添加元素' : '子主题';
-  document.getElementById('designSibling').textContent = typeof target?.path.at(-1) === 'number' ? '插入元素' : '同级主题';
+  document.getElementById('designChild').textContent = target?.child === 'array' ? t('添加元素') : t('子主题');
+  document.getElementById('designSibling').textContent = typeof target?.path.at(-1) === 'number' ? t('插入元素') : t('同级主题');
   document.getElementById('designUndo').disabled = !doc?.editHistory?.length;
   document.getElementById('designSave').disabled = !doc?.dirty || !!doc.saving;
 }
@@ -447,7 +450,7 @@ function beginTopicEdit(action, node){
   }
   designTopic = { ...target, action };
   document.getElementById('designTopicTitle').textContent = {
-    child:'添加子主题', sibling:'添加同级主题', rename:'重命名主题'
+    child:t('添加子主题'), sibling:t('添加同级主题'), rename:t('重命名主题')
   }[action];
   const input = document.getElementById('designTopicName');
   input.value = action === 'rename' ? target.path.at(-1) : '';
@@ -464,7 +467,7 @@ function commitTopicAction(target, action){
 }
 
 function commitTopicEdit({doc, path}, action, name){
-  if(doc !== activeDoc()) throw new Error('当前文档已切换');
+  if(doc !== activeDoc()) throw new Error(t('当前文档已切换'));
   const parent = action === 'child' ? path : path.slice(0, -1);
   const key = path.at(-1), deleting = action === 'delete';
   if(action === 'rename' && name === key){
@@ -492,8 +495,8 @@ function commitTopicEdit({doc, path}, action, name){
     };
   }else{
     if(name === undefined && !deleting){
-      name = '子主题';
-      for(let i = 2; Object.hasOwn(container, name); i++) name = '子主题 ' + i;
+      name = t('子主题');
+      for(let i = 2; Object.hasOwn(container, name); i++) name = t('子主题 ') + i;
     }
     next = editObjectTopic(doc.parsed, parent, deleting || action === 'rename' ? key : null, deleting ? null : name);
     selection = deleting ? parent : parent.concat(name);
@@ -567,21 +570,21 @@ function beginNodeEdit(node){
   document.getElementById('valueEditError').textContent = '';
   closeMenu(); document.getElementById('valueEditDialog').showModal();
   document.getElementById('valueEditHint').textContent = doc.kind === 'jsonl'
-    ? '字符串直接输入，其他类型填写 JSON。另存为仅导出有效记录，不保留注释和坏行。'
-    : '字符串直接输入，其他类型填写 JSON。修改先保留在工作副本中，可保存到原文件或另存为副本。';
+    ? t('字符串直接输入，其他类型填写 JSON。另存为仅导出有效记录，不保留注释和坏行。')
+    : t('字符串直接输入，其他类型填写 JSON。修改先保留在工作副本中，可保存到原文件或另存为副本。');
   resizeNodeEditor();
   document.getElementById('valueEditText').focus();
 }
 function applyNodeEdit(){
   const state = editingNode;
-  if(!state || state.doc !== activeDoc()) throw new Error('当前文件已切换，请重新选择节点');
+  if(!state || state.doc !== activeDoc()) throw new Error(t('当前文件已切换，请重新选择节点'));
   const doc = state.doc;
   const type = document.getElementById('valueEditType').value;
-  if(!type) throw new Error('请选择值类型');
+  if(!type) throw new Error(t('请选择值类型'));
   const value = parseEdit(document.getElementById('valueEditText').value, type);
   const wrapped = doc.kind === 'jsonl' && doc.records.length > 1 && settings.jsonlWrapArray !== false;
-  if(doc.kind === 'jsonl' && wrapped && !state.path.length && !Array.isArray(value)) throw new Error('JSONL 记录列表必须保留为数组');
-  if(doc.kind === 'jsonl' && wrapped && !state.path.length && !value.length) throw new Error('JSONL 至少需要一条记录');
+  if(doc.kind === 'jsonl' && wrapped && !state.path.length && !Array.isArray(value)) throw new Error(t('JSONL 记录列表必须保留为数组'));
+  if(doc.kind === 'jsonl' && wrapped && !state.path.length && !value.length) throw new Error(t('JSONL 至少需要一条记录'));
   const next = replaceValue(doc.data, state.path, value);
   const designText = doc.design ? serializeDocument({kind:'json', parsed:next}) : null;
   const designSize = designText === null ? undefined : new Blob([designText]).size;
@@ -655,7 +658,7 @@ const searchScopeBtn = document.getElementById('searchScopeBtn');
 let selectedSearchPath = null;
 let selectedCopyNode = null;
 function copyNodeMenuState(){
-  return {id:'copy-node',text:'复制选中节点内容',shortcut:shortcutText('copyNode'),
+  return {id:'copy-node',text:t('复制选中节点内容'),shortcut:shortcutText('copyNode'),
     enabled:!templateEditing && !ideActive && !!selectedCopyNode?.isConnected};
 }
 function selectCopyNode(node){
@@ -700,8 +703,8 @@ const MAX_SCALE = 2.2;
 /* ---------- JSONL / 解析工具 ---------- */
 function jsonlModeHints(){
   const bits = [];
-  bits.push(settings.jsonlWrapArray !== false ? '数组根' : '首条为根');
-  bits.push(settings.strictJsonl ? '严格模式（坏行即拒绝）' : '坏行跳过');
+  bits.push(settings.jsonlWrapArray !== false ? t('数组根') : t('首条为根'));
+  bits.push(settings.strictJsonl ? t('严格模式（坏行即拒绝）') : t('坏行跳过'));
   return bits.join(' · ');
 }
 
@@ -747,21 +750,21 @@ function buildDoc(text, name, size){
   return Object.assign(makeDoc(name, size, text, result.kind), result);
 }
 const badLinesPreview = list => list.slice(0, 10)
-  .map(b => `  第 ${b.line} 行：${b.message}\n    ${(b.text || '').slice(0, 160)}`)
-  .join('\n') + (list.length > 10 ? `\n  …另有 ${list.length - 10} 行` : '');
+  .map(b => msg`  第 ${b.line} 行：${b.message}\n    ${(b.text || '').slice(0, 160)}`)
+  .join('\n') + (list.length > 10 ? msg`\n  …另有 ${list.length - 10} 行` : '');
 
 /* 按当前 settings 把文档折算成可渲染状态：{data, rootLabel, sub, warn} 或 {error} */
 function resolveDoc(doc){
   if(doc.source?.indexed){
     const info = doc.source.info;
     if(settings.strictJsonl && info.kind === 'jsonl' && info.badCount + info.commentCount > 0){
-      return { error: `严格模式下拒绝加载：${info.badCount + info.commentCount} 行不合规（含注释行）。可在设置中关闭严格模式后继续阅读。` };
+      return { error: msg`严格模式下拒绝加载：${info.badCount + info.commentCount} 行不合规（含注释行）。可在设置中关闭严格模式后继续阅读。` };
     }
     const wrap = doc.source.wrap && info.records > 1;
     return { data: doc.source, rootLabel: info.kind === 'jsonl'
-      ? (wrap ? `${info.records} 条记录` : info.records === 1 ? '单条记录' : '首条记录') : 'root',
-      sub: ['索引模式 · 按页读取', info.kind === 'jsonl' ? `${info.records} 条记录` : '',
-        info.badCount ? `${info.badCount} 行已跳过` : ''].filter(Boolean).join(' · ') };
+      ? (wrap ? msg`${info.records} 条记录` : info.records === 1 ? t('单条记录') : t('首条记录')) : 'root',
+      sub: [t('索引模式 · 按页读取'), info.kind === 'jsonl' ? msg`${info.records} 条记录` : '',
+        info.badCount ? msg`${info.badCount} 行已跳过` : ''].filter(Boolean).join(' · ') };
   }
   if(doc.kind !== 'jsonl'){
     if(doc.error) return { error: doc.error };
@@ -775,15 +778,15 @@ function resolveDoc(doc){
   /* 严格模式：任一行违规即拒绝整文件，不做部分渲染 */
   if(strict && doc.bad.length){
     const why = [
-      parseBad.length ? `${parseBad.length} 行 JSON 解析失败` : null,
-      commentBad.length ? `${commentBad.length} 行为注释行（JSONL 规范不支持）` : null
-    ].filter(Boolean).join('，');
+      parseBad.length ? msg`${parseBad.length} 行 JSON 解析失败` : null,
+      commentBad.length ? msg`${commentBad.length} 行为注释行（JSONL 规范不支持）` : null
+    ].filter(Boolean).join(getLanguage() === 'en' ? ', ' : '，');
     return { error:
-      `严格模式下拒绝加载：${why}（共 ${doc.totalLines} 行）。\n` +
-      `可在「设置 → 文件与恢复 → JSONL」关闭严格模式以跳过这些行。\n\n` + badLinesPreview(doc.bad) };
+      msg`严格模式下拒绝加载：${why}（共 ${doc.totalLines} 行）。\n` +
+      msg`可在「设置 → 文件与恢复 → JSONL」关闭严格模式以跳过这些行。\n\n` + badLinesPreview(doc.bad) };
   }
 
-  if(!doc.records.length) return { error: doc.error || '文件内没有可解析的记录' };
+  if(!doc.records.length) return { error: doc.error || t('文件内没有可解析的记录') };
 
   /* 非严格模式：注释行静默跳过，只有解析失败行会提示（与旧行为一致） */
   const visibleBad = parseBad;
@@ -792,14 +795,14 @@ function resolveDoc(doc){
   return {
     data: wrap ? doc.records : doc.records[0],
     rootLabel: wrap
-      ? `${doc.records.length} 条记录`
-      : (doc.records.length === 1 ? '单条记录' : '首条记录'),
+      ? msg`${doc.records.length} 条记录`
+      : (doc.records.length === 1 ? t('单条记录') : t('首条记录')),
     sub: [
-      `JSONL · ${doc.records.length} 条记录`,
-      visibleBad.length ? `${visibleBad.length} 行已跳过` : null
+      msg`JSONL · ${doc.records.length} 条记录`,
+      visibleBad.length ? msg`${visibleBad.length} 行已跳过` : null
     ].filter(Boolean).join(' · '),
     warn: visibleBad.length
-      ? `以下行不符合 JSONL，已跳过（其余 ${doc.records.length} 条正常显示）：\n` + badLinesPreview(visibleBad)
+      ? msg`以下行不符合 JSONL，已跳过（其余 ${doc.records.length} 条正常显示）：\n` + badLinesPreview(visibleBad)
       : null
   };
 }
@@ -1040,16 +1043,16 @@ function closeDoc(id){
   saveReopenCopy();
   saveSession();
   syncEditing();
-  showToast(`已关闭 ${closing.name}`);
+  showToast(msg`已关闭 ${closing.name}`);
 }
 
 function updateDocHeader(doc){
-  fileName.textContent = doc.name + (doc.dirty ? ' • 未保存' : '');
-  fileName.title = doc.path || (doc.temporary ? '临时文件 · 尚未选择保存位置' : doc.name);
+  fileName.textContent = doc.name + (doc.dirty ? t(' • 未保存') : '');
+  fileName.title = doc.path || (doc.temporary ? t('临时文件 · 尚未选择保存位置') : doc.name);
 
   const kindTag = doc.kind === 'jsonl' ? ' · JSONL' : '';
   const rootType = doc.source?.indexed ? doc.source.getRoot().type : null;
-  const typeName = doc.error ? '无法预览' : rootType ? ({array:'Array',object:'Object'}[rootType] || rootType) : getTypeName(doc.data);
+  const typeName = doc.error ? t('无法预览') : rootType ? ({array:'Array',object:'Object'}[rootType] || rootType) : getTypeName(doc.data);
   fileSub.textContent = `${formatBytes(doc.editedSize ?? doc.size)} · ${typeName}${kindTag}`;
   fileSub.title = doc.kind === 'jsonl' ? [doc.sub, jsonlModeHints()].filter(Boolean).join(' · ') : doc.sub;
 }
@@ -1069,11 +1072,11 @@ function resetSearchState(){
   lastSearchSignature = null;
   searchOptions.scopePath = null; selectedSearchPath = null; selectCopyNode(null);
   searchScopeBtn.setAttribute('aria-pressed', 'false');
-  searchScopeBtn.title = '仅在选中节点内查找：先点击一个节点';
+  searchScopeBtn.title = t('仅在选中节点内查找：先点击一个节点');
   tree.querySelectorAll('.search-scope-node').forEach(n => n.classList.remove('search-scope-node'));
   setSearchError('');
   clearSearchHighlights();
-  pathText.textContent = '路径：$';
+  pathText.textContent = t('路径：$');
 }
 
 /* ---------- 左侧条纹栏 ---------- */
@@ -1086,13 +1089,13 @@ function fileProblem(doc){
 }
 /* 条纹信息里的一行摘要：类型 / 记录数 / 体积 */
 function railMeta(doc, problem = fileProblem(doc)){
-  if(doc.unloaded) return doc.unloaded === 'idle' ? '内存已释放 · 点击重新载入' : '待载入 · 点击打开';
+  if(doc.unloaded) return doc.unloaded === 'idle' ? t('内存已释放 · 点击重新载入') : t('待载入 · 点击打开');
   const bits = [doc.kind === 'jsonl' ? 'JSONL' : 'JSON'];
-  if(doc.temporary) bits.unshift('临时文件');
-  if(doc.dirty) bits.push('未保存');
-  if(doc.kind === 'jsonl' && doc.records) bits.push(`${doc.records.length} 条记录`);
-  if(problem.error) bits.push('无法预览');
-  else if(problem.skipped) bits.push(`已跳过 ${problem.skipped} 行`);
+  if(doc.temporary) bits.unshift(t('临时文件'));
+  if(doc.dirty) bits.push(t('未保存'));
+  if(doc.kind === 'jsonl' && doc.records) bits.push(msg`${doc.records.length} 条记录`);
+  if(problem.error) bits.push(t('无法预览'));
+  else if(problem.skipped) bits.push(msg`已跳过 ${problem.skipped} 行`);
   bits.push(formatBytes(doc.editedSize ?? doc.size));
   return bits.join(' · ');
 }
@@ -1121,7 +1124,7 @@ function createRailScrollControl(direction){
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'rail-scroll rail-scroll-' + (direction < 0 ? 'up' : 'down');
-  button.setAttribute('aria-label', direction < 0 ? '向上滚动文件栏' : '向下滚动文件栏');
+  button.setAttribute('aria-label', direction < 0 ? t('向上滚动文件栏') : t('向下滚动文件栏'));
 
   let drag = null;
   let dragged = false;
@@ -1208,7 +1211,7 @@ function renderRail(){
   const list = document.createElement('div');
   list.className = 'rail-list';
   list.setAttribute('tabindex', '0');
-  list.setAttribute('aria-label', '已打开的文件列表，可滚动');
+  list.setAttribute('aria-label', t('已打开的文件列表，可滚动'));
 
   const openKeys = new Set(docs.map(docKey));
   const jobsByPath = new Map(fileLoads.filter(job => job.key).map(job => [job.key, job]));
@@ -1218,7 +1221,7 @@ function renderRail(){
     const job = doc.file ? doc : jobsByPath.get(docKey(doc));
     const loading = job || doc.indexRebuild;
     const problem = loading ? {} : fileProblem(doc);
-    const metaText = loading ? '正在加载…' : railMeta(doc, problem);
+    const metaText = loading ? t('正在加载…') : railMeta(doc, problem);
     const slot = document.createElement('div');
     slot.className = 'file-slot'
       + (doc.id === activeDocId ? ' active' : '')
@@ -1250,7 +1253,7 @@ function renderRail(){
     close.type = 'button';
     close.className = 'file-close';
     close.textContent = '✕';
-    close.title = '关闭这份文件';
+    close.title = t('关闭这份文件');
     close.addEventListener('click', e => {
       e.stopPropagation();
       if(job) cancelFileLoad(job);
@@ -1280,10 +1283,10 @@ function renderRail(){
   addInfo.className = 'file-info';
   const addName = document.createElement('div');
   addName.className = 'file-tab-name';
-  addName.textContent = '打开文件…';
+  addName.textContent = t('打开文件…');
   const addMeta = document.createElement('div');
   addMeta.className = 'file-tab-meta';
-  addMeta.textContent = '可多选，或把文件拖进来';
+  addMeta.textContent = t('可多选，或把文件拖进来');
   addInfo.append(addName, addMeta);
 
   const plus = document.createElement('span');
@@ -1297,7 +1300,7 @@ function renderRail(){
 
   const add = document.createElement('div');
   add.className = 'file-slot rail-add';
-  add.title = '打开更多文件（可多选，也可把文件拖进来）';
+  add.title = t('打开更多文件（可多选，也可把文件拖进来）');
   add.appendChild(addTab);
   list.appendChild(add);
 
@@ -1341,7 +1344,7 @@ function renderDocError(doc){
   const dot = document.createElement('span');
   dot.className = 'dot';
   const label = document.createElement('span');
-  label.textContent = '这份文件当前无法预览';
+  label.textContent = t('这份文件当前无法预览');
   title.append(dot, label);
 
   const file = document.createElement('div');
@@ -1358,10 +1361,12 @@ function renderDocError(doc){
   let retryButton;
 
   /* 严格模式是唯一能让「被拒绝」的 JSONL 重新可读的设置，给一个就地开关 */
-  if(doc.kind === 'jsonl' && settings.strictJsonl && doc.error?.startsWith('严格模式下拒绝加载') && (doc.source?.info?.records || doc.records?.length || 0) > 0){
+  const indexedInfo = doc.source?.info;
+  const invalidLines = indexedInfo ? indexedInfo.badCount + indexedInfo.commentCount : (doc.bad?.length ?? 0);
+  if(doc.kind === 'jsonl' && settings.strictJsonl && invalidLines > 0 && (indexedInfo?.records || doc.records?.length || 0) > 0){
     const retry = document.createElement('button');
     retry.className = 'doc-error-primary';
-    retry.textContent = '关闭严格模式并重试';
+    retry.textContent = t('关闭严格模式并重试');
     retry.addEventListener('click', () => {
       settings.strictJsonl = false;
       saveSettings();
@@ -1372,7 +1377,7 @@ function renderDocError(doc){
   }
 
   const close = document.createElement('button');
-  close.textContent = '关闭这份文件';
+  close.textContent = t('关闭这份文件');
   close.addEventListener('click', () => closeDoc(doc.id));
   actions.appendChild(close);
   if(retryButton) actions.appendChild(retryButton);
@@ -1435,7 +1440,7 @@ let blankSequence = 0;
 function newBlankDocument(){
   if(templateEditing) return;
   let name;
-  do { name = `未命名-${++blankSequence}.json`; } while(docs.some(doc => doc.name === name));
+  do { name = msg`未命名-${++blankSequence}.json`; } while(docs.some(doc => doc.name === name));
   const text = '{}\n';
   const doc = buildDoc(text, name, text.length);
   Object.assign(doc, { temporary:true, dirty:true, design:true, openPaths:['$'] });
@@ -1446,11 +1451,11 @@ function newBlankDocument(){
 }
 
 function openPastedText(text){
-  if(!text?.trim()){ showToast('剪贴板中没有文本'); return Promise.resolve(); }
+  if(!text?.trim()){ showToast(t('剪贴板中没有文本')); return Promise.resolve(); }
   let base;
-  do { base = `未命名-${++pastedSequence}`; } while(docs.some(d => d.name === `${base}.json` || d.name === `${base}.jsonl`));
+  do { base = msg`未命名-${++pastedSequence}`; } while(docs.some(d => d.name === `${base}.json` || d.name === `${base}.jsonl`));
   const file = new File([text], `${base}.json`, { type:'application/json' });
-  if(file.size > MAX_FILE_BYTES){ showToast('粘贴内容超过 256 MiB，无法打开'); return Promise.resolve(); }
+  if(file.size > MAX_FILE_BYTES){ showToast(t('粘贴内容超过 256 MiB，无法打开')); return Promise.resolve(); }
   file.temporary = true;
   return openFiles([file]);
 }
@@ -1472,7 +1477,7 @@ async function chooseFiles(){
   if(pickingFiles) return;
   pickingFiles = true;
   try{ openPaths(await selectNativeFiles()); }
-  catch(error){ showToast('无法选择文件：' + error); }
+  catch(error){ showToast(t('无法选择文件：') + error); }
   finally{ pickingFiles = false; }
 }
 
@@ -1589,29 +1594,29 @@ function parseInBackground(payload, signal){
       signal.removeEventListener('abort', abort);
       error ? reject(error) : resolve(value);
     };
-    const abort = () => finish(new DOMException('已取消打开', 'AbortError'));
+    const abort = () => finish(new DOMException(t('已取消打开'), 'AbortError'));
     if(signal.aborted){ abort(); return; }
     signal.addEventListener('abort', abort, { once: true });
     worker.onmessage = ({ data }) => finish(data.error ? new Error(data.error) : null, data);
-    worker.onerror = event => finish(new Error(event.message || '后台解析失败'));
-    worker.postMessage(payload, payload.bytes ? [payload.bytes] : []);
+    worker.onerror = event => finish(new Error(event.message || t('后台解析失败')));
+    worker.postMessage({ ...payload, language: getLanguage() }, payload.bytes ? [payload.bytes] : []);
   });
 }
 
 async function loadFile(file, sessions, job = null){
   const threshold = settings.largeFileThresholdMiB;
   if(!file.path && needsIndex(file.size, threshold)){
-    showToast(`文件超过 ${threshold} MB 的读取上限。请在设置中提高阈值，或用桌面版从本机路径打开。`);
+    showToast(msg`文件超过 ${threshold} MB 的读取上限。请在设置中提高阈值，或用桌面版从本机路径打开。`);
     return;
   }
   if(!file.path && !/\.(json|jsonl|ndjson|jsonlines|txt)$/i.test(file.name)){
-    showToast(`已跳过 ${file.name}：不支持的文件格式`); return;
+    showToast(msg`已跳过 ${file.name}：不支持的文件格式`); return;
   }
   const controller = job?.controller || new AbortController();
   activeLoad = controller;
   loadingStatus.hidden = !!job && selectedLoad !== job && !!activeDoc();
   const name = file.name || file.path?.split(/[\\/]/).pop();
-  loadingLabel.textContent = name ? `正在读取 ${name}…` : '正在读取文件…';
+  loadingLabel.textContent = name ? msg`正在读取 ${name}…` : t('正在读取文件…');
   loadingProgress.removeAttribute('value');
   let indexedSource = null;
   let attached = false;
@@ -1621,7 +1626,7 @@ async function loadFile(file, sessions, job = null){
     if(controller.signal.aborted) return;
     let result, text, source = metadata;
     if(file.path && needsIndex(metadata.size, threshold)){
-      loadingLabel.textContent = '正在扫描文件 · ' + metadata.name;
+      loadingLabel.textContent = t('正在扫描文件 · ') + metadata.name;
       indexedSource = await openIndexedFile(metadata, {
         signal: controller.signal, wrap: settings.jsonlWrapArray !== false, strict: !!settings.strictJsonl,
         reuse: settings.indexRebuild === 'smart',
@@ -1632,10 +1637,10 @@ async function loadFile(file, sessions, job = null){
           lastPercent = percent;
           if(percent === 100){
             loadingProgress.removeAttribute('value');
-            loadingLabel.textContent = '正在完成索引 · ' + metadata.name;
+            loadingLabel.textContent = t('正在完成索引 · ') + metadata.name;
           }else{
             loadingProgress.value = percent;
-            loadingLabel.textContent = `正在扫描文件 · ${percent}% · ${metadata.name}`;
+            loadingLabel.textContent = msg`正在扫描文件 · ${percent}% · ${metadata.name}`;
           }
         }
       });
@@ -1644,14 +1649,14 @@ async function loadFile(file, sessions, job = null){
       const bytes = file.path ? await readNativeFile(metadata.path, threshold * 1024 ** 2) : null;
       controller.signal.throwIfAborted();
       if(bytes) source = { ...metadata, size:bytes.byteLength };
-      loadingLabel.textContent = '正在后台解析 ' + source.name + '…';
+      loadingLabel.textContent = t('正在后台解析 ') + source.name + '…';
       ({ result, text } = await parseInBackground({
         name: source.name, size: source.size, file: file.path ? null : file,
         bytes, keepText: !!bytes || !desktop || !!file.temporary
       }, controller.signal));
     }
     if(controller.signal.aborted) return;
-    if(file.temporary && result.error){ showToast('无法粘贴：' + result.error); return; }
+    if(file.temporary && result.error){ showToast(t('无法粘贴：') + result.error); return; }
     const doc = Object.assign(makeDoc(source.name, source.size, text, result.kind), result);
     if(indexedSource) doc.source = indexedSource;
     doc.path = source.path || null;
@@ -1712,7 +1717,7 @@ async function loadFile(file, sessions, job = null){
     scheduleMemoryRelease();
     if(!job) saveReopenCopy();
   }catch(error){
-    if(error.name !== 'AbortError') showToast('打开失败：' + (error.message || String(error)));
+    if(error.name !== 'AbortError') showToast(t('打开失败：') + (error.message || String(error)));
   }finally{
     if(indexedSource && !attached) indexedSource.dispose();
     if(activeLoad === controller){ activeLoad = null; loadingStatus.hidden = true; }
@@ -1736,7 +1741,7 @@ function scheduleIndexVerification(doc){
         await rebuildChangedIndex(doc, source);
       }
     }).catch(error => {
-      if(docs.includes(doc) && doc.source === source) console.warn('未能保存大文件索引', error);
+      if(docs.includes(doc) && doc.source === source) console.warn(t('未能保存大文件索引'), error);
     });
   }));
 }
@@ -1746,7 +1751,7 @@ async function rebuildChangedIndex(doc, source){
   doc.indexRebuild = controller;
   renderRail();
   let replacement;
-  if(doc === activeDoc()) showToast(`${doc.name} 已变化，正在后台重建索引`);
+  if(doc === activeDoc()) showToast(msg`${doc.name} 已变化，正在后台重建索引`);
   try{
     const metadata = await statNativeFile(doc.path);
     replacement = await openIndexedFile(metadata, {
@@ -1763,7 +1768,7 @@ async function rebuildChangedIndex(doc, source){
     scheduleIndexVerification(doc);
   }catch(error){
     if(!controller.signal.aborted && doc.source === source) {
-      showToast('重建索引失败：' + (error.message || String(error)));
+      showToast(t('重建索引失败：') + (error.message || String(error)));
     }
   }finally{
     replacement?.dispose();
@@ -1801,7 +1806,7 @@ function saveReopenCopy(notify = showToast){
       activeKey: selectedLoad?.key || (activeDoc() ? docKey(activeDoc()) : files.keys().next().value),
       docs: [...files.values()], savedAt: Date.now() };
     try{ localStorage.setItem(LASTFILE_KEY, JSON.stringify(snapshot)); }
-    catch(_){ notify('未能保存文件列表'); }
+    catch(_){ notify(t('未能保存文件列表')); }
     return;
   }
   if(!docs.length) return;
@@ -1832,9 +1837,9 @@ function saveReopenCopy(notify = showToast){
       docs: [{ name: cur.name, size: cur.size, editedSize:cur.editedSize, kind: cur.kind, text: cur.text, rootLabel: cur.rootLabel, temporary:!!cur.temporary, dirty:!!cur.dirty, design:!!cur.design }],
       savedAt: Date.now()
     }));
-    notify('恢复空间不足，刷新后只会打开当前文件');
+    notify(t('恢复空间不足，刷新后只会打开当前文件'));
   }catch(_){
-    notify('文件过大，未能保存刷新恢复副本');
+    notify(t('文件过大，未能保存刷新恢复副本'));
   }
 }
 
@@ -1885,7 +1890,7 @@ function saveSession(notify = showToast){
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
     sessionSaveFailed = false;
   }catch(_){
-    if(!sessionSaveFailed) notify('未能保存阅读位置');
+    if(!sessionSaveFailed) notify(t('未能保存阅读位置'));
     sessionSaveFailed = true;
   }
 }
@@ -1975,7 +1980,7 @@ function updateNodeBudgetNotice(count){
   nodeBudgetNotice.hidden = !nodeBudget.update(count);
 }
 const nodeLimitToastTime = new WeakMap();
-function showNodeLimit(scope = tree, message = '已达到 5000 个显示节点，可精简远处内容后继续展开'){
+function showNodeLimit(scope = tree, message = t('已达到 5000 个显示节点，可精简远处内容后继续展开')){
   const now = Date.now();
   if(now - (nodeLimitToastTime.get(scope) ?? -Infinity) >= 1600){
     nodeLimitToastTime.set(scope, now);
@@ -1998,9 +2003,22 @@ reclaimNodesBtn.addEventListener('click', () => {
   }
   updateVirtualization(); scheduleOverflowSweep();
   if(nodeBudgetNotice.hidden) expandAllBtn.focus();
-  showToast(removed ? `已精简 ${removed} 个远处节点，可通过“查看此处”或搜索重新访问` : '当前没有可精简的远处未阅读节点，可手动收起部分分支');
+  showToast(removed ? msg`已精简 ${removed} 个远处节点，可通过“查看此处”或搜索重新访问` : t('当前没有可精简的远处未阅读节点，可手动收起部分分支'));
+});
+tree.addEventListener('click', event => {
+  if(settings.branchLineAction === 'off' || !event.target.classList.contains('branch-line-target')) return;
+  const parent = canvasParent(event.target.parentElement);
+  if(!parent?.classList.contains('open')) return;
+  if(settings.branchLineAction === 'collapse') collapseSubtree(parent);
+  focusGeneration++;
+  selectCopyNode(parent);
+  selectedSearchPath = parent._source === activeDoc()?.source ? [...parent._path] : null;
+  pathText.textContent = t('路径：') + parent.dataset.path;
+  viewport.focus({preventScroll:true});
+  centerNode(parent, parent.firstElementChild);
 });
 tree.addEventListener('pointerdown', e => {
+  if(e.target.classList.contains('branch-line-target')) return;
   const node = e.target.closest('.tree-node'); nodeBudget.touch(node);
   if(node && node._source === activeDoc()?.source) selectedSearchPath = [...node._path];
   if(node && e.target.closest('.node-card') && !e.target.closest('button,input,select')){
@@ -2033,9 +2051,9 @@ function updateVirtualization(){
 
 function syncReadingActions(){
   const indexed = !!activeDoc()?.source?.indexed;
-  expandAllBtn.textContent = indexed ? '展开当前页' : '展开全部';
-  expandAllBtn.title = (indexed ? '逐层展开各分支的当前页，最多显示约 5000 个节点' : '展开全部节点，最多显示约 5000 个节点') + `（${shortcutText('expandAll')}）`;
-  document.getElementById('ctxExpandSubtree').textContent = indexed ? '展开当前页的下级' : '展开全部下级';
+  expandAllBtn.textContent = indexed ? t('展开当前页') : t('展开全部');
+  expandAllBtn.title = (indexed ? t('逐层展开各分支的当前页，最多显示约 5000 个节点') : t('展开全部节点，最多显示约 5000 个节点')) + `（${shortcutText('expandAll')}）`;
+  document.getElementById('ctxExpandSubtree').textContent = indexed ? t('展开当前页的下级') : t('展开全部下级');
 }
 
 // Keep only identity and geometry off screen. Branches retain their lightweight
@@ -2051,7 +2069,7 @@ function observeLeaf(node){
       const shell = document.createElement('button');
       shell.type = 'button'; shell.className = 'node-main viewport-placeholder';
       shell.style.width = rect.width / scale + 'px'; shell.style.height = rect.height / scale + 'px';
-      shell.textContent = '加载内容…'; shell.setAttribute('aria-label', '加载字段 ' + node._key);
+      shell.textContent = t('加载内容…'); shell.setAttribute('aria-label', t('加载字段 ') + node._key);
       shell.addEventListener('click', wakeViewportNode);
       main.replaceWith(shell);
       node._searchValue = ''; node._keyEl = null; node.dataset.searchText = '';
@@ -2065,7 +2083,7 @@ function observeLeaf(node){
         signal.throwIfAborted();
         if(!node.isConnected) return false;
         const descriptor = page.items.find(item => item.key === path.at(-1));
-        if(!descriptor) throw new Error('节点不存在');
+        if(!descriptor) throw new Error(t('节点不存在'));
         node.parentElement?.parentElement?._rememberPage?.(page);
         const fresh = createNode(node._isArrayItem ? arrayIndexLabel(path.at(-1)) : node._key,
           descriptor, node._path, false, node._isArrayItem, node._source);
@@ -2076,7 +2094,7 @@ function observeLeaf(node){
         scheduleOverflowSweep(); return true;
       }catch(error){
         if(!signal.aborted && node.isConnected){
-          node.firstElementChild.textContent = '加载失败，点击重试';
+          node.firstElementChild.textContent = t('加载失败，点击重试');
           node.firstElementChild.title = error.message || String(error);
         }
         return false;
@@ -2161,7 +2179,7 @@ function buildJsonChildren(node){
 
   /* 叶子节点原本的 chevron 是占位不可见的，升级后启用 */
   toggle.classList.remove('placeholder');
-  toggle.title = '展开 / 收起该字段解析出的 JSON';
+  toggle.title = t('展开 / 收起该字段解析出的 JSON');
 
   node._childrenType = source.getRoot().type;
   attachChildren(node, card, toggle, source, [], node._path || []);
@@ -2209,8 +2227,8 @@ function createFullViewBadge(card){
   btn.type = 'button';
   btn.className = 'icon-chip fullview-badge';
   btn.textContent = '…';
-  btn.title = '内容超出最大高度，点击查看完整内容';
-  btn.setAttribute('aria-label', '查看完整内容');
+  btn.title = t('内容超出最大高度，点击查看完整内容');
+  btn.setAttribute('aria-label', t('查看完整内容'));
 
   btn.addEventListener('click', e => {
     e.stopPropagation();
@@ -2283,8 +2301,8 @@ function createJsonBadge(node){
   btn.type = 'button';
   btn.className = 'icon-chip json-badge';
   btn.textContent = '{}';
-  btn.title = '该字段的内容是 JSON 文本，点击以 JSON 展开';
-  btn.setAttribute('aria-label', '将该字段以 JSON 展开');
+  btn.title = t('该字段的内容是 JSON 文本，点击以 JSON 展开');
+  btn.setAttribute('aria-label', t('将该字段以 JSON 展开'));
 
   btn.addEventListener('click', e => {
     e.stopPropagation();
@@ -2299,7 +2317,7 @@ function createNodeToggle(isBranch){
   const toggle = document.createElement('button');
   toggle.type = 'button';
   toggle.className = 'toggle' + (isBranch ? '' : ' placeholder');
-  if(isBranch) toggle.setAttribute('aria-label', '展开或收起节点');
+  if(isBranch) toggle.setAttribute('aria-label', t('展开或收起节点'));
   toggle.innerHTML = '<svg class="chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.25 2.5 7.75 6 4.25 9.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   return toggle;
 }
@@ -2346,7 +2364,7 @@ function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, sour
     card.appendChild(keyEl);
     const badge = document.createElement('span');
     badge.className = 'badge';
-    badge.textContent = untyped ? '未指定类型' : `${descriptor.type === 'array' ? 'Array' : 'Object'} · ${descriptor.childCount}`;
+    badge.textContent = untyped ? t('未指定类型') : `${descriptor.type === 'array' ? 'Array' : 'Object'} · ${descriptor.childCount}`;
     card.appendChild(badge);
   }else{
     const text = document.createElement('span');
@@ -2363,7 +2381,7 @@ function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, sour
     if(descriptor.truncated){
       card._previewTruncated = true;
       setFullViewIcon(card, true);
-      card.title = '长字段仅显示预览，点击 … 读取全文（上限 8 MiB）';
+      card.title = t('长字段仅显示预览，点击 … 读取全文（上限 8 MiB）');
     }
 
     /* 该字段的内容本身就是 JSON：右上角给角标，点击即以 JSON 展开 */
@@ -2380,12 +2398,20 @@ function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, sour
 
   /* 点击节点显示完整 JSONPath */
   card.addEventListener('mouseenter', () => {
-    pathText.textContent = '路径：' + node.dataset.path;
+    pathText.textContent = t('路径：') + node.dataset.path;
   });
   card.addEventListener('mouseleave', () => {
-    pathText.textContent = '路径：$';
+    pathText.textContent = t('路径：$');
   });
 
+  if(!isRoot){
+    const lineTarget = document.createElement('button');
+    lineTarget.type = 'button';
+    lineTarget.className = 'branch-line-target';
+    lineTarget.tabIndex = -1;
+    lineTarget.setAttribute('aria-label', t('跳到父节点'));
+    node.appendChild(lineTarget);
+  }
   if(isBranch) attachChildren(node, card, toggle, source, descriptor.path, path);
 
   return node;
@@ -2416,7 +2442,7 @@ async function expandVisible(root, scope = tree){
   }
   updateVirtualization();
   scheduleOverflowSweep();
-  if(!stoppedAtLimit && scope.querySelector('.page-navigation')) showToast('已展开各分支的当前页。可在分支底部加载更多。');
+  if(!stoppedAtLimit && scope.querySelector('.page-navigation')) showToast(t('已展开各分支的当前页。可在分支底部加载更多。'));
 }
 
 function expandAll(){ return expandVisible(tree.firstElementChild); }
@@ -2507,15 +2533,15 @@ function openMenu(x, y){
   ctxCollapseBtn.disabled = !branch || !ctxTarget.classList.contains('open');
   document.getElementById('ctxTopicCollapse').disabled = ctxCollapseBtn.disabled;
   const arrayItem = typeof topic?.path.at(-1) === 'number';
-  document.getElementById('ctxTopicChildLabel').textContent = topic?.child === 'array' ? '添加数组元素' : '新增子主题';
-  document.getElementById('ctxTopicSiblingLabel').textContent = arrayItem ? '在下方插入元素' : '新增同级主题';
-  document.getElementById('ctxTopicDeleteLabel').textContent = arrayItem ? '删除元素' : '删除分支';
+  document.getElementById('ctxTopicChildLabel').textContent = topic?.child === 'array' ? t('添加数组元素') : t('新增子主题');
+  document.getElementById('ctxTopicSiblingLabel').textContent = arrayItem ? t('在下方插入元素') : t('新增同级主题');
+  document.getElementById('ctxTopicDeleteLabel').textContent = arrayItem ? t('删除元素') : t('删除分支');
   for(const [id, action] of topicMenuActions){
     document.getElementById(id).disabled = !topic?.[action];
   }
   document.getElementById('ctxEditNode').disabled = !canEditNode(ctxTarget);
   document.getElementById('ctxHideNode').disabled = ctxTarget.dataset.path === '$' || !!activeDoc()?.design;
-  document.getElementById('ctxEditNode').title = canEditNode(ctxTarget) ? '修改当前工作副本中的节点值' : '索引大文件与字符串内嵌的虚拟节点暂不支持编辑';
+  document.getElementById('ctxEditNode').title = canEditNode(ctxTarget) ? t('修改当前工作副本中的节点值') : t('索引大文件与字符串内嵌的虚拟节点暂不支持编辑');
 
   showContextMenu(x, y);
 }
@@ -2538,13 +2564,10 @@ document.getElementById('ctxHideNode').addEventListener('click', () => {
   const path = ctxTarget?.dataset.path;
   closeMenu();
   const doc = activeDoc();
-  if(!path || path === '$' || !doc) return;
-  const rule = normalizePath(path);
-  doc.maskedHiddenRules?.delete(rule);
-  const hidden = getHiddenSet(null);
-  hidden.add(rule);
-  saveHiddenRules(hidden);
-  showToast('节点已隐藏，可在「模板与备份」中恢复');
+  if(!path || path === '$' || !doc || doc.design) return;
+  (doc.temporaryHiddenRules ??= new Set()).add(normalizePath(path));
+  refreshTemplateVisibility();
+  showToast(t('已在当前文件临时隐藏。右键画布空白处，打开「管理隐藏规则」即可还原。'));
 });
 
 tree.addEventListener('contextmenu', e => {
@@ -2592,7 +2615,7 @@ for(const [id, action] of [
 ctxCopyPath.addEventListener('click', async () => {
   const path = ctxTarget?.dataset.path;
   closeMenu();
-  if(path) showToast(await copyText(path) ? '已复制路径' : '复制失败，请重试');
+  if(path) showToast(await copyText(path) ? t('已复制路径') : t('复制失败，请重试'));
 });
 ctxExpandSubtreeBtn.addEventListener('click', () => {
   if(ctxTarget) expandSubtree(ctxTarget);
@@ -2663,13 +2686,13 @@ async function openModal(node){
   const generation = ++modalGeneration;
   let full;
   try{ full = await nodeContentText(node); }
-  catch(error){ if(generation === modalGeneration) showToast('读取内容失败：' + error.message); return; }
+  catch(error){ if(generation === modalGeneration) showToast(t('读取内容失败：') + error.message); return; }
   if(generation !== modalGeneration || !node.isConnected) return;
 
   modalTitle.textContent = node._key;
   modalPath.textContent = node.dataset.path;
   modalBody.textContent = full.length > MODAL_TRUNCATE
-    ? full.slice(0, MODAL_TRUNCATE) + `\n\n…（已显示 ${MODAL_TRUNCATE.toLocaleString()} / ${full.length.toLocaleString()} 个字符；可复制完整内容）`
+    ? full.slice(0, MODAL_TRUNCATE) + msg`\n\n…（已显示 ${MODAL_TRUNCATE.toLocaleString()} / ${full.length.toLocaleString()} 个字符；可复制完整内容）`
     : full;
   modalBody._full = full;
 
@@ -2688,7 +2711,7 @@ modalMask.addEventListener('click', e => {
 });
 modalCopyBtn.addEventListener('click', async () => {
   const ok = await copyText(modalBody._full ?? modalBody.textContent);
-  showToast(ok ? '已复制到剪贴板' : '复制失败，请手动选择文本复制');
+  showToast(ok ? t('已复制到剪贴板') : t('复制失败，请手动选择文本复制'));
 });
 
 ctxViewFull.addEventListener('click', () => {
@@ -2701,10 +2724,10 @@ async function copyNodeContent(node){
   const generation = ++copyNodeGeneration, docId = activeDocId;
   let content;
   try{ content = await nodeContentText(node); }
-  catch(error){ showToast('读取内容失败：' + error.message); return; }
+  catch(error){ showToast(t('读取内容失败：') + error.message); return; }
   if(generation !== copyNodeGeneration || activeDocId !== docId || node.isConnected === false) return;
   const ok = await copyText(content);
-  showToast(ok ? '已复制到剪贴板' : '复制失败，请手动选择文本复制');
+  showToast(ok ? t('已复制到剪贴板') : t('复制失败，请手动选择文本复制'));
 }
 for(const button of [ctxCopy, document.getElementById('ctxTopicCopy')]){
   button.addEventListener('click', () => {
@@ -2738,7 +2761,7 @@ function persistDesignDraft(doc, discard = false, notify = showToast){
     }
     doc.draftWriteFailed = false;
   }catch(_){
-    if(!doc.draftWriteFailed) notify(keep ? '暂存设计失败，请手动保存' : '未能清理设计草稿');
+    if(!doc.draftWriteFailed) notify(keep ? t('暂存设计失败，请手动保存') : t('未能清理设计草稿'));
     doc.draftWriteFailed = true;
   }
 }
@@ -2778,7 +2801,7 @@ function restoreDesignDrafts(focusDraft = true){
   if(latest){
     if(focusDraft || (!activeDoc() && !selectedLoad)) activateDoc(latest.id);
     else renderRail();
-    showToast(`已恢复 ${restored} 份未保存的设计`);
+    showToast(msg`已恢复 ${restored} 份未保存的设计`);
   }
 }
 /* 阅读会话（展开状态 + 视图位置）单独存一个键：
@@ -2817,6 +2840,7 @@ let settings = {
   largeFileThresholdMiB: 64,
   indexRebuild: 'smart',
   legacyTreeLayout: false,
+  branchLineAction: 'off',
   autoTemplate: true,
   defaultLevels: 0,
   indexBase: 0,              /* 数组索引编号起始值：0 基 / 1 基（仅影响显示） */
@@ -2851,6 +2875,7 @@ settings.viewMode = normalizeViewMode(settings.viewMode);
 settings.topicDoubleClick = settings.topicDoubleClick === 'value' ? 'value' : 'rename';
 settings.theme = normalizeTheme(settings.theme);
 settings.contextMenu = normalizeContextMenu(settings.contextMenu);
+settings.branchLineAction = normalizeBranchLineAction(settings.branchLineAction);
 const applyTheme = watchTheme(document.documentElement, window.matchMedia?.('(prefers-color-scheme: dark)'), settings.theme,
   (resolved, preference) => updateWindowTheme(preference, resolved));
 document.getElementById('optTheme').addEventListener('change', e => {
@@ -2861,6 +2886,19 @@ try{
   template = normalizeTemplateSources(t);
   if(template && t.hiddenSources !== undefined) saveTemplate();
 }catch(_){ template = null; }
+
+const languageSelect = document.getElementById('optLanguage');
+languageSelect.value = getLanguage();
+languageSelect.addEventListener('change', event => {
+  const preference = normalizeLanguage(event.target.value);
+  if (saveLanguage(preference)) {
+    languageSelect.value = preference;
+    if (preference !== getLanguage()) showToast(t('语言已保存，重新打开应用或刷新网页后生效。'));
+  } else {
+    languageSelect.value = getLanguage();
+    showToast(t('无法保存语言设置，请检查本地存储权限。'));
+  }
+});
 
 function saveSettings(){
   try{ localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }catch(_){}
@@ -2893,11 +2931,13 @@ function isPathPrefix(prefix, path, normalize = true){
   return next === '.' || next === '[';
 }
 
-/* 隐藏字段集合（模板.hidden） */
+/* 当前文件生效的隐藏规则。传入 null 仅返回全局模板规则。 */
 function getHiddenSet(doc = activeDoc()){
-  return new Set(Array.isArray(template?.hidden)
+  const hidden = new Set(Array.isArray(template?.hidden)
     ? template.hidden.filter(path => typeof path === 'string' && path !== '$' && !doc?.maskedHiddenRules?.has(path))
     : []);
+  for(const path of doc?.temporaryHiddenRules || []) hidden.add(path);
+  return hidden;
 }
 
 function refreshTemplateVisibility(){
@@ -2934,12 +2974,12 @@ function saveHiddenRules(hidden){
 /* 记录模板：当前所有处于展开态的节点路径（归一化后） */
 function recordTemplate(){
   const root = tree.firstElementChild;
-  if(!root){ showToast('请先打开文件'); return; }
+  if(!root){ showToast(t('请先打开文件')); return; }
 
   const paths = [...tree.querySelectorAll('.tree-node.open')]
     .map(n => normalizePath(n.dataset.path));
 
-  if(!paths.length){ showToast('当前全部收起，没有可记录的层级'); return; }
+  if(!paths.length){ showToast(t('当前全部收起，没有可记录的层级')); return; }
 
   template = {
     ...template,
@@ -2951,7 +2991,7 @@ function recordTemplate(){
   };
   saveTemplate();
   updateTemplateStatus();
-  showToast(`模板已记录：${paths.length} 个展开节点`);
+  showToast(msg`模板已记录：${paths.length} 个展开节点`);
 }
 
 /* 展开节点：数组只走第一项，对象走全部子节点 */
@@ -2998,7 +3038,7 @@ async function expandByPaths(paths, { exact = false, pageOffsets } = {}){
     if(generation !== expansionGeneration) return null;
     const node = pending.pop();
     if(tree.querySelectorAll('.tree-node').length >= 5000){
-      showNodeLimit(tree, '已达到 5000 个显示节点，停止恢复展开'); break;
+      showNodeLimit(tree, t('已达到 5000 个显示节点，停止恢复展开')); break;
     }
     if(!node.classList.contains('branch')){
       /* 字符串型 JSON 字段：命中它下级的路径时先按 JSON 展开，
@@ -3039,7 +3079,7 @@ async function expandLevels(node, levels){
     const { node: n, remain } = pending.pop();
     if(!n || !n.classList.contains('branch') || remain <= 0) continue;
     if(tree.querySelectorAll('.tree-node').length >= 5000){
-      showNodeLimit(tree, '已达到 5000 个显示节点，停止默认展开'); break;
+      showNodeLimit(tree, t('已达到 5000 个显示节点，停止默认展开')); break;
     }
     await expandOne(n);
     if(generation !== expansionGeneration) return;
@@ -3056,6 +3096,7 @@ const optAutoTemplate = document.getElementById('optAutoTemplate');
 const optDefaultLevels = document.getElementById('optDefaultLevels');
 const optIndexBase = document.getElementById('optIndexBase');
 const optRailStyle = document.getElementById('optRailStyle');
+const optBranchLineAction = document.getElementById('optBranchLineAction');
 const optLegacyTreeLayout = document.getElementById('optLegacyTreeLayout');
 const optLargeFileThreshold = document.getElementById('optLargeFileThreshold');
 const optDesignLimit = document.getElementById('optDesignLimit');
@@ -3115,7 +3156,7 @@ function makeRuleButton(text, label, handler){
 }
 
 function makeRuleMask(doc, path){
-  const mask = makeRuleButton('屏蔽', `屏蔽规则 ${path}`, () => {
+  const mask = makeRuleButton(t('屏蔽'), msg`屏蔽规则 ${path}`, () => {
     if(!doc || activeDoc() !== doc) return;
     const masked = doc.maskedHiddenRules ??= new Set();
     if(masked.has(path)) masked.delete(path);
@@ -3125,12 +3166,12 @@ function makeRuleMask(doc, path){
   });
   const updateMask = () => {
     const masked = doc?.maskedHiddenRules?.has(path) === true;
-    mask.textContent = masked ? '取消屏蔽' : '屏蔽';
+    mask.textContent = masked ? t('取消屏蔽') : t('屏蔽');
     mask.dataset.masked = String(masked);
-    mask.setAttribute('aria-label', `${mask.textContent}规则 ${path}`);
+    mask.setAttribute('aria-label', msg`${mask.textContent}规则 ${path}`);
   };
   mask.disabled = !doc || !!doc.design;
-  mask.title = '仅对当前活动文件有效';
+  mask.title = t('仅对当前活动文件有效');
   updateMask();
   return mask;
 }
@@ -3207,19 +3248,38 @@ async function openCanvasRules(){
   const list = document.getElementById('canvasRulesList');
   const status = document.getElementById('canvasRulesEmpty');
   const group = document.getElementById('canvasRulesGroup');
+  const updateRulesStatus = () => {
+    group.hidden = !list.firstElementChild;
+    status.hidden = !group.hidden;
+    status.textContent = t('当前文件没有匹配的隐藏规则。');
+  };
   list.replaceChildren();
   status.hidden = false;
-  status.textContent = '正在匹配当前文件中的规则…';
-  group.hidden = true;
+  status.textContent = t('正在匹配当前文件中的规则…');
   document.getElementById('canvasRulesFile').textContent = doc.name;
+  for(const path of doc.temporaryHiddenRules || []){
+    const row = document.createElement('li');
+    const code = document.createElement('code');
+    code.textContent = path;
+    const restore = makeRuleButton(t('还原临时隐藏'), msg`还原临时隐藏规则 ${path}`, () => {
+      if(scan.signal.aborted || !canvasRulesDialog.open || activeDoc() !== doc) return;
+      doc.temporaryHiddenRules.delete(path);
+      row.remove();
+      if(!status.hidden) group.hidden = !list.firstElementChild;
+      else updateRulesStatus();
+      (list.firstElementChild?.children[1] || document.getElementById('canvasRulesClose')).focus();
+      refreshTemplateVisibility();
+    });
+    row.append(code, restore);
+    list.appendChild(row);
+  }
+  group.hidden = !list.firstElementChild;
   canvasRulesDialog.showModal();
 
   try{
-    const rules = await findMatchingHiddenRules(doc.source, getHiddenSet(null), scan.signal);
+    const templateRules = getHiddenSet(null);
+    const rules = templateRules.size ? await findMatchingHiddenRules(doc.source, templateRules, scan.signal) : [];
     if(scan.signal.aborted || !canvasRulesDialog.open || activeDoc() !== doc) return;
-    status.hidden = !!rules.length;
-    status.textContent = '当前文件没有匹配的隐藏规则。';
-    group.hidden = !rules.length;
     for(const path of rules){
       const row = document.createElement('li');
       const code = document.createElement('code');
@@ -3227,9 +3287,10 @@ async function openCanvasRules(){
       row.append(code, makeRuleMask(doc, path));
       list.appendChild(row);
     }
+    updateRulesStatus();
   }catch(error){
     if(!scan.signal.aborted && canvasRulesDialog.open && activeDoc() === doc){
-      status.textContent = '无法检查当前文件的隐藏规则：' + error.message;
+      status.textContent = t('无法检查当前文件的隐藏规则：') + error.message;
     }
   }
 }
@@ -3258,7 +3319,7 @@ function renderHiddenRules(hidden){
   }
   const doc = activeDoc();
   for(const [key, paths] of groups){
-    const name = key ?? '来源未知';
+    const name = key ?? t('来源未知');
     const matches = name.toLowerCase().includes(query)
       ? paths : paths.filter(path => path.toLowerCase().includes(query));
     if(!matches.length) continue;
@@ -3278,7 +3339,7 @@ function renderHiddenRules(hidden){
     const count = document.createElement('span');
     count.className = 'hidden-rule-count';
     count.textContent = String(paths.length);
-    summary.setAttribute('aria-label', `${name}，${paths.length} 条规则`);
+    summary.setAttribute('aria-label', msg`${name}，${paths.length} 条规则`);
     summary.title = name;
     summary.append(fileName, count);
     const rows = document.createElement('ul');
@@ -3286,7 +3347,7 @@ function renderHiddenRules(hidden){
       const row = document.createElement('li');
       const code = document.createElement('code');
       code.textContent = path;
-      const remove = makeRuleButton('删除', `删除规则 ${path}`, () => {
+      const remove = makeRuleButton(t('删除'), msg`删除规则 ${path}`, () => {
         const rules = getHiddenSet(null);
         rules.delete(path);
         saveHiddenRules(rules);
@@ -3296,13 +3357,13 @@ function renderHiddenRules(hidden){
       row.append(code, remove, makeRuleMask(doc, path));
       rows.appendChild(row);
     }
-    const removeGroup = makeRuleButton('删除该组', `删除 ${name} 创建的规则`, () => {
+    const removeGroup = makeRuleButton(t('删除该组'), msg`删除 ${name} 创建的规则`, () => {
       const rules = getHiddenSet(null);
       for(const path of paths) rules.delete(path);
       saveHiddenRules(rules);
       document.getElementById('settingsNav3').focus();
     });
-    removeGroup.title = '删除此文件名下的全部规则';
+    removeGroup.title = t('删除此文件名下的全部规则');
     removeGroup.className = 'hidden-rule-delete hidden-rule-delete-group';
     details.append(summary, rows);
     group.append(details, removeGroup);
@@ -3320,13 +3381,13 @@ function updateTemplateStatus(){
     const d = new Date(template.savedAt);
     const hh = String(d.getHours()).padStart(2, '0');
     const mm = String(d.getMinutes()).padStart(2, '0');
-    const hiddenPart = hidden.size ? ` · ${hidden.size} 条隐藏规则` : '';
+    const hiddenPart = hidden.size ? msg` · ${hidden.size} 条隐藏规则` : '';
     templateStatus.textContent =
-      `已记录 ${template.paths.length} 个节点${hiddenPart} · ${template.file || '未知文件'} · ${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+      msg`已记录 ${template.paths.length} 个节点${hiddenPart} · ${template.file || t('未知文件')} · ${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
     applyTemplateBtn.disabled = !template.paths.length;
     clearTemplateBtn.disabled = false;
   }else{
-    templateStatus.textContent = '未记录';
+    templateStatus.textContent = t('未记录');
     applyTemplateBtn.disabled = true;
     clearTemplateBtn.disabled = true;
   }
@@ -3364,7 +3425,7 @@ function renderContextMenuSettings(focusedItem, direction){
       move.type = 'button';
       move.className = 'tf-btn';
       move.textContent = step < 0 ? '↑' : '↓';
-      move.setAttribute('aria-label', `${step < 0 ? '上移' : '下移'}${label}`);
+      move.setAttribute('aria-label', `${step < 0 ? t('上移') : t('下移')}${label}`);
       const destination = index + step;
       move.disabled = destination < 0 || destination >= settings.contextMenu.length;
       move.addEventListener('click', () => {
@@ -3408,12 +3469,12 @@ function refreshMemoryStats(){
   const deferred = docs.length - resident - released;
   const indexed = docs.filter(doc => doc.source?.indexed).length;
   const cache = sharedPageCache.stats;
-  const queue = fileLoads.length ? ` · 读取队列 ${fileLoads.length} 个` : '';
+  const queue = fileLoads.length ? msg` · 读取队列 ${fileLoads.length} 个` : '';
   document.getElementById('residentFileStatus').textContent =
-    `已载入 ${resident} 个 · 待载入 ${deferred} 个 · 已释放 ${released} 个${queue}`;
+    msg`已载入 ${resident} 个 · 待载入 ${deferred} 个 · 已释放 ${released} 个${queue}`;
   document.getElementById('indexCacheStatus').textContent =
-    `索引文件 ${indexed} 个 · ${cache.entries ? `已缓存 ${cache.entries} 页（约 ${formatBytes(cache.bytes)}）` : '暂无缓存页'} · 预算 ${formatBytes(cache.budget)}`
-    + (indexed && !cache.entries ? '。展开节点时按需读取子页。' : '');
+    msg`索引文件 ${indexed} 个 · ${cache.entries ? msg`已缓存 ${cache.entries} 页（约 ${formatBytes(cache.bytes)}）` : t('暂无缓存页')} · 预算 ${formatBytes(cache.budget)}`
+    + (indexed && !cache.entries ? t('。展开节点时按需读取子页。') : '');
   releaseBackgroundFiles.disabled = !docs.some(canReleaseDocument);
   memoryStatsTimer = setTimeout(refreshMemoryStats, 1000);
 }
@@ -3424,7 +3485,7 @@ releaseBackgroundFiles.addEventListener('click', () => {
   candidates.forEach(releaseDocument);
   scheduleMemoryRelease();
   renderRail();
-  showToast(`已释放 ${candidates.length} 个后台文件`);
+  showToast(msg`已释放 ${candidates.length} 个后台文件`);
 });
 
 function showSettingsPage(index, focus = false){
@@ -3462,6 +3523,7 @@ function openSettings(){
   document.getElementById('optTopicDoubleClick').value = settings.topicDoubleClick;
   syncThresholdControl();
   optLegacyTreeLayout.checked = settings.legacyTreeLayout === true;
+  optBranchLineAction.value = settings.branchLineAction;
   optAutoTemplate.checked = settings.autoTemplate;
   optDefaultLevels.value = String(settings.defaultLevels);
   optIndexBase.value = settings.indexBase === 1 ? '1' : '0';
@@ -3530,6 +3592,7 @@ function flushReadingSettings(){
 
   const measureValues = changed('limitValueHeight') || (settings.limitValueHeight && changed('valueMaxLines'));
   if(changed('legacyTreeLayout')) applyTreeLayout(!measureValues);
+  if(changed('branchLineAction')) applyBranchLineAction();
   if(measureValues) applyValueHeightSetting();
   if(changed('indexBase')){
     if(!rebuild) relabelArrayIndexes(tree);
@@ -3622,6 +3685,15 @@ document.getElementById('optIdeFoldAlwaysVisible').addEventListener('change', e 
   applyIdeFoldVisibility(); saveSettings();
 });
 
+function normalizeBranchLineAction(value){
+  return value === 'jump' || value === 'collapse' ? value : 'off';
+}
+function applyBranchLineAction(){
+  tree.classList.toggle('branch-lines-interactive', settings.branchLineAction !== 'off');
+}
+optBranchLineAction.addEventListener('change', () => {
+  changeReadingSetting('branchLineAction', normalizeBranchLineAction(optBranchLineAction.value));
+});
 optLegacyTreeLayout.addEventListener('change', () => {
   changeReadingSetting('legacyTreeLayout', optLegacyTreeLayout.checked);
 });
@@ -3631,8 +3703,8 @@ optRailStyle.addEventListener('change', () => {
   saveSettings();
   applyRailStyle();
   showToast(settings.railStyle === 'dial'
-    ? '多文件栏已切换为悬浮细线'
-    : '多文件栏已切换为默认竖条');
+    ? t('多文件栏已切换为悬浮细线')
+    : t('多文件栏已切换为默认竖条'));
 });
 
 /* 会话恢复依附于「刷新后继续打开」：上级关掉时联动项不可用 */
@@ -3738,7 +3810,7 @@ async function rebuildJsonlRoot(){
     try {
       await doc.source.configure(settings.jsonlWrapArray !== false, false);
       if(generation !== jsonlConfigurationGeneration || activeDocId !== doc.id || doc.source.wrap !== settings.jsonlWrapArray) return;
-    } catch(error) { showToast('更新失败：' + (error.message || String(error))); return; }
+    } catch(error) { showToast(t('更新失败：') + (error.message || String(error))); return; }
   }
   activateDoc(doc.id);
 }
@@ -3761,9 +3833,9 @@ exportSettingsBtn.addEventListener('click', async () => {
     exportSettingsBtn.disabled = true;
     try{
       const path = await saveDocumentCopy(name, text, null, docs.map(doc => doc.path).filter(Boolean));
-      if(path) showToast('设置已导出');
+      if(path) showToast(t('设置已导出'));
     }catch(error){
-      showToast('导出设置失败：' + (error.message || String(error)));
+      showToast(t('导出设置失败：') + (error.message || String(error)));
     }finally{
       exportSettingsBtn.disabled = false;
     }
@@ -3776,7 +3848,7 @@ exportSettingsBtn.addEventListener('click', async () => {
   a.download = name;
   a.click();
   URL.revokeObjectURL(url);
-  showToast('设置已导出');
+  showToast(t('设置已导出'));
 });
 
 importSettingsBtn.addEventListener('click', () => settingsImportInput.click());
@@ -3793,7 +3865,7 @@ settingsImportInput.addEventListener('change', () => {
   reader.onload = () => {
     try{
       const payload = JSON.parse(reader.result);
-      if(!payload || typeof payload !== 'object') throw new Error('文件格式不正确');
+      if(!payload || typeof payload !== 'object') throw new Error(t('文件格式不正确'));
       if(!leaveIde()) return;
       /* 兼容两种格式：完整导出包 { settings, template } 或裸设置对象 */
       const s = (payload.settings && typeof payload.settings === 'object')
@@ -3814,6 +3886,7 @@ settingsImportInput.addEventListener('change', () => {
         largeFileThresholdMiB: normalizeThreshold(s.largeFileThresholdMiB),
         indexRebuild: s.indexRebuild === 'always' ? 'always' : 'smart',
         legacyTreeLayout: s.legacyTreeLayout === true,
+        branchLineAction: normalizeBranchLineAction(s.branchLineAction),
         autoTemplate: !!s.autoTemplate,
         defaultLevels: parseInt(s.defaultLevels, 10) || 0,
         indexBase: parseInt(s.indexBase, 10) === 1 ? 1 : 0,
@@ -3844,12 +3917,12 @@ settingsImportInput.addEventListener('change', () => {
       applyNodeSelectionStyle();
       applyIdeFoldVisibility();
       flushReadingSettings();
-      showToast('设置已导入');
+      showToast(t('设置已导入'));
     }catch(err){
-      showToast('导入失败：' + err.message);
+      showToast(t('导入失败：') + err.message);
     }
   };
-  reader.onerror = () => showToast('文件读取失败');
+  reader.onerror = () => showToast(t('文件读取失败'));
   reader.readAsText(file, 'utf-8');
 });
 
@@ -3857,6 +3930,7 @@ settingsImportInput.addEventListener('change', () => {
 applyValueHeightSetting();
 syncReopenControls();
 applyTreeLayout();
+applyBranchLineAction();
 applyNodeSelectionStyle();
 applyIdeFoldVisibility();
 
@@ -3974,9 +4048,9 @@ applyTemplateBtn.addEventListener('click', async () => {
   const deepest = await applyTemplate();
   if(deepest){
     requestAnimationFrame(() => { if(deepest.isConnected) centerNode(deepest); });
-    showToast('模板已应用');
+    showToast(t('模板已应用'));
   }else{
-    showToast('模板未命中任何节点（结构可能不一致）');
+    showToast(t('模板未命中任何节点（结构可能不一致）'));
   }
 });
 
@@ -3987,7 +4061,7 @@ clearTemplateBtn.addEventListener('click', () => {
   updateTemplateStatus();
   /* 就地重建当前文档：模板隐藏掉的字段要当场恢复显示，而不是等下次切文件 */
   if(!ideActive) refreshTemplateVisibility();
-  showToast('模板已清除');
+  showToast(t('模板已清除'));
 });
 
 /* ---------- 结构模板编辑器（思维导图画布模式） ---------- */
@@ -4012,7 +4086,7 @@ const editorDrafts = new WeakMap();
 function openEditor(){
   /* 用文档而不是 parsedData 判断：根值是 null / false / 0 也是合法数据 */
   const doc = activeDoc();
-  if(!doc || doc.error){ showToast('请先打开文件'); return; }
+  if(!doc || doc.error){ showToast(t('请先打开文件')); return; }
   if(templateEditing) return;
   closeMenu();
   if(!findPanel.hidden) closeFindPanel(false);
@@ -4021,7 +4095,7 @@ function openEditor(){
   syncDocumentMenu();
   enterEditorFind();
   viewer.classList.add('template-editing');
-  fileSub.textContent = '模板编辑模式 · 勾选显示字段 · 切换文件时保留草稿';
+  fileSub.textContent = t('模板编辑模式 · 勾选显示字段 · 切换文件时保留草稿');
   fileSub.title = '';
   editorDoc = doc;
   editorBaseline = getHiddenSet(null);
@@ -4080,8 +4154,8 @@ function updateEditorVirtualization(){
 
 function updateEditorCount(){
   editorCount.textContent = editorHidden.size
-    ? `${editorHidden.size} 个字段将隐藏`
-    : '全部字段显示';
+    ? msg`${editorHidden.size} 个字段将隐藏`
+    : t('全部字段显示');
 }
 
 /* 编辑器节点：完全复用主视图的树结构 / 卡片样式，额外挂一个勾选框 */
@@ -4112,7 +4186,7 @@ function createEditorNode(key, descriptor, path, isRoot=false, isArrayItem=false
   cb.className = 'ed-check';
   cb.checked = !editorHidden.has(normPath);
   cb.disabled = isRoot;   /* 根节点不可隐藏 */
-  cb.title = isRoot ? '根节点不可隐藏' : '取消勾选将在主视图中隐藏该字段及其子级';
+  cb.title = isRoot ? t('根节点不可隐藏') : t('取消勾选将在主视图中隐藏该字段及其子级');
   node._setTemplateVisible = visible => {
     cb.checked = visible;
     card.classList.toggle('hidden-field', !visible);
@@ -4131,7 +4205,7 @@ function createEditorNode(key, descriptor, path, isRoot=false, isArrayItem=false
   /* 「隐藏」标签：显示与否由 .hidden-field 类通过 CSS 控制 */
   const hideTag = document.createElement('span');
   hideTag.className = 'ed-hidden-tag';
-  hideTag.textContent = '隐藏';
+  hideTag.textContent = t('隐藏');
   card.appendChild(hideTag);
 
   const keyEl = document.createElement('span');
@@ -4149,7 +4223,7 @@ function createEditorNode(key, descriptor, path, isRoot=false, isArrayItem=false
     if(descriptor.type === 'array'){
       const hint = document.createElement('span');
       hint.className = 'ed-hint';
-      hint.textContent = '仅第一项结构';
+      hint.textContent = t('仅第一项结构');
       card.appendChild(hint);
     }
   }else{
@@ -4215,8 +4289,8 @@ editorSaveBtn.addEventListener('click', () => {
   closeEditor(true);
   saveHiddenRules(editorHidden);
   showToast(editorHidden.size
-    ? `已应用：隐藏 ${editorHidden.size} 个字段`
-    : '已应用：全部字段显示');
+    ? msg`已应用：隐藏 ${editorHidden.size} 个字段`
+    : t('已应用：全部字段显示'));
   openAnotherBtn.focus();
 });
 
@@ -4248,8 +4322,8 @@ function enterEditorFind(){
   focusGeneration++;
   readerFindState = {value:searchInput.value, count:searchCount.textContent, title:searchCount.title, error:searchError.textContent};
   searchInput.value = '';
-  searchInput.placeholder = '搜索键名…';
-  document.getElementById('findPanelTitle').textContent = '查找键名';
+  searchInput.placeholder = t('搜索键名…');
+  document.getElementById('findPanelTitle').textContent = t('查找键名');
   searchScopeBtn.hidden = true;
   editorVisibilityBtn.hidden = false;
   syncFindOptionButtons(editorFindOptions);
@@ -4258,12 +4332,12 @@ function enterEditorFind(){
 
 function leaveEditorFind(){
   searchInput.value = readerFindState.value;
-  searchInput.placeholder = '搜索键名或值…';
-  searchCount.textContent = readerFindState.count === '搜索中…' ? '' : readerFindState.count;
+  searchInput.placeholder = t('搜索键名或值…');
+  searchCount.textContent = readerFindState.count === t('搜索中…') ? '' : readerFindState.count;
   searchCount.title = readerFindState.title;
   nextMatchBtn.disabled = prevMatchBtn.disabled = !matches.length;
   setSearchError(readerFindState.error || '');
-  document.getElementById('findPanelTitle').textContent = '查找';
+  document.getElementById('findPanelTitle').textContent = t('查找');
   searchScopeBtn.hidden = false;
   editorVisibilityBtn.hidden = true;
   syncFindOptionButtons(searchOptions);
@@ -4276,10 +4350,10 @@ function editorResultsHidden(){
 
 function syncEditorVisibilityButton(){
   const hidden = editorResultsHidden();
-  const label = hidden ? '显示匹配节点' : '隐藏匹配节点';
+  const label = hidden ? t('显示匹配节点') : t('隐藏匹配节点');
   editorVisibilityBtn.dataset.hidden = String(hidden);
   editorVisibilityBtn.disabled = editorResultsLimited || !editorHitRules.size;
-  editorVisibilityBtn.title = editorResultsLimited ? '结果不完整，请缩小搜索范围后批量操作' : label;
+  editorVisibilityBtn.title = editorResultsLimited ? t('结果不完整，请缩小搜索范围后批量操作') : label;
   editorVisibilityBtn.setAttribute('aria-label', label);
 }
 
@@ -4372,24 +4446,24 @@ async function searchEditorKeys(){
   try{
     matcher = compileSearch(query, editorFindOptions);
   }catch(error){
-    setEditorSearchFeedback('表达式无效', error.message);
+    setEditorSearchFeedback(t('表达式无效'), error.message);
     return;
   }
   const request = new AbortController();
   editorSearchRequest = request;
-  setEditorSearchFeedback('搜索中…');
+  setEditorSearchFeedback(t('搜索中…'));
   try{
     const {results, limited} = await scanEditorKeys(activeDoc().source, matcher, request.signal);
     if(request.signal.aborted) return;
     editorHits = results;
     editorHitRules = new Set(results.map(path => normalizePath(encodePath(path))));
     editorResultsLimited = limited;
-    const count = limited ? (results.length ? `${results.length}+ 项` : '已达上限')
-      : results.length ? `${results.length} 项` : '无匹配';
-    setEditorSearchFeedback(count, '', limited ? '已达搜索上限，请缩小关键词范围' : '');
+    const count = limited ? (results.length ? msg`${results.length}+ 项` : t('已达上限'))
+      : results.length ? msg`${results.length} 项` : t('无匹配');
+    setEditorSearchFeedback(count, '', limited ? t('已达搜索上限，请缩小关键词范围') : '');
     await focusEditorMatch(0);
   }catch(error){
-    if(!request.signal.aborted) setEditorSearchFeedback('查找失败', error.message);
+    if(!request.signal.aborted) setEditorSearchFeedback(t('查找失败'), error.message);
   }
 }
 
@@ -4425,7 +4499,7 @@ editorVisibilityBtn.addEventListener('click', () => {
   }
   updateEditorCount();
   syncEditorVisibilityButton();
-  showToast(`已${show ? '显示' : '隐藏'} ${editorHitRules.size} 条匹配规则`);
+  showToast(msg`已${show ? t('显示') : t('隐藏')} ${editorHitRules.size} 条匹配规则`);
 });
 
 
@@ -4479,7 +4553,7 @@ function switchDocumentView(){
   const doc = activeDoc(); if(!doc) return;
   if(!ideActive && document.getElementById('switchViewBtn').disabled){
     showToast(doc.source?.indexed || needsIndex(doc.size, settings.largeFileThresholdMiB)
-      ? '大文件仅支持树形视图' : '当前文档无法切换到 IDE 视图');
+      ? t('大文件仅支持树形视图') : t('当前文档无法切换到 IDE 视图'));
     return;
   }
   if(!leaveIde()) return;
@@ -4507,7 +4581,7 @@ document.getElementById('designTopicForm').addEventListener('submit', event => {
   if(!designTopic) return;
   try {
     const name = document.getElementById('designTopicName').value.trim();
-    if(!name) throw new Error('请输入主题名称');
+    if(!name) throw new Error(t('请输入主题名称'));
     commitTopicEdit(designTopic, designTopic.action, name);
   } catch(error){ document.getElementById('designTopicError').textContent = error.message; }
 });
@@ -4579,10 +4653,10 @@ document.getElementById('undoEditBtn').addEventListener('click', () => stepEditH
 document.getElementById('redoEditBtn').addEventListener('click', () => stepEditHistory(true));
 async function saveCurrentDocument(copy = false){
   const doc = activeDoc(); if(!doc?.dirty || doc.saving || doc.source?.indexed) return;
-  if(doc.ideError){ showToast('请先修正 JSON 语法，再保存'); return; }
+  if(doc.ideError){ showToast(t('请先修正 JSON 语法，再保存')); return; }
   doc.ideEditGroup = null;
   if(!copy && desktop && doc.path && doc.kind === 'jsonl' && doc.bad?.length){
-    showToast('文件中有被跳过的行，请使用另存为，避免覆盖原始记录'); return;
+    showToast(t('文件中有被跳过的行，请使用另存为，避免覆盖原始记录')); return;
   }
   const revision = doc.text;
   const extension = doc.kind === 'jsonl' ? 'jsonl' : 'json';
@@ -4609,16 +4683,16 @@ async function saveCurrentDocument(copy = false){
       if(doc.design) doc.temporary = false;
     }
     doc.savedText = revision; doc.dirty = doc.text !== revision;
-    const messages = [savesOriginal ? '已保存到原文件' : desktop ? '已另存为文件' : '已开始下载'];
+    const messages = [savesOriginal ? t('已保存到原文件') : desktop ? t('已另存为文件') : t('已开始下载')];
     const notify = message => messages.push(message);
     persistDesignDraft(doc, false, notify);
     renderRail(); saveReopenCopy(notify); saveSession(notify);
     if(doc === activeDoc()){ updateDocHeader(doc); syncEditing(); updateWindowTitle(doc.name); }
     showToast(messages.join('。'));
   } catch(error){
-    if(savesOriginal && doc === activeDoc() && String(error).includes('文件已被其他程序修改')){
+    if(savesOriginal && doc === activeDoc() && String(error?.cause ?? error).includes('文件已被其他程序修改')){
       document.getElementById('saveConflictDialog').showModal();
-    }else showToast((copy ? '另存为失败：' : '保存失败：') + error);
+    }else showToast((copy ? t('另存为失败：') : t('保存失败：')) + error);
   }
   finally {
     doc.saving = false;
@@ -4704,7 +4778,7 @@ function selectVimNode(node){
   nodeBudget.touch(node);
   selectCopyNode(node);
   selectedSearchPath = node._source === activeDoc()?.source ? [...node._path] : null;
-  pathText.textContent = '路径：' + node.dataset.path;
+  pathText.textContent = t('路径：') + node.dataset.path;
   revealCanvasNode(node);
 }
 
@@ -4868,10 +4942,10 @@ document.addEventListener('keydown', e => {
     clearTimeout(searchTimer);
     expansionGeneration++;
     searchGeneration++;
-    if(searchCount.textContent === '搜索中…'){
+    if(searchCount.textContent === t('搜索中…')){
       clearTimeout(searchTimer);
       clearSearchHighlights();
-      setSearchCount('已取消');
+      setSearchCount(t('已取消'));
     }
     if(selectedLoad === runningLoad && runningLoad) cancelFileLoad(runningLoad);
     else if(!runningLoad) activeLoad?.abort();
@@ -4917,8 +4991,8 @@ function positionFindPanel(x, y){
 function updateFindPin(){
   findPanel.dataset.pinned = String(findPlacement.pinned);
   pinFindBtn.setAttribute('aria-pressed', String(findPlacement.pinned));
-  pinFindBtn.title = findPlacement.pinned ? '取消固定后可拖动窗口' : '锁定窗口当前位置';
-  pinFindBtn.setAttribute('aria-label', findPlacement.pinned ? '取消固定' : '固定位置');
+  pinFindBtn.title = findPlacement.pinned ? t('取消固定后可拖动窗口') : t('锁定窗口当前位置');
+  pinFindBtn.setAttribute('aria-label', findPlacement.pinned ? t('取消固定') : t('固定位置'));
 }
 let returnFindToCanvas = false;
 function openFindPanel(fromCanvas = false){
@@ -4992,7 +5066,7 @@ function useQuickSearch(){
   }
   searchOptions.scopePath = null;
   searchScopeBtn.setAttribute('aria-pressed', 'false');
-  searchScopeBtn.title = '仅在选中节点内查找：先点击一个节点';
+  searchScopeBtn.title = t('仅在选中节点内查找：先点击一个节点');
   tree.querySelectorAll('.search-scope-node').forEach(n => n.classList.remove('search-scope-node'));
 }
 quickSearchInput.addEventListener('input', e => { useQuickSearch(); queueSearch(e); });
@@ -5012,8 +5086,8 @@ quickNextMatchBtn.addEventListener('click', () => {
 function setSearchError(message){
   searchError.hidden = !message; searchError.textContent = message;
   searchInput.setAttribute('aria-invalid', message ? 'true' : 'false');
-  quickSearchInput.title = message ? `${message}；按 ${shortcutText('find')} 调整查找选项` :
-    Object.values(searchOptions).some(Boolean) ? `高级查找选项正在生效；按 ${shortcutText('find')} 调整，输入新内容恢复普通搜索` : '';
+  quickSearchInput.title = message ? msg`${message}；按 ${shortcutText('find')} 调整查找选项` :
+    Object.values(searchOptions).some(Boolean) ? msg`高级查找选项正在生效；按 ${shortcutText('find')} 调整，输入新内容恢复普通搜索` : '';
 }
 function searchSignature(){ return JSON.stringify([searchInput.value, searchOptions]); }
 function clearSearch(){
@@ -5042,10 +5116,10 @@ clearSearchBtn.addEventListener('click', clearSearch);
 searchScopeBtn.addEventListener('click', () => {
   if(templateEditing) return;
   const scope = selectedSearchPath || matches[currentMatchIndex];
-  if(searchOptions.scopePath === null && !scope){ showToast('请先点击要查找的节点'); return; }
+  if(searchOptions.scopePath === null && !scope){ showToast(t('请先点击要查找的节点')); return; }
   searchOptions.scopePath = searchOptions.scopePath === null ? [...scope] : null;
   searchScopeBtn.setAttribute('aria-pressed', String(searchOptions.scopePath !== null));
-  searchScopeBtn.title = searchOptions.scopePath ? `查找范围：${encodePath(searchOptions.scopePath)}` : '仅在选中节点内查找：先点击一个节点';
+  searchScopeBtn.title = searchOptions.scopePath ? msg`查找范围：${encodePath(searchOptions.scopePath)}` : t('仅在选中节点内查找：先点击一个节点');
   tree.querySelectorAll('.search-scope-node').forEach(n => n.classList.remove('search-scope-node'));
   if(searchOptions.scopePath) for(const node of tree.querySelectorAll('.tree-node')) if(node.dataset.path === encodePath(searchOptions.scopePath)) node.classList.add('search-scope-node');
   clearTimeout(searchTimer); searchTree(searchInput.value); searchInput.focus();
@@ -5076,9 +5150,9 @@ function queueSearch(e){
   matches = []; nextMatchBtn.disabled = true; prevMatchBtn.disabled = true; setSearchError('');
   lastSearchSignature = null;
   clearTimeout(searchTimer);
-  if(e?.isComposing){ setSearchCount('输入中…'); return; }
+  if(e?.isComposing){ setSearchCount(t('输入中…')); return; }
   if(!searchInput.value){ void searchTree(''); return; }
-  setSearchCount('搜索中…');
+  setSearchCount(t('搜索中…'));
   searchTimer = setTimeout(() => searchTree(searchInput.value), 160);
 }
 searchInput.addEventListener('input', queueSearch);
@@ -5103,8 +5177,8 @@ async function searchTree(query){
   const q = query;
   if(!q){ clearSearchHighlights(); setSearchCount(''); return; }
   try { compileSearch(q, searchOptions); }
-  catch(error){ clearSearchHighlights(); setSearchCount('表达式无效'); setSearchError(error.message); return; }
-  setSearchCount('搜索中…');
+  catch(error){ clearSearchHighlights(); setSearchCount(t('表达式无效')); setSearchError(error.message); return; }
+  setSearchCount(t('搜索中…'));
   const temporarySource = ideActive ? new MemoryDataSource((activeDoc()?.ideDraft ?? activeDoc()?.text ?? '').split(/\r?\n/)) : null;
   const source = temporarySource || activeDoc()?.source;
   if(!source || !activeDoc() || activeDoc().error){ temporarySource?.dispose(); clearSearchHighlights(); setSearchCount('0'); return; }
@@ -5115,7 +5189,7 @@ async function searchTree(query){
     ...(ideActive ? {textLines:true, scopePath:null} : {}),
     cancelled: () => generation !== searchGeneration
   }); }catch(error){
-    if(generation === searchGeneration){ clearSearchHighlights(); setSearchCount('搜索失败'); setSearchError(error.message); }
+    if(generation === searchGeneration){ clearSearchHighlights(); setSearchCount(t('搜索失败')); setSearchError(error.message); }
     return;
   }finally{ temporarySource?.dispose(); }
   if(!result || generation !== searchGeneration) return;
@@ -5123,7 +5197,7 @@ async function searchTree(query){
   matches = result.hits;
   searchTruncated = result.truncated;
   lastSearchSignature = JSON.stringify([query, searchOptions]);
-  if(!matches.length){ setSearchCount('无结果'); return; }
+  if(!matches.length){ setSearchCount(t('无结果')); return; }
   nextMatchBtn.disabled = false;
   prevMatchBtn.disabled = false;
   await focusMatch(0);
@@ -5181,7 +5255,7 @@ async function focusMatch(index, select = false){
     else requestAnimationFrame(() => { if(node.isConnected) centerNode(node); });
   }
   setSearchCount(`${index + 1} / ${matches.length}${searchTruncated ? '+' : ''}`);
-  searchCount.title = searchTruncated ? '仅列出前 1000 项匹配，请缩小搜索范围' : '';
+  searchCount.title = searchTruncated ? t('仅列出前 1000 项匹配，请缩小搜索范围') : '';
   scheduleOverflowSweep();
 }
 
@@ -5359,8 +5433,8 @@ window.addEventListener('drop', e => e.preventDefault());
 
 // Native startup is deferred until the reader and canvas are initialized.
 document.getElementById('reopenHint').textContent = desktop
-  ? '下次启动时从原路径读取文件的最新内容。关闭此项会清除恢复记录，不会删除原文件。'
-  : '在浏览器本地保存文件副本，刷新后继续打开。关闭此项会清除副本，不会删除原文件。';
+  ? t('下次启动时从原路径读取文件的最新内容。关闭此项会清除恢复记录，不会删除原文件。')
+  : t('在浏览器本地保存文件副本，刷新后继续打开。关闭此项会清除副本，不会删除原文件。');
 document.getElementById('cancelLoadBtn').addEventListener('click', () => {
   if(runningLoad){
     const batch = runningLoad.batch;
@@ -5371,29 +5445,29 @@ function initializeShortcutHints(){
   document.getElementById('openShortcutModifier').textContent = primaryModifier;
   document.getElementById('findShortcutLabel').textContent = shortcutText('find');
   const buttons = {
-    chooseBtn:['open','打开文件'], openAnotherBtn:['open','打开文件'],
-    newDocBtn:['newDocument','新建空白文档'], newAnotherBtn:['newDocument','新建空白文档'],
-    saveBtn:['save','保存修改'], saveCopyBtn:['saveCopy','另存为副本'],
-    ctxCopy:['copyNode','复制节点内容'],
-    undoEditBtn:['undo','撤销修改'], redoEditBtn:['redo','重做修改'], formatIdeBtn:['format','格式化文档'],
-    collapseAllBtn:['collapseAll','全部收起'], settingsBtn:['settings','设置'],
-    nextMatchBtn:['nextMatch','下一个匹配'], prevMatchBtn:['previousMatch','上一个匹配'],
-    quickNextMatchBtn:['nextMatch','下一个匹配'],
-    switchViewBtn:['switchView','切换树形 / IDE 视图'], editModeBtn:['editMode','切换编辑模式'], designModeBtn:['designMode','切换设计模式'],
-    resetViewBtn:['resetView','重置视图'], aboutBtn:['about','关于 JSON Atlas']
+    chooseBtn:['open',t('打开文件')], openAnotherBtn:['open',t('打开文件')],
+    newDocBtn:['newDocument',t('新建空白文档')], newAnotherBtn:['newDocument',t('新建空白文档')],
+    saveBtn:['save',t('保存修改')], saveCopyBtn:['saveCopy',t('另存为副本')],
+    ctxCopy:['copyNode',t('复制节点内容')],
+    undoEditBtn:['undo',t('撤销修改')], redoEditBtn:['redo',t('重做修改')], formatIdeBtn:['format',t('格式化文档')],
+    collapseAllBtn:['collapseAll',t('全部收起')], settingsBtn:['settings',t('设置')],
+    nextMatchBtn:['nextMatch',t('下一个匹配')], prevMatchBtn:['previousMatch',t('上一个匹配')],
+    quickNextMatchBtn:['nextMatch',t('下一个匹配')],
+    switchViewBtn:['switchView',t('切换树形 / IDE 视图')], editModeBtn:['editMode',t('切换编辑模式')], designModeBtn:['designMode',t('切换设计模式')],
+    resetViewBtn:['resetView',t('重置视图')], aboutBtn:['about',t('关于 JSON Atlas')]
   };
-  for(const [id,[action,label]] of Object.entries(buttons)) document.getElementById(id).title = `${label}（${shortcutText(action)}）`;
-  document.getElementById('redoEditBtn').title += '。撤销后可以重做，继续编辑会清除重做记录。';
+  for(const [id,[action,label]] of Object.entries(buttons)) document.getElementById(id).title = msg`${label}（${shortcutText(action)}）`;
+  document.getElementById('redoEditBtn').title += t('。撤销后可以重做，继续编辑会清除重做记录。');
   const help = document.getElementById('shortcutHelp');
   help.replaceChildren();
-  for(const [action,label] of Object.entries({newDocument:'新建空白文档',open:'打开文件',save:'保存',saveCopy:'另存为副本',close:'关闭当前文件',undo:'撤销修改',redo:'重做修改',copyNode:'复制选中节点内容',find:'查找',nextMatch:'下一个匹配',previousMatch:'上一个匹配',format:'格式化文档',settings:'打开设置',switchView:'切换树形 / IDE 视图',editMode:'切换树形编辑模式',designMode:'切换设计模式',resetView:'重置视图 / IDE 字号',about:'关于 JSON Atlas',expandAll:'展开全部 / 当前页',collapseAll:'全部收起',nextFile:'下一个文件',previousFile:'上一个文件'})){
+  for(const [action,label] of Object.entries({newDocument:t('新建空白文档'),open:t('打开文件'),save:t('保存'),saveCopy:t('另存为副本'),close:t('关闭当前文件'),undo:t('撤销修改'),redo:t('重做修改'),copyNode:t('复制选中节点内容'),find:t('查找'),nextMatch:t('下一个匹配'),previousMatch:t('上一个匹配'),format:t('格式化文档'),settings:t('打开设置'),switchView:t('切换树形 / IDE 视图'),editMode:t('切换树形编辑模式'),designMode:t('切换设计模式'),resetView:t('重置视图 / IDE 字号'),about:t('关于 JSON Atlas'),expandAll:t('展开全部 / 当前页'),collapseAll:t('全部收起'),nextFile:t('下一个文件'),previousFile:t('上一个文件')})){
     const name = document.createElement('dt'), value = document.createElement('dd'), keys = document.createElement('kbd');
     const alternative = shortcutAlternativeLabel(action, macPlatform);
     name.textContent = label;
     keys.textContent = alternative ? `${shortcutText(action)} / ${alternative}` : shortcutText(action);
     value.appendChild(keys); help.append(name,value);
   }
-  document.querySelector('.statusbar .help').textContent = `空白处拖动 · 滚轮平移 · ${primaryModifier} + 滚轮缩放 · 右键节点展开/收起子树`;
+  document.querySelector('.statusbar .help').textContent = msg`空白处拖动 · 滚轮平移 · ${primaryModifier} + 滚轮缩放 · 右键节点展开/收起子树`;
 }
 initializeShortcutHints();
 syncDocumentMenu();
@@ -5401,7 +5475,7 @@ installTooltips(document, window);
 
 (async () => {
   if(!nativeRestore) restoreDesignDrafts();
-  await connectDesktop(openPaths, error => showToast('桌面文件入口失败：' + error), action => {
+  await connectDesktop(openPaths, error => showToast(t('桌面文件入口失败：') + error), action => {
     if(['valueEditDialog','designTopicDialog','discardEditDialog','deleteTopicDialog','saveConflictDialog'].some(id => document.getElementById(id).open)) return;
     if(['aboutDialog','updateDialog'].some(id => document.getElementById(id).open)
       || ['settingsMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'))) return;
@@ -5456,4 +5530,4 @@ installTooltips(document, window);
     for(const doc of docs) if(doc !== current) scheduleIndexVerification(doc);
     restoreDesignDrafts(false);
   }
-})().catch(error => showToast('启动失败：' + error));
+})().catch(error => showToast(t('启动失败：') + error));

@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 // Pure data operations shared by the reader, worker and regression tests.
 import { compileSearch } from './search-pattern.js';
 export const MAX_FILE_BYTES = 256 * 1024 * 1024;
@@ -16,7 +17,7 @@ export function parseJsonl(text) {
     if (!raw) continue;
     if (raw.startsWith('#') || raw.startsWith('//')) {
       bad.push({ line: totalLines, text: raw.slice(0, 160), comment: true,
-        message: 'JSONL 规范不支持注释行（严格模式）' });
+        message: t('JSONL 规范不支持注释行（严格模式）') });
       continue;
     }
     try { records.push(JSON.parse(raw)); }
@@ -32,12 +33,12 @@ export function parseDocument(text, name) {
     try { return { kind, parsed: JSON.parse(text) }; }
     catch (error) {
       const result = parseJsonl(text);
-      if (!result.records.length) return { kind, error: 'JSON 解析失败：\n' + error.message };
+      if (!result.records.length) return { kind, error: t('JSON 解析失败：\n') + error.message };
       return { kind: 'jsonl', ...result };
     }
   }
   const result = parseJsonl(text);
-  return { kind, ...result, error: result.records.length ? null : 'JSONL 内没有可解析的记录' };
+  return { kind, ...result, error: result.records.length ? null : t('JSONL 内没有可解析的记录') };
 }
 
 export function* walkData(value, rootLabel = 'root', indexBase = 0, hidden = new Set(), initialPath = [], lowercase = true) {

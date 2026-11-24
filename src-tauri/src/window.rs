@@ -54,165 +54,9 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         config.center = false;
     }
     config.visible = false;
-    let new_document = MenuItem::with_id(
-        app,
-        "new-document",
-        menu_title("新建空白文档", "新建空白文档(&N)"),
-        true,
-        Some("CmdOrCtrl+N"),
-    )?;
-    let open = MenuItem::with_id(
-        app,
-        "open",
-        menu_title("打开文件…", "打开文件(&O)…"),
-        true,
-        Some("CmdOrCtrl+O"),
-    )?;
-    let close = MenuItem::with_id(
-        app,
-        "close",
-        menu_title("关闭当前文件", "关闭当前文件(&W)"),
-        true,
-        None::<&str>,
-    )?;
-    let quit = MenuItem::with_id(
-        app,
-        "quit",
-        menu_title("退出 JSON Atlas", "退出(&X)"),
-        true,
-        Some(if cfg!(target_os = "macos") {
-            "Cmd+Q"
-        } else {
-            "Alt+F4"
-        }),
-    )?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let save = MenuItem::with_id(
-        app,
-        "save-copy",
-        "另存为…",
-        false,
-        Some("CmdOrCtrl+Shift+S"),
-    )?;
-    let save_original = MenuItem::with_id(
-        app,
-        "save",
-        menu_title("保存", "保存(&S)"),
-        false,
-        Some("CmdOrCtrl+S"),
-    )?;
-    let file_items: &[&dyn tauri::menu::IsMenuItem<_>] = if cfg!(target_os = "macos") {
-        &[&new_document, &open, &close, &save_original, &save]
-    } else {
-        &[
-            &new_document,
-            &open,
-            &close,
-            &save_original,
-            &save,
-            &separator,
-            &quit,
-        ]
-    };
-    let file = Submenu::with_items(app, menu_title("文件", "文件(&F)"), true, file_items)?;
-    let edit_mode = MenuItem::with_id(app, "edit-mode", "编辑模式", false, None::<&str>)?;
-    let design_mode = MenuItem::with_id(app, "design-mode", "设计模式", false, None::<&str>)?;
-    let undo = MenuItem::with_id(app, "undo-edit", "撤销修改", false, None::<&str>)?;
-    let redo = MenuItem::with_id(app, "redo-edit", "重做修改", false, None::<&str>)?;
-    let format = MenuItem::with_id(app, "format-json", "格式化文档", false, None::<&str>)?;
+    let menu = build_menu(app.handle(), false)?;
     #[cfg(target_os = "macos")]
-    let edit = Submenu::with_items(
-        app,
-        "编辑",
-        true,
-        &[
-            &undo,
-            &redo,
-            &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::cut(app, Some("剪切"))?,
-            // Copy and Undo have document-specific meanings. Leave ⌘C/⌘Z to the
-            // WebView's focus-aware handler; predefined items would claim those keys.
-            &MenuItem::with_id(
-                app,
-                "copy-node",
-                menu_label("复制选中节点内容", Some("⌘+C")),
-                false,
-                None::<&str>,
-            )?,
-            &PredefinedMenuItem::paste(app, Some("粘贴"))?,
-            &PredefinedMenuItem::select_all(app, Some("全选"))?,
-            &PredefinedMenuItem::separator(app)?,
-            &edit_mode,
-            &design_mode,
-            &format,
-        ],
-    )?;
-    #[cfg(not(target_os = "macos"))]
-    let edit = Submenu::with_items(
-        app,
-        "编辑(&E)",
-        true,
-        &[&edit_mode, &design_mode, &undo, &redo, &format],
-    )?;
-    let reset = MenuItem::with_id(
-        app,
-        "reset",
-        menu_title("重置视图", "重置视图(&R)"),
-        true,
-        None::<&str>,
-    )?;
-    let find = MenuItem::with_id(
-        app,
-        "find",
-        menu_title("查找…", "查找(&F)…"),
-        true,
-        Some("CmdOrCtrl+F"),
-    )?;
-    let settings = MenuItem::with_id(
-        app,
-        "settings",
-        menu_title("设置…", "设置(&S)…"),
-        true,
-        None::<&str>,
-    )?;
-    let switch_view = MenuItem::with_id(app, "switch-view", "IDE 视图", false, None::<&str>)?;
-    let view = Submenu::with_items(
-        app,
-        menu_title("查看", "查看(&V)"),
-        true,
-        &[&switch_view, &find, &reset, &settings],
-    )?;
-    let about = MenuItem::with_id(
-        app,
-        "about",
-        menu_title("关于 JSON Atlas", "关于 JSON Atlas(&A)"),
-        true,
-        None::<&str>,
-    )?;
-    let check_update = MenuItem::with_id(app, "check-update", "检查更新…", true, None::<&str>)?;
-    #[cfg(not(target_os = "macos"))]
-    let help = Submenu::with_items(app, "帮助(&H)", true, &[&check_update, &about])?;
-    #[cfg(target_os = "macos")]
-    {
-        let app_menu = Submenu::with_items(
-            app,
-            "JSON Atlas",
-            true,
-            &[
-                &about,
-                &check_update,
-                &PredefinedMenuItem::separator(app)?,
-                &PredefinedMenuItem::services(app, Some("服务"))?,
-                &PredefinedMenuItem::separator(app)?,
-                &PredefinedMenuItem::hide(app, Some("隐藏 JSON Atlas"))?,
-                &PredefinedMenuItem::hide_others(app, Some("隐藏其他应用"))?,
-                &PredefinedMenuItem::separator(app)?,
-                // Keep the custom Quit item so ⌘Q still goes through the unsaved-edit guard.
-                &quit,
-            ],
-        )?;
-        app.set_menu(Menu::with_items(app, &[&app_menu, &file, &edit, &view])?)?;
-    }
+    app.set_menu(menu)?;
     let dev_url = if cfg!(debug_assertions) {
         app.config().build.dev_url.clone()
     } else {
@@ -220,7 +64,7 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     };
     let builder = tauri::WebviewWindowBuilder::from_config(app, &config)?;
     #[cfg(not(target_os = "macos"))]
-    let builder = builder.menu(Menu::with_items(app, &[&file, &edit, &view, &help])?);
+    let builder = builder.menu(menu);
     builder
         .on_navigation(move |url| allowed_navigation(url, dev_url.as_ref()))
         .on_menu_event(|window, event| {
@@ -237,6 +81,260 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         })
         .build()?;
     Ok(())
+}
+
+fn build_menu(app: &tauri::AppHandle, english: bool) -> tauri::Result<Menu<tauri::Wry>> {
+    let label = |en, zh| if english { en } else { zh };
+    let new_document = MenuItem::with_id(
+        app,
+        "new-document",
+        label(
+            menu_title("New Blank Document", "&New Blank Document"),
+            menu_title("新建空白文档", "新建空白文档(&N)"),
+        ),
+        true,
+        Some("CmdOrCtrl+N"),
+    )?;
+    let open = MenuItem::with_id(
+        app,
+        "open",
+        label(
+            menu_title("Open File…", "&Open File…"),
+            menu_title("打开文件…", "打开文件(&O)…"),
+        ),
+        true,
+        Some("CmdOrCtrl+O"),
+    )?;
+    let close = MenuItem::with_id(
+        app,
+        "close",
+        label(
+            menu_title("Close Current File", "&Close Current File"),
+            menu_title("关闭当前文件", "关闭当前文件(&W)"),
+        ),
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(
+        app,
+        "quit",
+        label(
+            menu_title("Quit JSON Atlas", "E&xit"),
+            menu_title("退出 JSON Atlas", "退出(&X)"),
+        ),
+        true,
+        Some(if cfg!(target_os = "macos") {
+            "Cmd+Q"
+        } else {
+            "Alt+F4"
+        }),
+    )?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let save = MenuItem::with_id(
+        app,
+        "save-copy",
+        label("Save As…", "另存为…"),
+        false,
+        Some("CmdOrCtrl+Shift+S"),
+    )?;
+    let save_original = MenuItem::with_id(
+        app,
+        "save",
+        label(menu_title("Save", "&Save"), menu_title("保存", "保存(&S)")),
+        false,
+        Some("CmdOrCtrl+S"),
+    )?;
+    let file_items: &[&dyn tauri::menu::IsMenuItem<_>] = if cfg!(target_os = "macos") {
+        &[&new_document, &open, &close, &save_original, &save]
+    } else {
+        &[
+            &new_document,
+            &open,
+            &close,
+            &save_original,
+            &save,
+            &separator,
+            &quit,
+        ]
+    };
+    let file = Submenu::with_items(
+        app,
+        label(menu_title("File", "&File"), menu_title("文件", "文件(&F)")),
+        true,
+        file_items,
+    )?;
+    let edit_mode = MenuItem::with_id(
+        app,
+        "edit-mode",
+        label("Edit Mode", "编辑模式"),
+        false,
+        None::<&str>,
+    )?;
+    let design_mode = MenuItem::with_id(
+        app,
+        "design-mode",
+        label("Design Mode", "设计模式"),
+        false,
+        None::<&str>,
+    )?;
+    let undo = MenuItem::with_id(
+        app,
+        "undo-edit",
+        label("Undo Changes", "撤销修改"),
+        false,
+        None::<&str>,
+    )?;
+    let redo = MenuItem::with_id(
+        app,
+        "redo-edit",
+        label("Redo Changes", "重做修改"),
+        false,
+        None::<&str>,
+    )?;
+    let format = MenuItem::with_id(
+        app,
+        "format-json",
+        label("Format Document", "格式化文档"),
+        false,
+        None::<&str>,
+    )?;
+    #[cfg(target_os = "macos")]
+    let edit = Submenu::with_items(
+        app,
+        label("Edit", "编辑"),
+        true,
+        &[
+            &undo,
+            &redo,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, Some(label("Cut", "剪切")))?,
+            // Copy and Undo have document-specific meanings. Leave ⌘C/⌘Z to the
+            // WebView's focus-aware handler; predefined items would claim those keys.
+            &MenuItem::with_id(
+                app,
+                "copy-node",
+                menu_label(
+                    label("Copy Selected Node Content", "复制选中节点内容"),
+                    Some("⌘+C"),
+                ),
+                false,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::paste(app, Some(label("Paste", "粘贴")))?,
+            &PredefinedMenuItem::select_all(app, Some(label("Select All", "全选")))?,
+            &PredefinedMenuItem::separator(app)?,
+            &edit_mode,
+            &design_mode,
+            &format,
+        ],
+    )?;
+    #[cfg(not(target_os = "macos"))]
+    let edit = Submenu::with_items(
+        app,
+        label("&Edit", "编辑(&E)"),
+        true,
+        &[&edit_mode, &design_mode, &undo, &redo, &format],
+    )?;
+    let reset = MenuItem::with_id(
+        app,
+        "reset",
+        label(
+            menu_title("Reset View", "&Reset View"),
+            menu_title("重置视图", "重置视图(&R)"),
+        ),
+        true,
+        None::<&str>,
+    )?;
+    let find = MenuItem::with_id(
+        app,
+        "find",
+        label(
+            menu_title("Find…", "&Find…"),
+            menu_title("查找…", "查找(&F)…"),
+        ),
+        true,
+        Some("CmdOrCtrl+F"),
+    )?;
+    let settings = MenuItem::with_id(
+        app,
+        "settings",
+        label(
+            menu_title("Settings…", "&Settings…"),
+            menu_title("设置…", "设置(&S)…"),
+        ),
+        true,
+        None::<&str>,
+    )?;
+    let switch_view = MenuItem::with_id(
+        app,
+        "switch-view",
+        label("IDE View", "IDE 视图"),
+        false,
+        None::<&str>,
+    )?;
+    let view = Submenu::with_items(
+        app,
+        label(menu_title("View", "&View"), menu_title("查看", "查看(&V)")),
+        true,
+        &[&switch_view, &find, &reset, &settings],
+    )?;
+    let about = MenuItem::with_id(
+        app,
+        "about",
+        label(
+            menu_title("About JSON Atlas", "&About JSON Atlas"),
+            menu_title("关于 JSON Atlas", "关于 JSON Atlas(&A)"),
+        ),
+        true,
+        None::<&str>,
+    )?;
+    let check_update = MenuItem::with_id(
+        app,
+        "check-update",
+        label("Check for Updates…", "检查更新…"),
+        true,
+        None::<&str>,
+    )?;
+    #[cfg(not(target_os = "macos"))]
+    let help = Submenu::with_items(
+        app,
+        label("&Help", "帮助(&H)"),
+        true,
+        &[&check_update, &about],
+    )?;
+    #[cfg(target_os = "macos")]
+    {
+        let app_menu = Submenu::with_items(
+            app,
+            "JSON Atlas",
+            true,
+            &[
+                &about,
+                &check_update,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::services(app, Some(label("Services", "服务")))?,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::hide(app, Some(label("Hide JSON Atlas", "隐藏 JSON Atlas")))?,
+                &PredefinedMenuItem::hide_others(app, Some(label("Hide Others", "隐藏其他应用")))?,
+                &PredefinedMenuItem::separator(app)?,
+                // Keep the custom Quit item so ⌘Q still goes through the unsaved-edit guard.
+                &quit,
+            ],
+        )?;
+        Menu::with_items(app, &[&app_menu, &file, &edit, &view])
+    }
+    #[cfg(not(target_os = "macos"))]
+    Menu::with_items(app, &[&file, &edit, &view, &help])
+}
+
+#[tauri::command]
+pub fn use_english_menu(window: tauri::WebviewWindow) -> Result<(), String> {
+    let menu = build_menu(window.app_handle(), true).map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    let result = window.app_handle().set_menu(menu);
+    #[cfg(not(target_os = "macos"))]
+    let result = window.set_menu(menu);
+    result.map(|_| ()).map_err(|error| error.to_string())
 }
 
 #[derive(serde::Deserialize)]

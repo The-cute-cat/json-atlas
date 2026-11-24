@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ideModel, normalizeViewMode, parseIdeText, formatIdeText, ideDecorations, ideTextLines, ideProjection, ideProjectedEdit } from '../src/ide-view.js';
 import { searchData } from '../src/data.js';
+import { setLanguage } from '../src/i18n.js';
+
+test.before(() => setLanguage('zh-CN'));
 
 const doc = data => ({data, text:JSON.stringify(data), size:100});
 test('bracket pairs retain both endpoints and ignore brackets inside strings', () => {

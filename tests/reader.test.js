@@ -1,3 +1,4 @@
+import { getLanguage, msg, normalizeLanguage, saveLanguage, setLanguage, t } from '../src/i18n.js';
 import { valueAt, replaceValue, editObjectTopic, parseEdit, serializeDocument } from '../src/editing.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,6 +16,8 @@ import { ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, id
 import { normalizeTheme, watchTheme } from '../src/theme.js';
 import { installTooltips } from '../src/tooltips.js';
 import { isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel } from '../src/shortcuts.js';
+
+test.before(() => setLanguage('zh-CN'));
 
 // A small DOM harness for reader state transitions; this does not test layout/WebView2.
 class Element {
@@ -39,7 +42,19 @@ class Element {
   appendChild(child) { if(child.parentElement) child.remove(); this.children.push(child); child.parentElement = this; return child; }
   append(...children) { children.forEach(child => this.appendChild(child)); }
   replaceChildren(...children) { this.children.forEach(child => { child.parentElement = null; }); this.children = []; this.append(...children); }
-  addEventListener(name, handler) { this.listeners.set(name, handler); }
+  addEventListener(name, handler, capture = false) {
+    const previous = this.listeners.get(name);
+    if (!previous) {
+      this.listeners.set(name, handler);
+      return;
+    }
+    // Keep both tree click handlers and run the capture handler first.
+    const [first, second] = capture ? [handler, previous] : [previous, handler];
+    this.listeners.set(name, event => {
+      first(event);
+      return second(event);
+    });
+  }
   setAttribute() {}
   removeAttribute() {}
   close() { this.open = false; }
@@ -90,6 +105,7 @@ function reader(storage = new Map(), native = {}) {
     querySelector: () => ({ getBoundingClientRect: () => ({ bottom: toolbarBottom }) })
   };
   const context = {
+    getLanguage, msg, normalizeLanguage, saveLanguage, t, initializeLanguage() {},
     document, window: { innerWidth: 1440, innerHeight: 900, addEventListener() {} }, navigator: { platform: 'Win32' },
     localStorage: {
       get length() { return storage.size; },
@@ -308,6 +324,47 @@ test('theme preference persists and is shown when settings reopen', () => {
   assert.equal(reopened.elements.get('optTheme').value,'dark');
   keyListeners.get('keydown')({key:'s',ctrlKey:true,altKey:true,preventDefault(){}});
   assert.equal(selector.value,'dark');
+});
+
+test('branch line preference jumps to the owning parent and optionally collapses its subtree', async () => {
+  const {api, elements, storage} = reader();
+  const doc = api.buildDoc('{"parent":{"child":1},"sibling":2}', 'tree.json', 40);
+  api.add(doc);
+  api.activateDoc(doc.id);
+  const tree = elements.get('tree');
+  const root = tree.firstElementChild;
+  const children = node => node.children.find(child => child.classList.contains('children')).children;
+  await api.expandOne(root);
+  const [parent] = children(root);
+  await api.expandOne(parent);
+  const [child] = children(parent);
+  const line = child.children.find(el => el.className === 'branch-line-target');
+  const clickLine = () => tree.listeners.get('click')({target:line});
+  const select = elements.get('optBranchLineAction');
+  const choose = value => {
+    elements.get('settingsBtn').click();
+    select.value = value;
+    select.listeners.get('change')();
+    elements.get('settingsClose').click();
+  };
+
+  assert.equal(tree.classList.contains('branch-lines-interactive'), false);
+  clickLine();
+  assert.equal(parent.classList.contains('selected-node'), false);
+
+  choose('jump');
+  clickLine();
+  assert.equal(tree.classList.contains('branch-lines-interactive'), true);
+  assert.equal(parent.classList.contains('selected-node'), true);
+  assert.equal(parent.classList.contains('open'), true);
+  assert.match(elements.get('pathText').textContent, /\$\.parent$/);
+
+  choose('collapse');
+  clickLine();
+  assert.equal(parent.classList.contains('open'), false);
+  assert.equal(children(parent).length, 0);
+  assert.equal(root.classList.contains('open'), true);
+  assert.equal(JSON.parse(storage.get('json-atlas_settings_v1')).branchLineAction, 'collapse');
 });
 
 test('settings category navigation switches panels and supports arrow keys without changing options', () => {
@@ -1040,8 +1097,8 @@ test('clearing the template rebuilds the tree so hidden fields come back', async
   assert.equal(nodeKeys(tree).includes('secret'), true);
 });
 
-test('hiding and restoring a node uses the template without collapsing open branches', async () => {
-  const { api, elements, flush } = reader();
+test('right-click hiding is temporary and can be restored from the blank canvas without collapsing open branches', async () => {
+  const { api, elements, flush, storage } = reader();
   const raw = '{"secret":1,"other":2,"keep":{"nested":{"value":3}}}';
   const doc = api.buildDoc(raw, 'data.json', raw.length);
   api.add(doc);
@@ -1065,57 +1122,58 @@ test('hiding and restoring a node uses the template without collapsing open bran
   await flush();
   hide('$.other');
   await flush();
-  assert.deepEqual(Array.from(api.template().hidden), ['$.secret', '$.other']);
+  assert.equal(storage.has('json-atlas_template_v1'), false);
   assert.equal(nodeKeys(tree).includes('secret'), false);
+  assert.equal(nodeKeys(tree).includes('other'), false);
   assert.deepEqual(openPaths(), paths);
 
   api.openEditor();
   elements.get('editorSaveBtn').click();
   await flush();
   assert.deepEqual(openPaths(), paths);
+  assert.deepEqual(Array.from(api.template().hidden), []);
 
-  const list = elements.get('hiddenTemplateList');
-  const group = list.firstElementChild;
-  assert.equal(list.children.length,1);
-  assert.equal(group.firstElementChild.open,false);
-  const summary = group.firstElementChild.firstElementChild;
-  assert.deepEqual(summary.children.map(item => item.textContent),['data.json','2']);
-  const rules = group.firstElementChild.children[1];
-  const mask = rules.firstElementChild.children[2];
-  assert.equal(mask.title,'仅对当前活动文件有效');
-  mask.click();
-  await flush();
-  assert.equal(mask.textContent,'取消屏蔽');
-  assert.equal(mask.dataset.masked,'true');
-  assert.ok(nodeKeys(tree).includes('secret'));
-  assert.deepEqual(Array.from(api.template().hidden), ['$.secret', '$.other']);
-
-  const second = api.buildDoc('{"secret":2,"newRule":3}', 'second.json', 24);
+  const second = api.buildDoc(raw, 'data.json', raw.length);
   api.add(second);
   api.activateDoc(second.id);
   await flush();
   await api.expandByPaths(['$'], {exact:true});
-  assert.equal(nodeKeys(tree).includes('secret'),false);
-  hide('$.newRule');
-  await flush();
-  assert.equal(list.children.length,2);
-  assert.equal(api.template().hiddenSources['$.secret'].name,'data.json');
-  assert.equal(api.template().hiddenSources['$.newRule'].name,'second.json');
+  assert.ok(nodeKeys(tree).includes('secret'));
+  assert.ok(nodeKeys(tree).includes('other'));
 
   api.activateDoc(doc.id);
   await flush();
-  assert.ok(nodeKeys(tree).includes('secret'));
-  list.firstElementChild.firstElementChild.children[1].firstElementChild.children[1].click();
-  assert.deepEqual(Array.from(api.template().hidden), ['$.other', '$.newRule']);
-  list.firstElementChild.children[1].click();
-  assert.deepEqual(Array.from(api.template().hidden), ['$.newRule']);
+  assert.equal(nodeKeys(tree).includes('secret'), false);
+  elements.get('viewport').listeners.get('contextmenu')({
+    target:{closest:()=>null}, clientX:30, clientY:45, preventDefault(){}, stopPropagation(){}
+  });
+  assert.equal(elements.get('canvasMenu').hidden, false);
+  elements.get('ctxCanvasRules').click();
+  const list = elements.get('canvasRulesList');
+  assert.deepEqual(list.children.map(row => row.firstElementChild.textContent), ['$.secret', '$.other']);
+  assert.equal(list.firstElementChild.children[1].textContent, '还原临时隐藏');
   list.firstElementChild.children[1].click();
   await flush();
-  assert.equal(api.template().hidden.length, 0);
   assert.ok(nodeKeys(tree).includes('secret'));
+  assert.equal(nodeKeys(tree).includes('other'), false);
+  list.firstElementChild.children[1].click();
+  await flush();
+  assert.equal(list.children.length, 0);
+  assert.equal(elements.get('canvasRulesEmpty').hidden, false);
   assert.ok(nodeKeys(tree).includes('other'));
   assert.deepEqual(openPaths(), paths);
   assert.equal(doc.text, raw);
+
+  elements.get('canvasRulesClose').click();
+  hide('$.secret');
+  await flush();
+  api.closeDoc(doc.id);
+  const reopened = api.buildDoc(raw, doc.name, raw.length);
+  api.add(reopened);
+  api.activateDoc(reopened.id);
+  await flush();
+  await api.expandByPaths(['$'], {exact:true});
+  assert.ok(nodeKeys(tree).includes('secret'));
 });
 
 test('legacy rule sources merge by filename and settings search filters paths', () => {
@@ -2033,7 +2091,8 @@ test('selecting a card enables Ctrl+C for its full contents, without stealing or
   const doc=api.buildDoc('{"text":"hello","number":42}','copy.json',28);api.add(doc);api.activateDoc(doc.id);
   const root=elements.get('tree').firstElementChild;await root._ensureChildren();
   const leaf=elements.get('tree').querySelectorAll('.tree-node').find(node=>node.dataset.path==='$.text');
-  const target={closest:selector=>selector==='.tree-node'?leaf:selector==='.node-card'?{}:null};
+  const target=new Element();
+  target.closest=selector=>selector==='.tree-node'?leaf:selector==='.node-card'?target:null;
   elements.get('tree').listeners.get('pointerdown')({target});
   assert(leaf.classList.contains('selected-node'));
   const press=(extra={})=>{let prevented=false;keyListeners.get('keydown')({key:'c',ctrlKey:true,target:elements.get('viewport'),preventDefault(){prevented=true;},...extra});return prevented;};

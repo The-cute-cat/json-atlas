@@ -980,6 +980,33 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 }
 /* Leaf nodes have an invisible toggle: bridge that space up to the card. */
 .children>.tree-node:not(.branch)::before{width:57px}
+/* The hit area follows each segment of the vertical connector. */
+.branch-line-target{
+  display:none;
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:9px;
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  cursor:pointer;
+  z-index:1;
+}
+#tree.branch-lines-interactive .children>.tree-node>.branch-line-target{display:block}
+.children>.tree-node:is(:last-child,:has(+ .page-navigation))>.branch-line-target{
+  bottom:auto;
+  height:31px;
+}
+.branch-line-target:hover::before{
+  content:"";
+  position:absolute;
+  inset:0 auto 0 0;
+  width:2px;
+  background:var(--accent);
+}
 /* Optional original layout, shared by the reader and template editor. */
 .legacy-tree-layout .tree-node{
   flex-direction:row;
@@ -999,6 +1026,13 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   background:var(--line);
 }
 .legacy-tree-layout .children>.tree-node{padding:0}
+.legacy-tree-layout .children>.tree-node>.branch-line-target{
+  left:-21px;
+  top:-9px;
+  bottom:-9px;
+  height:auto;
+}
+.legacy-tree-layout .children>.tree-node:last-child>.branch-line-target{bottom:8px}
 .legacy-tree-layout .children>.tree-node::after{content:none}
 .legacy-tree-layout .children>.tree-node::before{
   left:-21px;

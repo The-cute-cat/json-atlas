@@ -5,7 +5,10 @@ import { runInNewContext } from 'node:vm';
 import { MemoryDataSource } from '../src/data-source.js';
 import { MAX_RENDERED_CHILDREN, PAGE_SIZE } from '../src/data.js';
 import { IndexedDataSource } from '../src/large-files.js';
+import { msg, setLanguage, t } from '../src/i18n.js';
 import { PageCache } from '../src/page-cache.js';
+
+test.before(() => setLanguage('zh-CN'));
 
 class Element {
   children = [];
@@ -18,7 +21,7 @@ class Element {
 const sourceText = readFileSync(new URL('../src/paging.js', import.meta.url), 'utf8')
   .replace(/^import .*;\r?\n/gm, '').replaceAll('export function', 'function');
 const { pagedChildren, discardPagedTree } = runInNewContext(sourceText + '\n;({pagedChildren, discardPagedTree})', {
-  MAX_RENDERED_CHILDREN, PAGE_SIZE, AbortController, setTimeout, document: { createElement: () => new Element() }
+  msg, t, MAX_RENDERED_CHILDREN, PAGE_SIZE, AbortController, setTimeout, document: { createElement: () => new Element() }
 });
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const event = { stopPropagation() {} };

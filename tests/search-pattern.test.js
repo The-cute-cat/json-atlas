@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { compileSearch } from '../src/search-pattern.js';
 import { searchData } from '../src/data.js';
+import { setLanguage } from '../src/i18n.js';
+
+test.before(() => setLanguage('zh-CN'));
 
 test('exact result caps do not report truncation and expanded regex sizes are bounded', async () => {
   for(const textLines of [false, true]) {
