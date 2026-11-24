@@ -34,17 +34,25 @@ try {
     if ($match.Count -ne 1) { throw "Missing or ambiguous MSI registration: $Key [$Name]" }
   }
 
-  $progId = 'JSONAtlas.Document'
+  $associations = [ordered]@{
+    'json' = @('JSONAtlas.Document', 'document.ico')
+    'jsonl' = @('JSONAtlas.Jsonl', 'document-jsonl.ico')
+    'ndjson' = @('JSONAtlas.Ndjson', 'document-ndjson.ico')
+    'jsonlines' = @('JSONAtlas.JsonLines', 'document-jsonlines.ico')
+  }
   $capabilities = 'Software\The_cute_cat\JSON Atlas\Capabilities'
-  Assert-Registration "Software\Classes\$progId\shell\open\command" '' '"[INSTALLDIR]json-atlas.exe" "%1"'
-  Assert-Registration "Software\Classes\$progId\DefaultIcon" '' '"[INSTALLDIR]document.ico",0'
   Assert-Registration 'Software\Classes\Applications\json-atlas.exe\shell\open\command' '' '"[INSTALLDIR]json-atlas.exe" "%1"'
   Assert-Registration 'Software\RegisteredApplications' 'JSON Atlas' $capabilities
   Assert-Registration $capabilities 'ApplicationName' 'JSON Atlas'
-  foreach ($extension in @('.json', '.jsonl', '.ndjson', '.jsonlines')) {
-    Assert-Registration "Software\Classes\$extension\OpenWithProgids" $progId ''
-    Assert-Registration "$capabilities\FileAssociations" $extension $progId
-    Assert-Registration 'Software\Classes\Applications\json-atlas.exe\SupportedTypes' $extension ''
+  foreach ($extension in $associations.Keys) {
+    $progId, $icon = $associations[$extension]
+    $iconValue = '"[INSTALLDIR]{0}",0' -f $icon
+    Assert-Registration "Software\Classes\$progId\shell\open\command" '' '"[INSTALLDIR]json-atlas.exe" "%1"'
+    Assert-Registration "Software\Classes\$progId\DefaultIcon" '' $iconValue
+    Assert-Registration "Software\Classes\JSON Atlas.$extension\DefaultIcon" '' $iconValue
+    Assert-Registration "Software\Classes\.$extension\OpenWithProgids" $progId ''
+    Assert-Registration "$capabilities\FileAssociations" ".$extension" $progId
+    Assert-Registration 'Software\Classes\Applications\json-atlas.exe\SupportedTypes' ".$extension" ''
   }
   if ($registry | Where-Object { $_.Key -match 'Explorer\\FileExts\\.*\\UserChoice' }) {
     throw 'MSI must not overwrite Windows UserChoice.'
@@ -68,7 +76,8 @@ try {
     [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record)
   }
   $view.Close()
-  foreach ($requiredFile in @('json-atlas.exe', 'document.ico')) {
+  $iconFiles = foreach ($association in $associations.Values) { $association[1] }
+  foreach ($requiredFile in (@('json-atlas.exe') + $iconFiles)) {
     if ($requiredFile -notin $files) { throw "Missing association target file: $requiredFile" }
   }
   function Read-InstallerRows([string]$Query, [int]$Columns) {

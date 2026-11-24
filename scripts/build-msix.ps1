@@ -94,13 +94,25 @@ try {
     } finally {
         $appImage.Dispose()
     }
-    $documentIcon = [System.Drawing.Icon]::new($documentPath, 44, 44)
-    $documentImage = $documentIcon.ToBitmap()
-    try {
-        Save-SquareLogo $documentImage 44 (Join-Path $assets 'DocumentLogo.png')
-    } finally {
-        $documentImage.Dispose()
-        $documentIcon.Dispose()
+    $documentLogos = @{
+        'document.ico' = 'DocumentLogo.png'
+        'document-jsonl.ico' = 'DocumentLogo-jsonl.png'
+        'document-ndjson.ico' = 'DocumentLogo-ndjson.png'
+        'document-jsonlines.ico' = 'DocumentLogo-jsonlines.png'
+    }
+    foreach ($iconName in $documentLogos.Keys) {
+        $iconPath = Join-Path $tauri "icons\$iconName"
+        $documentIcon = [System.Drawing.Icon]::new($iconPath, 44, 44)
+        try {
+            $documentImage = $documentIcon.ToBitmap()
+            try {
+                Save-SquareLogo $documentImage 44 (Join-Path $assets $documentLogos[$iconName])
+            } finally {
+                $documentImage.Dispose()
+            }
+        } finally {
+            $documentIcon.Dispose()
+        }
     }
 
     $manifest = [xml](Get-Content -LiteralPath (Join-Path $tauri 'windows\AppxManifest.xml') -Raw)

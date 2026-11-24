@@ -16,18 +16,61 @@
           </RegistryKey>
         </RegistryKey>
 
+        <RegistryKey Root="HKLM" Key="Software\Classes\JSONAtlas.Jsonl">
+          <RegistryValue Type="string" Value="JSON Atlas JSONL document" />
+          <RegistryValue Name="FriendlyTypeName" Type="string" Value="JSON Atlas JSONL document" />
+          <RegistryKey Key="DefaultIcon">
+            <RegistryValue Type="string" Value="&quot;[INSTALLDIR]document-jsonl.ico&quot;,0" />
+          </RegistryKey>
+          <RegistryKey Key="shell\open\command">
+            <RegistryValue Type="string" Value="&quot;[INSTALLDIR]json-atlas.exe&quot; &quot;%1&quot;" />
+          </RegistryKey>
+        </RegistryKey>
+
+        <RegistryKey Root="HKLM" Key="Software\Classes\JSONAtlas.Ndjson">
+          <RegistryValue Type="string" Value="JSON Atlas NDJSON document" />
+          <RegistryValue Name="FriendlyTypeName" Type="string" Value="JSON Atlas NDJSON document" />
+          <RegistryKey Key="DefaultIcon">
+            <RegistryValue Type="string" Value="&quot;[INSTALLDIR]document-ndjson.ico&quot;,0" />
+          </RegistryKey>
+          <RegistryKey Key="shell\open\command">
+            <RegistryValue Type="string" Value="&quot;[INSTALLDIR]json-atlas.exe&quot; &quot;%1&quot;" />
+          </RegistryKey>
+        </RegistryKey>
+
+        <RegistryKey Root="HKLM" Key="Software\Classes\JSONAtlas.JsonLines">
+          <RegistryValue Type="string" Value="JSON Atlas JSON Lines document" />
+          <RegistryValue Name="FriendlyTypeName" Type="string" Value="JSON Atlas JSON Lines document" />
+          <RegistryKey Key="DefaultIcon">
+            <RegistryValue Type="string" Value="&quot;[INSTALLDIR]document-jsonlines.ico&quot;,0" />
+          </RegistryKey>
+          <RegistryKey Key="shell\open\command">
+            <RegistryValue Type="string" Value="&quot;[INSTALLDIR]json-atlas.exe&quot; &quot;%1&quot;" />
+          </RegistryKey>
+        </RegistryKey>
+
         <RegistryKey Root="HKLM" Key="Software\Classes\.json\OpenWithProgids">
           <RegistryValue Name="JSONAtlas.Document" Type="string" Value="" />
         </RegistryKey>
         <RegistryKey Root="HKLM" Key="Software\Classes\.jsonl\OpenWithProgids">
-          <RegistryValue Name="JSONAtlas.Document" Type="string" Value="" />
+          <RegistryValue Name="JSONAtlas.Jsonl" Type="string" Value="" />
         </RegistryKey>
         <RegistryKey Root="HKLM" Key="Software\Classes\.ndjson\OpenWithProgids">
-          <RegistryValue Name="JSONAtlas.Document" Type="string" Value="" />
+          <RegistryValue Name="JSONAtlas.Ndjson" Type="string" Value="" />
         </RegistryKey>
         <RegistryKey Root="HKLM" Key="Software\Classes\.jsonlines\OpenWithProgids">
-          <RegistryValue Name="JSONAtlas.Document" Type="string" Value="" />
+          <RegistryValue Name="JSONAtlas.JsonLines" Type="string" Value="" />
         </RegistryKey>
+
+        <!-- Tauri also advertises extension-specific ProgIDs in the MSI. -->
+        <RegistryValue Root="HKLM" Key="Software\Classes\JSON Atlas.json\DefaultIcon"
+                       Type="string" Value="&quot;[INSTALLDIR]document.ico&quot;,0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\JSON Atlas.jsonl\DefaultIcon"
+                       Type="string" Value="&quot;[INSTALLDIR]document-jsonl.ico&quot;,0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\JSON Atlas.ndjson\DefaultIcon"
+                       Type="string" Value="&quot;[INSTALLDIR]document-ndjson.ico&quot;,0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\JSON Atlas.jsonlines\DefaultIcon"
+                       Type="string" Value="&quot;[INSTALLDIR]document-jsonlines.ico&quot;,0" />
 
         <RegistryKey Root="HKLM" Key="Software\Classes\Applications\json-atlas.exe">
           <RegistryValue Name="FriendlyAppName" Type="string" Value="JSON Atlas" />
@@ -48,9 +91,9 @@
           <RegistryValue Name="ApplicationIcon" Type="string" Value="&quot;[INSTALLDIR]json-atlas.exe&quot;,0" />
           <RegistryKey Key="FileAssociations">
             <RegistryValue Name=".json" Type="string" Value="JSONAtlas.Document" />
-            <RegistryValue Name=".jsonl" Type="string" Value="JSONAtlas.Document" />
-            <RegistryValue Name=".ndjson" Type="string" Value="JSONAtlas.Document" />
-            <RegistryValue Name=".jsonlines" Type="string" Value="JSONAtlas.Document" />
+            <RegistryValue Name=".jsonl" Type="string" Value="JSONAtlas.Jsonl" />
+            <RegistryValue Name=".ndjson" Type="string" Value="JSONAtlas.Ndjson" />
+            <RegistryValue Name=".jsonlines" Type="string" Value="JSONAtlas.JsonLines" />
           </RegistryKey>
         </RegistryKey>
         <RegistryKey Root="HKLM" Key="Software\RegisteredApplications">

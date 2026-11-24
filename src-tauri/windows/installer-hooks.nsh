@@ -1,6 +1,9 @@
 ; The executable uses the application icon; associated documents use their own icon.
 !macro NSIS_HOOK_POSTINSTALL
   WriteRegStr SHCTX "Software\Classes\JSONAtlas.Document\DefaultIcon" "" '"$INSTDIR\document.ico",0'
+  WriteRegStr SHCTX "Software\Classes\JSONAtlas.Jsonl\DefaultIcon" "" '"$INSTDIR\document-jsonl.ico",0'
+  WriteRegStr SHCTX "Software\Classes\JSONAtlas.Ndjson\DefaultIcon" "" '"$INSTDIR\document-ndjson.ico",0'
+  WriteRegStr SHCTX "Software\Classes\JSONAtlas.JsonLines\DefaultIcon" "" '"$INSTDIR\document-jsonlines.ico",0'
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0x1000, p 0, p 0)'
 !macroend
 

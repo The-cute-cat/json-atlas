@@ -45,18 +45,36 @@
     "fileAssociations": [
       {
         "ext": [
-          "json",
-          "jsonl",
-          "ndjson",
-          "jsonlines"
+          "json"
         ],
         "name": "JSONAtlas.Document",
         "description": "JSON Atlas structured data document",
         "role": "Viewer"
+      },
+      {
+        "ext": ["jsonl"],
+        "name": "JSONAtlas.Jsonl",
+        "description": "JSON Atlas JSONL document",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["ndjson"],
+        "name": "JSONAtlas.Ndjson",
+        "description": "JSON Atlas NDJSON document",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["jsonlines"],
+        "name": "JSONAtlas.JsonLines",
+        "description": "JSON Atlas JSON Lines document",
+        "role": "Viewer"
       }
     ],
     "resources": {
-      "icons/document.ico": "document.ico"
+      "icons/document.ico": "document.ico",
+      "icons/document-jsonl.ico": "document-jsonl.ico",
+      "icons/document-ndjson.ico": "document-ndjson.ico",
+      "icons/document-jsonlines.ico": "document-jsonlines.ico"
     },
     "windows": {
       "wix": {

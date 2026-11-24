@@ -34,8 +34,32 @@
             <uap:Logo>Assets\DocumentLogo.png</uap:Logo>
             <uap:SupportedFileTypes>
               <uap:FileType>.json</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="jsonatlas-jsonl" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>JSON Atlas JSONL document</uap:DisplayName>
+            <uap:Logo>Assets\DocumentLogo-jsonl.png</uap:Logo>
+            <uap:SupportedFileTypes>
               <uap:FileType>.jsonl</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="jsonatlas-ndjson" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>JSON Atlas NDJSON document</uap:DisplayName>
+            <uap:Logo>Assets\DocumentLogo-ndjson.png</uap:Logo>
+            <uap:SupportedFileTypes>
               <uap:FileType>.ndjson</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="jsonatlas-jsonlines" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>JSON Atlas JSON Lines document</uap:DisplayName>
+            <uap:Logo>Assets\DocumentLogo-jsonlines.png</uap:Logo>
+            <uap:SupportedFileTypes>
               <uap:FileType>.jsonlines</uap:FileType>
             </uap:SupportedFileTypes>
           </uap3:FileTypeAssociation>
