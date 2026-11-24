@@ -1,4 +1,5 @@
 use super::{err, jsonl::LineIndex, sidecar, Indexed, KeyState, Result};
+use crate::native_error::NativeError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -171,14 +172,17 @@ impl Session {
 fn hash_file(path: &Path, stamp: &Stamp, cancel: &AtomicBool) -> Result<[u8; 32]> {
     let mut file = File::open(path).map_err(err)?;
     if &Stamp::file(&file)? != stamp {
-        return Err("文件已发生变化".into());
+        return Err(NativeError::localized(
+            "The file has changed",
+            "文件已发生变化",
+        ));
     }
     let mut digest = Sha256::new();
     let mut buffer = vec![0; 1024 * 1024];
     let mut bytes = 0;
     loop {
         if cancel.load(Ordering::Acquire) {
-            return Err("已取消".into());
+            return Err(NativeError::localized("Cancelled", "已取消"));
         }
         let n = file.read(&mut buffer).map_err(err)?;
         if n == 0 {
@@ -191,7 +195,10 @@ fn hash_file(path: &Path, stamp: &Stamp, cancel: &AtomicBool) -> Result<[u8; 32]
         || &Stamp::file(&file)? != stamp
         || &Stamp::file(&File::open(path).map_err(err)?)? != stamp
     {
-        return Err("文件已发生变化".into());
+        return Err(NativeError::localized(
+            "The file has changed",
+            "文件已发生变化",
+        ));
     }
     Ok(digest.finalize().into())
 }
@@ -199,7 +206,10 @@ fn hash_file(path: &Path, stamp: &Stamp, cancel: &AtomicBool) -> Result<[u8; 32]
 fn open_part(path: &Path, len: u64) -> Result<File> {
     let file = File::open(path).map_err(err)?;
     if file.metadata().map_err(err)?.len() != len {
-        return Err("磁盘索引不完整".into());
+        return Err(NativeError::localized(
+            "The disk index is incomplete",
+            "磁盘索引不完整",
+        ));
     }
     Ok(file)
 }
@@ -211,7 +221,11 @@ impl IndexFiles {
             file.metadata().map(|value| value.len()).map_err(err)
         };
         Ok(Self {
-            index: size(doc.index.as_ref().ok_or("索引已关闭")?)?,
+            index: size(
+                doc.index
+                    .as_ref()
+                    .ok_or_else(|| NativeError::localized("The index is closed", "索引已关闭"))?,
+            )?,
             children: doc.children.as_ref().map(&mut size).transpose()?,
             branches: doc.branches.as_ref().map(&mut size).transpose()?,
             keys: doc.keys.as_ref().map(&mut size).transpose()?,
@@ -262,7 +276,10 @@ fn remove_index_files(index: &Path) {
 fn restore(path: &str, index: PathBuf, stamp: &Stamp, manifest: &Manifest) -> Result<Indexed> {
     let mut doc = manifest.files.restore(path, index)?;
     if Stamp::file(&doc.source)? != *stamp {
-        return Err("文件已发生变化".into());
+        return Err(NativeError::localized(
+            "The file has changed",
+            "文件已发生变化",
+        ));
     }
     if manifest.jsonl {
         let long = manifest
@@ -329,7 +346,7 @@ pub(crate) fn open(
                     || hash_file(Path::new(path), &stamp, cancel)
                         .is_ok_and(|hash| hash == manifest.hash));
             if cancel.load(Ordering::Acquire) {
-                return Err("已取消".into());
+                return Err(NativeError::localized("Cancelled", "已取消"));
             }
             if let Some(lease) = eligible
                 .then(|| entry.lease(&manifest.generation).ok())
@@ -464,9 +481,15 @@ pub(crate) fn verify(doc: &Mutex<Indexed>) -> Result<bool> {
     }
     doc.check()?;
     if Stamp::file(&File::open(&path).map_err(err)?)? != manifest.stamp {
-        return Err("文件已发生变化".into());
+        return Err(NativeError::localized(
+            "The file has changed",
+            "文件已发生变化",
+        ));
     }
-    let session = doc.cache.as_ref().ok_or("索引已关闭")?;
+    let session = doc
+        .cache
+        .as_ref()
+        .ok_or_else(|| NativeError::localized("The index is closed", "索引已关闭"))?;
     let _guard = MANIFEST_LOCK.lock().map_err(err)?;
     if confirmed && !session.retained() {
         return Ok(true);

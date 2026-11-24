@@ -179,7 +179,12 @@ fn native_search_benchmark() {
         let page = start.elapsed();
         let start = Instant::now();
         cancel.store(true, Ordering::Relaxed);
-        assert!(worker.join().unwrap().unwrap_err().contains("取消"));
+        assert!(worker
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .message
+            .contains("Cancelled"));
         eprintln!(
             "NATIVE_SEARCH kind={ext} concurrent_page_ms={:.3} cancel_join_ms={:.3}",
             page.as_secs_f64() * 1000.,
@@ -252,7 +257,8 @@ fn wide_object_lookup_benchmark() {
         assert!(doc
             .text(&[json!("missing")], true)
             .unwrap_err()
-            .contains("节点不存在"));
+            .message
+            .contains("Node not found"));
         let missing = start.elapsed();
         let index_bytes = index.metadata().unwrap().len()
             + doc

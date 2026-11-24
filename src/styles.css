@@ -8,6 +8,7 @@
   --text:#1d1d1f;
   --muted:#6e6e73;
   --line:#d7d7dc;
+  --branch-line-shadow:rgba(0,0,0,.1);
   --accent:#0071e3;
   --accent-soft:#e8f2ff;
   --danger:#d70015;
@@ -980,13 +981,13 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
 }
 /* Leaf nodes have an invisible toggle: bridge that space up to the card. */
 .children>.tree-node:not(.branch)::before{width:57px}
-/* The hit area follows each segment of the vertical connector. */
+/* Split the hit area at the elbow so each segment can highlight up to the next elbow. */
 .branch-line-target{
   display:none;
   position:absolute;
   left:0;
   top:0;
-  bottom:0;
+  height:31px;
   width:9px;
   padding:0;
   border:0;
@@ -996,16 +997,23 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   z-index:1;
 }
 #tree.branch-lines-interactive .children>.tree-node>.branch-line-target{display:block}
-.children>.tree-node:is(:last-child,:has(+ .page-navigation))>.branch-line-target{
-  bottom:auto;
-  height:31px;
+.branch-line-target-end{
+  top:31px;
+  bottom:0;
+  height:auto;
 }
-.branch-line-target:hover::before{
+#tree.branch-lines-interactive.legacy-tree-layout .children>.tree-node>.branch-line-target-end,
+#tree.branch-lines-interactive .children>.tree-node:is(:last-child,:has(+ .page-navigation))>.branch-line-target-end{display:none}
+/* With paint containment, each half of the shadow stays inside its own row. */
+.branch-line-target:hover::before,
+#tree:not(.legacy-tree-layout) .tree-node:has(> .branch-line-target-end:hover) + .tree-node > .branch-line-target-start::before,
+#tree:not(.legacy-tree-layout) .tree-node:has(+ .tree-node > .branch-line-target-start:hover) > .branch-line-target-end::before{
   content:"";
   position:absolute;
   inset:0 auto 0 0;
-  width:2px;
-  background:var(--accent);
+  width:4px;
+  pointer-events:none;
+  background:linear-gradient(to right,var(--branch-line-shadow),transparent);
 }
 /* Optional original layout, shared by the reader and template editor. */
 .legacy-tree-layout .tree-node{
@@ -1798,6 +1806,7 @@ button:focus-visible{outline:3px solid #85b9f5;outline-offset:3px}
   color-scheme:dark;
   --bg:#1c1c1e;--surface:#202023;--panel:rgba(38,38,42,.96);--card:#262629;
   --control:#343438;--hover:#414146;--text:#f2f2f7;--muted:#aeaeb8;--line:#48484f;
+  --branch-line-shadow:rgba(0,0,0,.24);
   --accent:#409cff;--accent-soft:#183b60;--danger:#ff6961;
   --border:rgba(255,255,255,.1);--grid:rgba(255,255,255,.035);--shadow:0 10px 35px rgba(0,0,0,.32);
 }

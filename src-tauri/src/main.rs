@@ -4,8 +4,10 @@ mod documents;
 mod indexed;
 mod installer_cleanup;
 mod menu_theme;
+mod native_error;
 mod window;
 
+use native_error::NativeError;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
@@ -17,7 +19,7 @@ async fn indexed_document(
     id: String,
     path: Option<String>,
     args: Option<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, NativeError> {
     use serde_json::json;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -27,11 +29,15 @@ async fn indexed_document(
         || id.len() > 100
         || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
-        return Err("无效的文档标识".into());
+        return Err(NativeError::localized(
+            "Invalid document ID",
+            "无效的文档标识",
+        ));
     }
     let args = args.unwrap_or_else(|| json!({}));
     if op == "stat" {
-        let path = path.ok_or("缺少文件路径")?;
+        let path =
+            path.ok_or_else(|| NativeError::localized("Missing file path", "缺少文件路径"))?;
         return tauri::async_runtime::spawn_blocking(move || indexed::stat(&path))
             .await
             .map_err(|e| e.to_string())?;
@@ -45,7 +51,12 @@ async fn indexed_document(
         return Ok(json!(null));
     }
     if op == "searchCancel" {
-        state.cancel_search(&id, args["searchId"].as_str().ok_or("缺少搜索标识")?)?;
+        state.cancel_search(
+            &id,
+            args["searchId"]
+                .as_str()
+                .ok_or_else(|| NativeError::localized("Missing search ID", "缺少搜索标识"))?,
+        )?;
         return Ok(json!(null));
     }
     if op == "search" {
@@ -64,12 +75,13 @@ async fn indexed_document(
         .await
         .map_err(|e| e.to_string())?;
         if lease.cancel.load(Ordering::Relaxed) {
-            return Err("已取消".into());
+            return Err(NativeError::localized("Cancelled", "已取消"));
         }
         return result;
     }
     if op == "open" {
-        let path = path.ok_or("缺少文件路径")?;
+        let path =
+            path.ok_or_else(|| NativeError::localized("Missing file path", "缺少文件路径"))?;
         let dir = app
             .path()
             .app_cache_dir()
@@ -85,7 +97,10 @@ async fn indexed_document(
                     .map_err(|e| e.to_string())?
                     .contains_key(&id)
             {
-                return Err("文档标识已存在".into());
+                return Err(NativeError::localized(
+                    "The document ID is already in use",
+                    "文档标识已存在",
+                ));
             }
             jobs.insert(id.clone(), cancel.clone());
         }
@@ -133,11 +148,11 @@ async fn indexed_document(
             )
         })
         .await
-        .map_err(|e| e.to_string())
+        .map_err(NativeError::from_display)
         .and_then(|r| r);
         let mut jobs = state.jobs.lock().map_err(|e| e.to_string())?;
         if !jobs.get(&id).is_some_and(|job| Arc::ptr_eq(job, &cancel)) {
-            return Err("已取消".into());
+            return Err(NativeError::localized("Cancelled", "已取消"));
         }
         jobs.remove(&id);
         let (doc, info) = result?;
@@ -154,7 +169,12 @@ async fn indexed_document(
         .map_err(|e| e.to_string())?
         .get(&id)
         .cloned()
-        .ok_or("索引已关闭，请重新打开文件")?;
+        .ok_or_else(|| {
+            NativeError::localized(
+                "The index is closed. Reopen the file",
+                "索引已关闭，请重新打开文件",
+            )
+        })?;
     tauri::async_runtime::spawn_blocking(move || {
         if op == "verify" {
             return indexed::cache::verify(&doc).map(|valid| json!(valid));
@@ -179,7 +199,10 @@ async fn indexed_document(
                 wrap,
             ),
             "text" => doc.text(&path, wrap).map(|s| json!(s)),
-            _ => Err("未知索引操作".into()),
+            _ => Err(NativeError::localized(
+                "Unknown index operation",
+                "未知索引操作",
+            )),
         }
     })
     .await
@@ -209,7 +232,7 @@ fn take_open_requests(state: tauri::State<OpenRequests>) -> Vec<String> {
 }
 
 #[tauri::command]
-async fn read_document(path: String, max_bytes: u64) -> Result<tauri::ipc::Response, String> {
+async fn read_document(path: String, max_bytes: u64) -> Result<tauri::ipc::Response, NativeError> {
     tauri::async_runtime::spawn_blocking(move || documents::read_document(&path, max_bytes))
         .await
         .map_err(|e| e.to_string())?
@@ -217,7 +240,11 @@ async fn read_document(path: String, max_bytes: u64) -> Result<tauri::ipc::Respo
 }
 
 #[tauri::command]
-async fn save_document(path: String, text: String, expected_text: String) -> Result<(), String> {
+async fn save_document(
+    path: String,
+    text: String,
+    expected_text: String,
+) -> Result<(), NativeError> {
     tauri::async_runtime::spawn_blocking(move || {
         documents::save_document(&path, &text, &expected_text)
     })
@@ -233,10 +260,13 @@ async fn save_document_copy(
     text: String,
     original_path: Option<String>,
     protected_paths: Vec<String>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, NativeError> {
     use tauri_plugin_dialog::DialogExt;
     if text.len() as u64 > documents::MAX_FILE_BYTES {
-        return Err("工作副本超过 256 MiB，无法保存".into());
+        return Err(NativeError::localized(
+            "Cannot save a working copy larger than 256 MiB",
+            "工作副本超过 256 MiB，无法保存",
+        ));
     }
     let name = documents::copy_name(&name);
     tauri::async_runtime::spawn_blocking(move || {
@@ -256,14 +286,14 @@ async fn save_document_copy(
                 std::fs::canonicalize(&path),
             ) {
                 if original == destination {
-                    return Err("请为工作副本选择不同的文件名，原文件不会被覆盖".into());
+                    return Err(NativeError::localized("Choose a different file name for the working copy to preserve the original", "请为工作副本选择不同的文件名，原文件不会被覆盖"));
                 }
             }
         }
         if let Ok(destination) = std::fs::canonicalize(&path) {
             for open in protected_paths {
                 if std::fs::canonicalize(open).is_ok_and(|open| open == destination) {
-                    return Err("该位置已有打开的文档，请选择其他位置，避免覆盖工作区文件".into());
+                    return Err(NativeError::localized("A document is open at this location. Choose a different destination", "该位置已有打开的文档，请选择其他位置，避免覆盖工作区文件"));
                 }
             }
         }
@@ -281,7 +311,7 @@ async fn save_document_copy(
 async fn select_documents(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, NativeError> {
     use tauri_plugin_dialog::DialogExt;
     tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
@@ -297,7 +327,7 @@ async fn select_documents(
             .map(|file| {
                 file.into_path()
                     .map(|p| p.to_string_lossy().into_owned())
-                    .map_err(|e| e.to_string())
+                    .map_err(NativeError::from_display)
             })
             .collect()
     })
@@ -314,7 +344,7 @@ fn set_document_title(window: tauri::WebviewWindow, name: Option<String>) -> Res
 }
 
 #[tauri::command]
-fn open_release_page() -> Result<(), String> {
+fn open_release_page() -> Result<(), NativeError> {
     const URL: &str = "https://github.com/The-cute-cat/json-atlas/releases/latest";
     #[cfg(windows)]
     {
@@ -342,7 +372,10 @@ fn open_release_page() -> Result<(), String> {
             )
         };
         if result <= 32 {
-            return Err(format!("无法打开发布页（{result}）"));
+            return Err(NativeError::localized(
+                format!("Could not open the releases page ({result})"),
+                format!("无法打开发布页（{result}）"),
+            ));
         }
     }
     #[cfg(not(windows))]
@@ -357,7 +390,10 @@ fn open_release_page() -> Result<(), String> {
             .status()
             .map_err(|error| error.to_string())?;
         if !status.success() {
-            return Err(format!("无法打开发布页（{status}）"));
+            return Err(NativeError::localized(
+                format!("Could not open the releases page ({status})"),
+                format!("无法打开发布页（{status}）"),
+            ));
         }
     }
     Ok(())

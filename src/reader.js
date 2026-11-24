@@ -15,7 +15,7 @@ import { installTooltips } from './tooltips.js';
 import { openAbout } from './about.js';
 import { openUpdateCheck } from './update-dialog.js';
 import { isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel } from './shortcuts.js';
-import { MAX_FILE_BYTES, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath } from './data.js';
+import { MAX_FILE_BYTES, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath, isHiddenDataPath } from './data.js';
 import { updateDocumentMenu, saveNativeDocument, saveDocumentCopy, guardEditedClose, desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
 
 initializeLanguage(document);
@@ -2005,6 +2005,7 @@ reclaimNodesBtn.addEventListener('click', () => {
   if(nodeBudgetNotice.hidden) expandAllBtn.focus();
   showToast(removed ? msg`已精简 ${removed} 个远处节点，可通过“查看此处”或搜索重新访问` : t('当前没有可精简的远处未阅读节点，可手动收起部分分支'));
 });
+let branchParentPulse;
 tree.addEventListener('click', event => {
   if(settings.branchLineAction === 'off' || !event.target.classList.contains('branch-line-target')) return;
   const parent = canvasParent(event.target.parentElement);
@@ -2016,6 +2017,19 @@ tree.addEventListener('click', event => {
   pathText.textContent = t('路径：') + parent.dataset.path;
   viewport.focus({preventScroll:true});
   centerNode(parent, parent.firstElementChild);
+  branchParentPulse?.cancel();
+  branchParentPulse = null;
+  if(!window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches){
+    const pulse = parent._card.animate?.([
+      {outline:'2px solid transparent'},
+      {outline:'2px solid color-mix(in srgb, var(--accent) 38%, transparent)', offset:.3},
+      {outline:'2px solid transparent'}
+    ], {duration:500, easing:'ease-out'});
+    if(pulse){
+      branchParentPulse = pulse;
+      pulse.onfinish = () => { if(branchParentPulse === pulse) branchParentPulse = null; };
+    }
+  }
 });
 tree.addEventListener('pointerdown', e => {
   if(e.target.classList.contains('branch-line-target')) return;
@@ -2138,11 +2152,14 @@ function attachChildren(node, card, toggle, source, sourcePath, path){
   children.className = 'children';
   node.appendChild(children);
 
-  const hidden = activeDoc()?.design ? new Set() : getHiddenSet();
+  const doc = activeDoc();
+  const hidden = doc?.design ? undefined : getHiddenSet(doc);
+  const hiddenExact = doc?.design ? undefined : doc?.temporaryHiddenRules;
   const ensureChildren = pagedChildren(node, children, source, sourcePath, item => {
-    if(hidden.size && hidden.has(normalizePath(encodePath(path.concat(item.key))))) return null;
+    const childPath = path.concat(item.key);
+    if(isHiddenDataPath(childPath, hidden, hiddenExact)) return null;
     return createNode(item.arrayItem ? arrayIndexLabel(item.key) : String(item.key), item,
-      path.concat(item.key), false, item.arrayItem, source);
+      childPath, false, item.arrayItem, source);
   }, () => { updateVirtualization(); scheduleOverflowSweep(); }, false, first => {
     focusGeneration++;
     centerNode(first?._path ? first : node);
@@ -2405,12 +2422,15 @@ function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, sour
   });
 
   if(!isRoot){
-    const lineTarget = document.createElement('button');
-    lineTarget.type = 'button';
-    lineTarget.className = 'branch-line-target';
-    lineTarget.tabIndex = -1;
-    lineTarget.setAttribute('aria-label', t('跳到父节点'));
-    node.appendChild(lineTarget);
+    const label = t('跳到父节点');
+    for(const segment of ['branch-line-target-start', 'branch-line-target-end']){
+      const lineTarget = document.createElement('button');
+      lineTarget.type = 'button';
+      lineTarget.className = `branch-line-target ${segment}`;
+      lineTarget.tabIndex = -1;
+      lineTarget.setAttribute('aria-label', label);
+      node.appendChild(lineTarget);
+    }
   }
   if(isBranch) attachChildren(node, card, toggle, source, descriptor.path, path);
 
@@ -2565,7 +2585,7 @@ document.getElementById('ctxHideNode').addEventListener('click', () => {
   closeMenu();
   const doc = activeDoc();
   if(!path || path === '$' || !doc || doc.design) return;
-  (doc.temporaryHiddenRules ??= new Set()).add(normalizePath(path));
+  (doc.temporaryHiddenRules ??= new Set()).add(path);
   refreshTemplateVisibility();
   showToast(t('已在当前文件临时隐藏。右键画布空白处，打开「管理隐藏规则」即可还原。'));
 });
@@ -2931,13 +2951,11 @@ function isPathPrefix(prefix, path, normalize = true){
   return next === '.' || next === '[';
 }
 
-/* 当前文件生效的隐藏规则。传入 null 仅返回全局模板规则。 */
+/* 当前文件生效的模板隐藏规则。传入 null 忽略当前文件的屏蔽设置。 */
 function getHiddenSet(doc = activeDoc()){
-  const hidden = new Set(Array.isArray(template?.hidden)
+  return new Set(Array.isArray(template?.hidden)
     ? template.hidden.filter(path => typeof path === 'string' && path !== '$' && !doc?.maskedHiddenRules?.has(path))
     : []);
-  for(const path of doc?.temporaryHiddenRules || []) hidden.add(path);
-  return hidden;
 }
 
 function refreshTemplateVisibility(){
@@ -5179,12 +5197,16 @@ async function searchTree(query){
   try { compileSearch(q, searchOptions); }
   catch(error){ clearSearchHighlights(); setSearchCount(t('表达式无效')); setSearchError(error.message); return; }
   setSearchCount(t('搜索中…'));
-  const temporarySource = ideActive ? new MemoryDataSource((activeDoc()?.ideDraft ?? activeDoc()?.text ?? '').split(/\r?\n/)) : null;
-  const source = temporarySource || activeDoc()?.source;
-  if(!source || !activeDoc() || activeDoc().error){ temporarySource?.dispose(); clearSearchHighlights(); setSearchCount('0'); return; }
+  const doc = activeDoc();
+  const temporarySource = ideActive ? new MemoryDataSource((doc?.ideDraft ?? doc?.text ?? '').split(/\r?\n/)) : null;
+  const source = temporarySource || doc?.source;
+  if(!source || !doc || doc.error){ temporarySource?.dispose(); clearSearchHighlights(); setSearchCount('0'); return; }
+  const applyHiddenRules = !ideActive && !doc.design;
   let result;
   try{ result = await source.search(q, {
-    rootLabel: currentRootLabel, indexBase: settings.indexBase, hidden: ideActive || activeDoc()?.design ? new Set() : getHiddenSet(),
+    rootLabel: currentRootLabel, indexBase: settings.indexBase,
+    hidden: applyHiddenRules ? getHiddenSet(doc) : undefined,
+    hiddenExact: applyHiddenRules && doc.temporaryHiddenRules?.size ? new Set(doc.temporaryHiddenRules) : undefined,
     ...searchOptions,
     ...(ideActive ? {textLines:true, scopePath:null} : {}),
     cancelled: () => generation !== searchGeneration

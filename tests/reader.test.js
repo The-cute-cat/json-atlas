@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-import { MAX_FILE_BYTES, MAX_RENDERED_CHILDREN, PAGE_SIZE, searchData, parseDocument, encodeDataPath, normalizeDataPath } from '../src/data.js';
+import { MAX_FILE_BYTES, MAX_RENDERED_CHILDREN, PAGE_SIZE, searchData, parseDocument, encodeDataPath, normalizeDataPath, isHiddenDataPath } from '../src/data.js';
 import { MemoryDataSource } from '../src/data-source.js';
 import { sharedPageCache } from '../src/page-cache.js';
 import { normalizeThreshold, needsIndex, IndexedDataSource } from '../src/large-files.js';
@@ -119,7 +119,7 @@ function reader(storage = new Map(), native = {}) {
     desktop: false, connectDesktop: async () => {}, updateWindowTitle() {}, updateWindowTheme() {},
     MAX_FILE_BYTES, MAX_RENDERED_CHILDREN, PAGE_SIZE, searchData, parseDocument, MemoryDataSource, sharedPageCache, normalizeThreshold, needsIndex, AbortController, ViewportWindow, NodeBudget,
     valueAt, replaceValue, editObjectTopic, parseEdit, serializeDocument, ideModel, renderIde, normalizeViewMode, parseIdeText, formatIdeText, ideTextLines, ideProjection, ideRawOffset, ideProjectedEdit, normalizeTheme, watchTheme,
-    encodePath: encodeDataPath, normalizePath: normalizeDataPath, compileSearch,
+    encodePath: encodeDataPath, normalizePath: normalizeDataPath, isHiddenDataPath, compileSearch,
     console, Blob, File, manifest, isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel, installTooltips, ...native
   };
   const api = runInNewContext(pagingSource + '\n' + source + `
@@ -338,8 +338,17 @@ test('branch line preference jumps to the owning parent and optionally collapses
   const [parent] = children(root);
   await api.expandOne(parent);
   const [child] = children(parent);
-  const line = child.children.find(el => el.className === 'branch-line-target');
-  const clickLine = () => tree.listeners.get('click')({target:line});
+  const pulses = [];
+  for(const node of [parent, root, child]){
+    node._card.animate = () => {
+      const pulse = {node, cancelled:false, cancel(){ this.cancelled = true; }};
+      pulses.push(pulse);
+      return pulse;
+    };
+  }
+  const line = child.children.find(el => el.classList.contains('branch-line-target-start'));
+  const lineEnd = parent.children.find(el => el.classList.contains('branch-line-target-end'));
+  const clickLine = (target = line) => tree.listeners.get('click')({target});
   const select = elements.get('optBranchLineAction');
   const choose = value => {
     elements.get('settingsBtn').click();
@@ -351,6 +360,7 @@ test('branch line preference jumps to the owning parent and optionally collapses
   assert.equal(tree.classList.contains('branch-lines-interactive'), false);
   clickLine();
   assert.equal(parent.classList.contains('selected-node'), false);
+  assert.equal(pulses.length, 0);
 
   choose('jump');
   clickLine();
@@ -358,12 +368,20 @@ test('branch line preference jumps to the owning parent and optionally collapses
   assert.equal(parent.classList.contains('selected-node'), true);
   assert.equal(parent.classList.contains('open'), true);
   assert.match(elements.get('pathText').textContent, /\$\.parent$/);
+  assert.equal(pulses.length, 1);
+  assert.equal(pulses[0].node, parent);
+
+  clickLine(lineEnd);
+  assert.equal(root.classList.contains('selected-node'), true);
+  assert.equal(pulses[0].cancelled, true);
+  assert.equal(pulses[1].node, root);
 
   choose('collapse');
   clickLine();
   assert.equal(parent.classList.contains('open'), false);
   assert.equal(children(parent).length, 0);
   assert.equal(root.classList.contains('open'), true);
+  assert.equal(pulses[2].node, parent);
   assert.equal(JSON.parse(storage.get('json-atlas_settings_v1')).branchLineAction, 'collapse');
 });
 
@@ -986,6 +1004,48 @@ test('tree sessions restore the visible page even when no child branch is expand
   const tree=restarted.elements.get('tree');
   assert.equal(tree.firstElementChild._pageStart,3000);
   assert.equal(tree.querySelectorAll('.tree-node')[1].dataset.path,'$[3000]');
+});
+
+test('temporarily hiding an indexed array row keeps its page and other rows visible and searchable', async () => {
+  const rows = Array.from({length:510}, (_, index) => ({value:index >= 500 ? 'needle' : index}));
+  const memory = new MemoryDataSource(rows);
+  const info = {root:memory.getRoot(), kind:'json', records:0, badCount:0, commentCount:0};
+  const indexed = new IndexedDataSource(async (op, _id, args) => {
+    if(op === 'page') return memory.getChildren(args.path, args);
+    if(op === 'verify') return true;
+  }, 'hidden-array-test', info);
+  const {api, elements, flush} = reader(new Map(), {
+    statNativeFile:async path => ({path, name:'paged.json', size:70 * 1024 ** 2}),
+    openIndexedFile:async () => indexed
+  });
+  await api.loadFile({path:'D:/paged.json'});
+  await flush();
+  const tree = elements.get('tree');
+  await api.expandOne(tree.firstElementChild, undefined, 500);
+  const row = index => tree.querySelectorAll('.tree-node').find(node => node.dataset.path === `$[${index}]`);
+  const target = row(501);
+  assert.ok(target);
+  tree.listeners.get('contextmenu')({
+    target:{closest:()=>({closest:()=>target})}, clientX:30, clientY:45, preventDefault(){}, stopPropagation(){}
+  });
+  elements.get('ctxHideNode').click();
+  await flush();
+  assert.equal(tree.firstElementChild._pageStart, 500);
+  assert.ok(row(500));
+  assert.equal(row(501), undefined);
+  assert.ok(row(502));
+  await api.searchTree('needle');
+  assert.equal(elements.get('quickSearchCount').textContent, '1 / 9');
+
+  elements.get('viewport').listeners.get('contextmenu')({
+    target:{closest:()=>null}, clientX:30, clientY:45, preventDefault(){}, stopPropagation(){}
+  });
+  elements.get('ctxCanvasRules').click();
+  const rule = elements.get('canvasRulesList').firstElementChild;
+  assert.equal(rule.firstElementChild.textContent, '$[501]');
+  rule.children[1].click();
+  await flush();
+  assert.ok(row(501));
 });
 
 test('structure templates still normalize array items and expand only the first object', async () => {

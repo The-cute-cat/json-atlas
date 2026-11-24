@@ -22,9 +22,9 @@ function nativeFixture() {
 
 test('native search sends one bounded result request and preserves all matching options', async () => {
   const { source, calls, pending, cache } = nativeFixture();
-  const search = source.search('中文😀', { rootLabel: '根', indexBase: 1, hidden: new Set(['$.secret']), limit: 3 });
+  const search = source.search('中文😀', { rootLabel: '根', indexBase: 1, hidden: new Set(['$.secret']), hiddenExact: new Set(['$[500]']), limit: 3 });
   assert.equal(calls.length, 1); assert.equal(calls[0].op, 'search');
-  assert.deepEqual({ ...calls[0].args, searchId: 'id' }, { searchId: 'id', query: '中文😀', rootLabel: '根', indexBase: 1, hidden: ['$.secret'], limit: 3, wrap: true });
+  assert.deepEqual({ ...calls[0].args, searchId: 'id' }, { searchId: 'id', query: '中文😀', rootLabel: '根', indexBase: 1, hidden: ['$.secret'], hiddenExact: ['$[500]'], limit: 3, wrap: true });
   const result = { hits: [['value']], truncated: false };
   pending[0].resolve(result); assert.deepEqual(await search, result);
   assert.equal(cache.stats.entries, 0); source.dispose();

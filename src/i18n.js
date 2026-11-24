@@ -32,29 +32,9 @@ export function t(source, ...values) {
   return translation.replaceAll('{}', () => String(values[index++]));
 }
 
-const nativeErrorPatterns = [
-  "字节 {}：无效的 JSON 值",
-  "字节 {}：JSON 语法错误",
-  "严格模式下拒绝加载：{} 行不合规（含注释行）",
-  "无法保存文件：{}",
-  "无法创建保存临时文件：{}",
-  "无法创建目标文件：{}",
-  "无法打开发布页（{}）",
-  "无法打开文件：{}",
-  "无法核对原文件：{}",
-  "正则表达式无效或过于复杂：{}"
-].map(source => {
-  const escapedParts = source.split('{}').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  return { source, pattern: new RegExp('^' + escapedParts.join('([\\s\\S]+?)') + '$') };
-});
-
-export function translateNativeError(message) {
-  if (language !== 'en') return message;
-  for (const { source, pattern } of nativeErrorPatterns) {
-    const match = pattern.exec(message);
-    if (match) return t(source, ...match.slice(1));
-  }
-  return t(message);
+export function nativeErrorMessage(error) {
+  if (language === 'zh-CN' && typeof error?.messageZhCn === 'string') return error.messageZhCn;
+  return typeof error?.message === 'string' ? error.message : String(error);
 }
 
 export function msg(parts, ...values) {

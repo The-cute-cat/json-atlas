@@ -1,48 +1,66 @@
+use crate::native_error::NativeError;
 use std::{ffi::OsString, fs::File, io::Read, path::Path};
 
 pub const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
-pub fn save_document(path: &str, text: &str, expected: &str) -> Result<(), String> {
+pub fn save_document(path: &str, text: &str, expected: &str) -> Result<(), NativeError> {
     if expected.len() as u64 > MAX_FILE_BYTES {
-        return Err("文件超过 256 MiB，无法保存".into());
+        return Err(NativeError::localized(
+            "Cannot save a file larger than 256 MiB",
+            "文件超过 256 MiB，无法保存",
+        ));
     }
     write_document(path, text, Some(expected))
 }
 
-pub fn save_document_copy(path: &str, text: &str) -> Result<(), String> {
+pub fn save_document_copy(path: &str, text: &str) -> Result<(), NativeError> {
     write_document(path, text, None)
 }
 
-fn write_document(path: &str, text: &str, expected: Option<&str>) -> Result<(), String> {
+fn write_document(path: &str, text: &str, expected: Option<&str>) -> Result<(), NativeError> {
     use std::io::Write;
     if text.len() as u64 > MAX_FILE_BYTES {
-        return Err("文件超过 256 MiB，无法保存".into());
+        return Err(NativeError::localized(
+            "Cannot save a file larger than 256 MiB",
+            "文件超过 256 MiB，无法保存",
+        ));
     }
     validate_local_path(path)?;
     let requested = Path::new(path);
-    let (path, permissions) = match requested.canonicalize() {
-        Ok(path) => {
-            validate_local_path(&path.to_string_lossy())?;
-            let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
-            if !metadata.is_file() || metadata.permissions().readonly() {
-                return Err("文件为只读或不是普通文件，无法保存".into());
+    let (path, permissions) =
+        match requested.canonicalize() {
+            Ok(path) => {
+                validate_local_path(&path.to_string_lossy())?;
+                let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+                if !metadata.is_file() || metadata.permissions().readonly() {
+                    return Err(NativeError::localized(
+                        "Cannot save: the destination is read-only or is not a regular file",
+                        "文件为只读或不是普通文件，无法保存",
+                    ));
+                }
+                (path, Some(metadata.permissions()))
             }
-            (path, Some(metadata.permissions()))
-        }
-        Err(error) if expected.is_none() && error.kind() == std::io::ErrorKind::NotFound => {
-            let parent = requested
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or(Path::new("."));
-            let parent = parent.canonicalize().map_err(|e| e.to_string())?;
-            validate_local_path(&parent.to_string_lossy())?;
-            (
-                parent.join(requested.file_name().ok_or("无效的文件名")?),
-                None,
-            )
-        }
-        Err(error) => return Err(format!("无法保存文件：{error}")),
-    };
+            Err(error) if expected.is_none() && error.kind() == std::io::ErrorKind::NotFound => {
+                let parent = requested
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                let parent = parent.canonicalize().map_err(|e| e.to_string())?;
+                validate_local_path(&parent.to_string_lossy())?;
+                (
+                    parent.join(requested.file_name().ok_or_else(|| {
+                        NativeError::localized("Invalid file name", "无效的文件名")
+                    })?),
+                    None,
+                )
+            }
+            Err(error) => {
+                return Err(NativeError::localized(
+                    format!("Could not save the file: {error}"),
+                    format!("无法保存文件：{error}"),
+                ))
+            }
+        };
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -55,7 +73,12 @@ fn write_document(path: &str, text: &str, expected: Option<&str>) -> Result<(), 
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .map_err(|e| format!("无法创建保存临时文件：{e}"))?;
+        .map_err(|e| {
+            NativeError::localized(
+                format!("Could not create a temporary file: {e}"),
+                format!("无法创建保存临时文件：{e}"),
+            )
+        })?;
     let result = (|| {
         output
             .write_all(text.as_bytes())
@@ -86,7 +109,7 @@ fn write_document(path: &str, text: &str, expected: Option<&str>) -> Result<(), 
     result
 }
 
-fn check_original(path: &Path, expected: &str) -> Result<File, String> {
+fn check_original(path: &Path, expected: &str) -> Result<File, NativeError> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
@@ -94,35 +117,43 @@ fn check_original(path: &Path, expected: &str) -> Result<File, String> {
         use std::os::windows::fs::OpenOptionsExt;
         options.share_mode(1 | 4);
     }
-    let changed = "文件已被其他程序修改，请重新打开或另存为，避免覆盖外部修改";
-    let mut original = options
-        .open(path)
-        .map_err(|e| format!("无法核对原文件：{e}"))?;
+    let changed = NativeError::localized("Another program modified the file. Reopen it or save a copy to avoid overwriting external changes", "文件已被其他程序修改，请重新打开或另存为，避免覆盖外部修改");
+    let mut original = options.open(path).map_err(|e| {
+        NativeError::localized(
+            format!("Could not verify the original file: {e}"),
+            format!("无法核对原文件：{e}"),
+        )
+    })?;
     if original.metadata().map_err(|e| e.to_string())?.len() != expected.len() as u64 {
-        return Err(changed.into());
+        return Err(changed);
     }
     let mut buffer = [0u8; 64 * 1024];
     for chunk in expected.as_bytes().chunks(buffer.len()) {
         original
             .read_exact(&mut buffer[..chunk.len()])
-            .map_err(|e| format!("无法核对原文件：{e}"))?;
+            .map_err(|e| {
+                NativeError::localized(
+                    format!("Could not verify the original file: {e}"),
+                    format!("无法核对原文件：{e}"),
+                )
+            })?;
         if &buffer[..chunk.len()] != chunk {
-            return Err(changed.into());
+            return Err(changed);
         }
     }
     if original.read(&mut buffer[..1]).map_err(|e| e.to_string())? != 0 {
-        return Err(changed.into());
+        return Err(changed);
     }
     Ok(original)
 }
 
 #[cfg(not(windows))]
-fn replace_document(path: &Path, temporary: &Path) -> Result<(), String> {
-    std::fs::rename(temporary, path).map_err(|e| e.to_string())
+fn replace_document(path: &Path, temporary: &Path) -> Result<(), NativeError> {
+    std::fs::rename(temporary, path).map_err(NativeError::from_display)
 }
 
 #[cfg(windows)]
-fn replace_document(path: &Path, temporary: &Path) -> Result<(), String> {
+fn replace_document(path: &Path, temporary: &Path) -> Result<(), NativeError> {
     use std::os::windows::ffi::OsStrExt;
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -148,18 +179,29 @@ fn replace_document(path: &Path, temporary: &Path) -> Result<(), String> {
         )
     } == 0
     {
-        return Err(format!("保存失败：{}", std::io::Error::last_os_error()));
+        return Err({
+            let error = std::io::Error::last_os_error();
+            NativeError::localized(
+                format!("Could not save the file: {error}"),
+                format!("保存失败：{error}"),
+            )
+        });
     }
     Ok(())
 }
 
 #[cfg(not(windows))]
-fn publish_document(path: &Path, temporary: &Path) -> Result<(), String> {
-    std::fs::hard_link(temporary, path).map_err(|e| format!("无法创建目标文件：{e}"))
+fn publish_document(path: &Path, temporary: &Path) -> Result<(), NativeError> {
+    std::fs::hard_link(temporary, path).map_err(|e| {
+        NativeError::localized(
+            format!("Could not create the destination file: {e}"),
+            format!("无法创建目标文件：{e}"),
+        )
+    })
 }
 
 #[cfg(windows)]
-fn publish_document(path: &Path, temporary: &Path) -> Result<(), String> {
+fn publish_document(path: &Path, temporary: &Path) -> Result<(), NativeError> {
     use std::os::windows::ffi::OsStrExt;
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -168,16 +210,19 @@ fn publish_document(path: &Path, temporary: &Path) -> Result<(), String> {
     let source: Vec<_> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
     let destination: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     if unsafe { MoveFileW(source.as_ptr(), destination.as_ptr()) } == 0 {
-        return Err(format!(
-            "无法创建目标文件：{}",
-            std::io::Error::last_os_error()
-        ));
+        return Err({
+            let error = std::io::Error::last_os_error();
+            NativeError::localized(
+                format!("Could not create the destination file: {error}"),
+                format!("无法创建目标文件：{error}"),
+            )
+        });
     }
     Ok(())
 }
 
 // Check before canonicalize()/metadata(): resolving a UNC path can itself contact SMB.
-pub fn validate_local_path(path: &str) -> Result<(), String> {
+pub fn validate_local_path(path: &str) -> Result<(), NativeError> {
     let normalized = path.replace('/', "\\");
     let plain = normalized.strip_prefix(r"\\?\").unwrap_or(&normalized);
     if normalized.starts_with(r"\\") && !normalized.starts_with(r"\\?\")
@@ -191,7 +236,10 @@ pub fn validate_local_path(path: &str) -> Result<(), String> {
         || plain.to_ascii_uppercase().starts_with("UNC\\")
         || plain.starts_with(r"\??\")
     {
-        return Err("为避免意外访问网络，仅支持本地磁盘文件".into());
+        return Err(NativeError::localized(
+            "Only local disk files are supported to avoid unexpected network access",
+            "为避免意外访问网络，仅支持本地磁盘文件",
+        ));
     }
     #[cfg(windows)]
     if plain.as_bytes().get(1) == Some(&b':') {
@@ -205,7 +253,10 @@ pub fn validate_local_path(path: &str) -> Result<(), String> {
             .chain(Some(0))
             .collect();
         if unsafe { GetDriveTypeW(root.as_ptr()) } == 4 {
-            return Err("为避免意外访问网络，不支持映射的网络磁盘".into());
+            return Err(NativeError::localized(
+                "Mapped network drives are unsupported to avoid unexpected network access",
+                "为避免意外访问网络，不支持映射的网络磁盘",
+            ));
         }
     }
     Ok(())
@@ -286,14 +337,22 @@ pub fn display_path(path: &Path) -> String {
     }
 }
 
-pub fn read_document(path: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
+pub fn read_document(path: &str, max_bytes: u64) -> Result<Vec<u8>, NativeError> {
     let max_bytes = max_bytes.min(MAX_FILE_BYTES);
     validate_local_path(path)?;
-    let path = std::fs::canonicalize(path).map_err(|e| format!("无法打开文件：{e}"))?;
+    let path = std::fs::canonicalize(path).map_err(|e| {
+        NativeError::localized(
+            format!("Could not open the file: {e}"),
+            format!("无法打开文件：{e}"),
+        )
+    })?;
     validate_local_path(&path.to_string_lossy())?;
     let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     if !metadata.is_file() {
-        return Err("请选择文件，不能打开目录".into());
+        return Err(NativeError::localized(
+            "Choose a file instead of a directory",
+            "请选择文件，不能打开目录",
+        ));
     }
     let extension = path
         .extension()
@@ -301,10 +360,16 @@ pub fn read_document(path: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
         .unwrap_or_default()
         .to_ascii_lowercase();
     if !["json", "jsonl", "ndjson", "jsonlines", "txt"].contains(&extension.as_str()) {
-        return Err("只支持 JSON / JSONL / NDJSON / JSONLines / TXT 文件".into());
+        return Err(NativeError::localized(
+            "Only JSON, JSONL, NDJSON, JSONLines and TXT files are supported",
+            "只支持 JSON / JSONL / NDJSON / JSONLines / TXT 文件",
+        ));
     }
     if metadata.len() > max_bytes {
-        return Err("文件已超过内存读取阈值，请重新打开以使用磁盘索引".into());
+        return Err(NativeError::localized(
+            "The file exceeds the memory limit. Reopen it to use disk indexing",
+            "文件已超过内存读取阈值，请重新打开以使用磁盘索引",
+        ));
     }
     let file = File::open(&path).map_err(|e| e.to_string())?;
     // Bound the read even if another process grows the file after metadata().
@@ -313,7 +378,10 @@ pub fn read_document(path: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     if bytes.len() as u64 > max_bytes {
-        return Err("文件读取期间超过内存读取阈值，请重新打开以使用磁盘索引".into());
+        return Err(NativeError::localized(
+            "The file exceeded the memory limit while being read. Reopen it to use disk indexing",
+            "文件读取期间超过内存读取阈值，请重新打开以使用磁盘索引",
+        ));
     }
     Ok(bytes)
 }
@@ -339,7 +407,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"new\":2}");
         assert!(save_document(path.to_str().unwrap(), "{}", "{\"old\":1}")
             .unwrap_err()
-            .contains("其他程序"));
+            .message
+            .contains("Another program"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"new\":2}");
         assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
         save_document(path.to_str().unwrap(), "{}", "{\"new\":2}").unwrap();
@@ -448,6 +517,6 @@ mod tests {
     fn directories_are_rejected_before_the_extension_check() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let error = read_document(dir.to_str().unwrap(), MAX_FILE_BYTES).unwrap_err();
-        assert!(error.contains("目录"), "{error}");
+        assert!(error.message.contains("directory"), "{error}");
     }
 }

@@ -1,5 +1,6 @@
 //! Search uses independent read handles and bounded buffers, never the UI page cache.
 use super::*;
+use crate::native_error::NativeError;
 use serde::Deserialize;
 use std::{borrow::Cow, collections::HashSet};
 
@@ -14,6 +15,8 @@ pub struct Options {
     index_base: u64,
     #[serde(default)]
     hidden: HashSet<String>,
+    #[serde(default)]
+    hidden_exact: HashSet<String>,
     #[serde(default = "limit")]
     limit: usize,
     #[serde(default = "yes")]
@@ -55,7 +58,7 @@ struct NodeContext<'a> {
 impl Search<'_> {
     pub(super) fn check(&self) -> Result<()> {
         if self.cancel.load(Ordering::Relaxed) {
-            Err("已取消".into())
+            Err(NativeError::localized("Cancelled", "已取消"))
         } else {
             Ok(())
         }
@@ -69,9 +72,14 @@ impl Search<'_> {
             .as_ref()
             .is_none_or(|scope| path.starts_with(scope) || scope.starts_with(path));
         // Path formatting is only needed when something can actually be hidden.
-        let hidden =
-            !self.options.hidden.is_empty() && self.options.hidden.contains(&normalized(path));
-        Ok(relevant && !hidden)
+        Ok(relevant
+            && (self.options.hidden_exact.is_empty()
+                || !self
+                    .options
+                    .hidden_exact
+                    .contains(&encode_path(path, false)))
+            && (self.options.hidden.is_empty()
+                || !self.options.hidden.contains(&encode_path(path, true))))
     }
     fn accept(&mut self, path: &[Value], matched: bool) -> bool {
         if matched
@@ -119,7 +127,11 @@ impl Search<'_> {
             Value::Object(_) => Cow::Borrowed("object"),
             Value::Array(_) => Cow::Borrowed("array"),
             Value::String(s) => Cow::Borrowed(s.as_str()),
-            Value::Number(n) => Cow::Owned(number(n.as_f64().ok_or("无效数字")?)),
+            Value::Number(n) => {
+                Cow::Owned(number(n.as_f64().ok_or_else(|| {
+                    NativeError::localized("Invalid number", "无效数字")
+                })?))
+            }
             _ => Cow::Owned(value.to_string()),
         };
         let matched = self.matches(label, text.as_ref())?;
@@ -181,7 +193,9 @@ impl Search<'_> {
         context: NodeContext<'_>,
     ) -> Result<(u64, bool)> {
         let node = Node::read(
-            doc.index.as_mut().ok_or("索引已关闭")?,
+            doc.index
+                .as_mut()
+                .ok_or_else(|| NativeError::localized("The index is closed", "索引已关闭"))?,
             &mut doc.node_buffer,
             id,
         )?;
@@ -213,7 +227,7 @@ impl Search<'_> {
                     let raw = input.raw(node.start, node.end)?;
                     number(serde_json::from_str::<f64>(&raw).map_err(err)?)
                 }
-                _ => return Err("节点类型无效".into()),
+                _ => return Err(NativeError::localized("Invalid node type", "节点类型无效")),
             };
             self.matches(context.label, &text)?
         };
@@ -255,17 +269,29 @@ impl Indexed {
         if !(1..=1000).contains(&options.limit)
             || options.index_base > 1
             || options.query.is_empty()
-            || options.hidden.len() > 100_000
-            || options.hidden.iter().map(String::len).sum::<usize>() > 8 * 1024 * 1024
+            || options.hidden.len() + options.hidden_exact.len() > 100_000
+            || options
+                .hidden
+                .iter()
+                .chain(&options.hidden_exact)
+                .map(String::len)
+                .sum::<usize>()
+                > 8 * 1024 * 1024
             || options
                 .scope_path
                 .as_ref()
                 .is_some_and(|path| path.len() > 128)
         {
-            return Err("无效的搜索参数".into());
+            return Err(NativeError::localized(
+                "Invalid search parameters",
+                "无效的搜索参数",
+            ));
         }
         if options.query.encode_utf16().count() > 32768 {
-            return Err("搜索内容过长，请缩短后重试".into());
+            return Err(NativeError::localized(
+                "The search query is too long. Shorten it and try again",
+                "搜索内容过长，请缩短后重试",
+            ));
         }
         self.check()?;
         let mut search = Search {
@@ -287,7 +313,7 @@ impl Indexed {
     }
 }
 
-fn normalized(path: &[Value]) -> String {
+fn encode_path(path: &[Value], normalize: bool) -> String {
     let mut out = "$".to_string();
     for key in path {
         if let Some(key) = key.as_str() {
@@ -303,8 +329,12 @@ fn normalized(path: &[Value]) -> String {
                 out.push_str(&json!(key).to_string());
                 out.push(']');
             }
-        } else {
+        } else if normalize {
             out.push_str("[0]");
+        } else {
+            out.push('[');
+            out.push_str(&key.to_string());
+            out.push(']');
         }
     }
     out
@@ -433,7 +463,9 @@ impl Input {
         let len = end
             .checked_sub(start)
             .filter(|n| *n <= 64 * 1024)
-            .ok_or("索引值范围无效")?;
+            .ok_or_else(|| {
+                NativeError::localized("Invalid indexed value range", "索引值范围无效")
+            })?;
         self.seek(start)?;
         let mut bytes = vec![0; len as usize];
         self.reader.read_exact(&mut bytes).map_err(err)?;
@@ -442,7 +474,10 @@ impl Input {
     }
     fn byte(&mut self, end: u64) -> Result<u8> {
         if self.pos >= end {
-            return Err("字符串索引不完整".into());
+            return Err(NativeError::localized(
+                "The string index is incomplete",
+                "字符串索引不完整",
+            ));
         }
         let mut b = [0];
         self.reader.read_exact(&mut b).map_err(err)?;
@@ -453,7 +488,10 @@ impl Input {
         let mut value = 0;
         for _ in 0..4 {
             let b = self.byte(end)?;
-            value = value * 16 + (b as char).to_digit(16).ok_or("无效的 Unicode 转义")?;
+            value = value * 16
+                + (b as char).to_digit(16).ok_or_else(|| {
+                    NativeError::localized("Invalid Unicode escape", "无效的 Unicode 转义")
+                })?;
         }
         Ok(value)
     }
@@ -471,19 +509,32 @@ impl Input {
                 let first = self.hex(end)?;
                 let code = if (0xd800..=0xdbff).contains(&first) {
                     if self.byte(end)? != b'\\' || self.byte(end)? != b'u' {
-                        return Err("无效的 Unicode 代理对".into());
+                        return Err(NativeError::localized(
+                            "Invalid Unicode surrogate pair",
+                            "无效的 Unicode 代理对",
+                        ));
                     }
                     let second = self.hex(end)?;
                     if !(0xdc00..=0xdfff).contains(&second) {
-                        return Err("无效的 Unicode 代理对".into());
+                        return Err(NativeError::localized(
+                            "Invalid Unicode surrogate pair",
+                            "无效的 Unicode 代理对",
+                        ));
                     }
                     0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00)
                 } else {
                     first
                 };
-                char::from_u32(code).ok_or("无效的 Unicode 字符")?
+                char::from_u32(code).ok_or_else(|| {
+                    NativeError::localized("Invalid Unicode character", "无效的 Unicode 字符")
+                })?
             }
-            _ => return Err("无效的字符串转义".into()),
+            _ => {
+                return Err(NativeError::localized(
+                    "Invalid string escape",
+                    "无效的字符串转义",
+                ))
+            }
         })
     }
     fn string(
@@ -498,18 +549,23 @@ impl Input {
         let end = end
             .checked_sub(1)
             .filter(|end| *end > start)
-            .ok_or("字符串索引不完整")?;
+            .ok_or_else(|| {
+                NativeError::localized("The string index is incomplete", "字符串索引不完整")
+            })?;
         self.seek(start + 1)?;
         let mut matcher = Matcher::new(pattern);
         matcher.feed_checked(label, cancel)?;
         matcher.feed(' ');
         while self.pos < end && !matcher.matched() {
             if cancel.load(Ordering::Relaxed) {
-                return Err("已取消".into());
+                return Err(NativeError::localized("Cancelled", "已取消"));
             }
             let bytes = self.reader.fill_buf().map_err(err)?;
             if bytes.is_empty() {
-                return Err("字符串索引不完整".into());
+                return Err(NativeError::localized(
+                    "The string index is incomplete",
+                    "字符串索引不完整",
+                ));
             }
             let len = bytes.len().min((end - self.pos) as usize);
             let len = memchr::memchr(b'\\', &bytes[..len]).unwrap_or(len);
@@ -672,7 +728,7 @@ impl<'a> Matcher<'a> {
     fn feed_checked(&mut self, text: &str, cancel: &AtomicBool) -> Result<()> {
         for (i, c) in text.chars().enumerate() {
             if i % 32 == 0 && cancel.load(Ordering::Relaxed) {
-                return Err("已取消".into());
+                return Err(NativeError::localized("Cancelled", "已取消"));
             }
             self.feed(c);
             if self.matched() {
@@ -951,7 +1007,8 @@ mod tests {
             assert!(copy
                 .native_search(&options("target"), &cancelled)
                 .unwrap_err()
-                .contains("取消"));
+                .message
+                .contains("Cancelled"));
             assert_eq!(
                 search(&mut copy, "target")["hits"],
                 json!([["rows", 0, "v"]])
@@ -1002,6 +1059,34 @@ mod tests {
     }
 
     #[test]
+    fn exact_hidden_array_rows_skip_only_the_selected_subtree() {
+        for (ext, text) in [
+            (
+                "json",
+                r#"[{"value":"needle"},{"value":"needle"},{"value":"needle"}]"#,
+            ),
+            (
+                "jsonl",
+                "{\"value\":\"needle\"}\n{\"value\":\"needle\"}\n{\"value\":\"needle\"}\n",
+            ),
+        ] {
+            run(text, ext, |doc| {
+                let mut opt = options("needle");
+                opt.hidden_exact.insert("$[1]".into());
+                assert_eq!(
+                    doc.native_search(&opt, &AtomicBool::new(false)).unwrap()["hits"],
+                    json!([[0, "value"], [2, "value"]])
+                );
+                opt.hidden.insert("$[0].value".into());
+                assert_eq!(
+                    doc.native_search(&opt, &AtomicBool::new(false)).unwrap()["hits"],
+                    json!([])
+                );
+            });
+        }
+    }
+
+    #[test]
     fn query_lengths_use_utf16_units_and_hidden_paths_have_a_budget() {
         run("{}", "json", |doc| {
             let mut opt = options(&"汉".repeat(32768));
@@ -1013,7 +1098,8 @@ mod tests {
             assert!(doc
                 .native_search(&opt, &AtomicBool::new(false))
                 .unwrap_err()
-                .contains("过长"));
+                .message
+                .contains("too long"));
             opt = options("x");
             opt.hidden.insert("x".repeat(8 * 1024 * 1024 + 1));
             assert!(doc.native_search(&opt, &AtomicBool::new(false)).is_err());

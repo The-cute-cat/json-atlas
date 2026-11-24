@@ -1,5 +1,6 @@
 //! Thompson simulation on streaming UTF-8, bounded by the compiled expression.
 //! Only previous/current code points are needed for anchors and word assertions.
+use crate::native_error::NativeError;
 use regex_automata::{
     nfa::thompson::{self, State, NFA},
     util::{look::Look, primitives::StateID, syntax},
@@ -10,9 +11,12 @@ pub(super) struct Pattern {
     insensitive: bool,
 }
 impl Pattern {
-    pub fn new(source: &str, case_sensitive: bool) -> Result<Self, String> {
+    pub fn new(source: &str, case_sensitive: bool) -> Result<Self, NativeError> {
         if source.len() > 128 * 1024 {
-            return Err("正则表达式过长".into());
+            return Err(NativeError::localized(
+                "The regular expression is too long",
+                "正则表达式过长",
+            ));
         }
         let nfa = NFA::compiler()
             .configure(
@@ -22,7 +26,12 @@ impl Pattern {
             )
             .syntax(syntax::Config::new().case_insensitive(!case_sensitive))
             .build(source)
-            .map_err(|e| format!("正则表达式无效或过于复杂：{e}"))?;
+            .map_err(|e| {
+                NativeError::localized(
+                    format!("Invalid or overly complex regular expression: {e}"),
+                    format!("正则表达式无效或过于复杂：{e}"),
+                )
+            })?;
         Ok(Self {
             nfa,
             insensitive: !case_sensitive,

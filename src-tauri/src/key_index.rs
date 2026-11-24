@@ -1,6 +1,7 @@
 //! Bounded external sorting for wide-object (decoded-key hash, ordinal) pairs.
 //! Scratch runs are fixed-size; merge fan-in and memory do not grow with input.
 use super::{err, read_word, sidecar, write_word, Result};
+use crate::native_error::NativeError;
 use std::{
     cmp::Reverse,
     collections::BinaryHeap,
@@ -31,7 +32,7 @@ impl KeyReader {
         let len = end
             .checked_sub(start)
             .filter(|n| *n <= 64 * 1024)
-            .ok_or("字段名索引无效")?;
+            .ok_or_else(|| NativeError::localized("Invalid field name index", "字段名索引无效"))?;
         if start >= self.pos && start - self.pos <= self.reader.buffer().len() as u64 {
             self.reader.consume((start - self.pos) as usize);
         } else {
@@ -47,7 +48,7 @@ impl KeyReader {
 
 fn check(cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::Relaxed) {
-        Err("已取消".into())
+        Err(NativeError::localized("Cancelled", "已取消"))
     } else {
         Ok(())
     }

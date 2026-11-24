@@ -2,6 +2,7 @@
 //! Ordinary rows are validated while scanning and parsed locally on demand.
 //! Oversized rows use a streaming subtree index, keeping memory bounded.
 use super::{err, Indexed, NodeBuffer, Result, Scanner, PREVIEW, TEXT_LIMIT};
+use crate::native_error::NativeError;
 use memchr::memchr;
 use serde_json::{json, Value};
 use std::{
@@ -53,9 +54,11 @@ mod tests {
         }
         assert!(write_tag(&mut Failing, 0, 4)
             .unwrap_err()
+            .message
             .contains("disk failure"));
         assert!(write_tag(&mut Failing, LONG | 42, 8)
             .unwrap_err()
+            .message
             .contains("disk failure"));
     }
 }
@@ -75,7 +78,10 @@ fn write_tag(writer: &mut impl Write, tag: u64, width: usize) -> Result<()> {
     if width == 4 {
         let payload = tag & !LONG;
         if payload >= LONG32 {
-            return Err("记录偏移超出原文件大小，请重新打开".into());
+            return Err(NativeError::localized(
+                "The record offset exceeds the file size. Reopen the file",
+                "记录偏移超出原文件大小，请重新打开",
+            ));
         }
         let raw = (payload | if tag & LONG != 0 { LONG32 } else { 0 }) as u32;
         writer.write_all(&raw.to_le_bytes()).map_err(err)
@@ -151,7 +157,7 @@ fn at<'a>(mut value: &'a Value, path: &[Value]) -> Result<&'a Value> {
                 .and_then(|n| array.get(n)),
             _ => None,
         }
-        .ok_or("节点不存在")?;
+        .ok_or_else(|| NativeError::localized("Node not found", "节点不存在"))?;
     }
     Ok(value)
 }
@@ -169,7 +175,10 @@ impl LineIndex {
         if records.checked_mul(width as u64) != Some(offsets.metadata().map_err(err)?.len())
             || records == 0
         {
-            return Err("JSONL 记录索引不完整".into());
+            return Err(NativeError::localized(
+                "The JSONL record index is incomplete",
+                "JSONL 记录索引不完整",
+            ));
         }
         Ok(Self {
             reader: BufReader::with_capacity(256 * 1024, File::open(path).map_err(err)?),
@@ -265,7 +274,10 @@ impl LineIndex {
         let source = File::open(path).map_err(err)?;
         let size = source.metadata().map_err(err)?.len();
         if size >= LONG {
-            return Err("JSONL 文件超过 64 位偏移表支持范围".into());
+            return Err(NativeError::localized(
+                "The JSONL file exceeds the range supported by the 64-bit offset table",
+                "JSONL 文件超过 64 位偏移表支持范围",
+            ));
         }
         let mut result = Self {
             reader: BufReader::with_capacity(256 * 1024, source),
@@ -288,7 +300,7 @@ impl LineIndex {
         let mut next_progress = 0;
         loop {
             if cancel.load(Ordering::Relaxed) {
-                return Err("已取消".into());
+                return Err(NativeError::localized("Cancelled", "已取消"));
             }
             let buf = result.reader.fill_buf().map_err(err)?;
             if buf.is_empty() {
@@ -308,7 +320,7 @@ impl LineIndex {
                 progress(result.cursor);
                 next_progress = result.cursor + 256 * 1024;
                 if cancel.load(Ordering::Relaxed) {
-                    return Err("已取消".into());
+                    return Err(NativeError::localized("Cancelled", "已取消"));
                 }
             }
             if newline.is_some() {
@@ -330,10 +342,13 @@ impl LineIndex {
         writer.flush().map_err(err)?;
         drop(writer);
         if cancel.load(Ordering::Relaxed) {
-            return Err("已取消".into());
+            return Err(NativeError::localized("Cancelled", "已取消"));
         }
         if result.records == 0 {
-            return Err("JSONL 内没有可解析的记录".into());
+            return Err(NativeError::localized(
+                "The JSONL file contains no parseable records",
+                "JSONL 内没有可解析的记录",
+            ));
         }
         progress(result.cursor);
         Ok(result)
@@ -366,7 +381,12 @@ impl LineIndex {
         // allocating the line. All large-row parser I/O errors remain fatal.
         if self.long.is_none() {
             self.long = Some(Indexed::empty(
-                path.to_str().ok_or("文件路径不是有效 Unicode")?,
+                path.to_str().ok_or_else(|| {
+                    NativeError::localized(
+                        "The file path is not valid Unicode",
+                        "文件路径不是有效 Unicode",
+                    )
+                })?,
                 long_path.to_path_buf(),
             )?);
         }
@@ -411,16 +431,21 @@ impl LineIndex {
         let parsed = scanner.value(0, 0, 0).and_then(|id| {
             scanner.space()?;
             if scanner.peek()?.is_some_and(|b| b != b'\n') {
-                Err("记录后存在多余内容".into())
+                Err(NativeError::localized(
+                    "Unexpected content after the record",
+                    "记录后存在多余内容",
+                ))
             } else {
                 Ok(id)
             }
         });
         if cancel.load(Ordering::Relaxed) {
-            return Err("已取消".into());
+            return Err(NativeError::localized("Cancelled", "已取消"));
         }
         if scanner.io_failed {
-            return Err(parsed.err().unwrap_or_else(|| "索引 I/O 失败".into()));
+            return Err(parsed
+                .err()
+                .unwrap_or_else(|| NativeError::localized("Index I/O failed", "索引 I/O 失败")));
         }
         match parsed {
             Ok(id) => {
@@ -441,7 +466,10 @@ impl LineIndex {
     }
     fn tags(&mut self, start: u64, count: u64) -> Result<Vec<u64>> {
         if start > self.records || count > self.records - start || count > 100 {
-            return Err("无效的记录范围".into());
+            return Err(NativeError::localized(
+                "Invalid record range",
+                "无效的记录范围",
+            ));
         }
         self.offsets
             .seek(SeekFrom::Start(start * self.width as u64))
@@ -452,7 +480,7 @@ impl LineIndex {
     }
     fn tag(&mut self, row: u64) -> Result<u64> {
         if row >= self.records {
-            return Err("节点不存在".into());
+            return Err(NativeError::localized("Node not found", "节点不存在"));
         }
         Ok(self.tags(row, 1)?[0])
     }
@@ -474,7 +502,10 @@ impl LineIndex {
             let newline = memchr(b'\n', buf);
             let count = newline.unwrap_or(buf.len());
             if bytes.len() + count > ROW_LIMIT {
-                return Err("文件内容与行索引不一致，请重新打开".into());
+                return Err(NativeError::localized(
+                    "The file contents differ from the line index. Reopen the file",
+                    "文件内容与行索引不一致，请重新打开",
+                ));
             }
             bytes.extend_from_slice(&buf[..count]);
             let consumed = count + usize::from(newline.is_some());
@@ -497,7 +528,9 @@ impl LineIndex {
         Ok(value)
     }
     fn long_row(&mut self, tag: u64) -> Result<&mut Indexed> {
-        let long = self.long.as_mut().ok_or("长记录索引不存在")?;
+        let long = self.long.as_mut().ok_or_else(|| {
+            NativeError::localized("Missing index for long records", "长记录索引不存在")
+        })?;
         long.root = tag & !LONG;
         Ok(long)
     }
@@ -520,7 +553,7 @@ impl LineIndex {
             let row = path[0]
                 .as_u64()
                 .filter(|n| *n < self.records)
-                .ok_or("节点不存在")?;
+                .ok_or_else(|| NativeError::localized("Node not found", "节点不存在"))?;
             Ok(Some((row, &path[1..])))
         } else {
             Ok(Some((0, path)))
@@ -549,7 +582,10 @@ impl LineIndex {
                 self.records
             };
             let selected = match key {
-                Some(key) => key.as_u64().filter(|n| *n < total).ok_or("节点不存在")?,
+                Some(key) => key
+                    .as_u64()
+                    .filter(|n| *n < total)
+                    .ok_or_else(|| NativeError::localized("Node not found", "节点不存在"))?,
                 None => offset,
             };
             let start = selected.min(total.saturating_sub(1)) / limit * limit;
@@ -593,12 +629,15 @@ impl LineIndex {
             _ => 0,
         } as u64;
         let selected = match key {
-            Some(key) if array => key.as_u64().filter(|n| *n < total).ok_or("节点不存在")?,
+            Some(key) if array => key
+                .as_u64()
+                .filter(|n| *n < total)
+                .ok_or_else(|| NativeError::localized("Node not found", "节点不存在"))?,
             Some(key) => value
                 .as_object()
                 .and_then(|m| m.keys().position(|k| Some(k.as_str()) == key.as_str()))
                 .map(|n| n as u64)
-                .ok_or("节点不存在")?,
+                .ok_or_else(|| NativeError::localized("Node not found", "节点不存在"))?,
             None => offset,
         };
         let start = selected.min(total.saturating_sub(1)) / limit * limit;
@@ -644,7 +683,10 @@ impl LineIndex {
                 for tag in tags {
                     let bytes = self.row_json(tag)?;
                     if text.len() as u64 + bytes.len() as u64 + 2 > TEXT_LIMIT {
-                        return Err("内容过大，暂不支持全文读取或复制（上限 8 MiB）".into());
+                        return Err(NativeError::localized(
+                            "The value is too large to read or copy in full (limit: 8 MiB)",
+                            "内容过大，暂不支持全文读取或复制（上限 8 MiB）",
+                        ));
                     }
                     if row > 0 {
                         text.push(',');

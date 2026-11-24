@@ -1,5 +1,5 @@
 import { t } from './i18n.js';
-import { PAGE_SIZE, encodeDataPath, normalizeDataPath } from './data.js';
+import { PAGE_SIZE, isHiddenDataPath } from './data.js';
 import { sharedPageCache } from './page-cache.js';
 import { compileSearch, pathInside } from './search-pattern.js';
 
@@ -100,7 +100,7 @@ export class IndexedDataSource {
     finally { this.#prefetching = false; }
   }
   getText(path, { signal } = {}) { return this.#call('text', { path }, signal); }
-  async #nativeSearch(query, { rootLabel, indexBase, hidden, cancelled, signal, limit, nativePattern, caseSensitive, scopePath }) {
+  async #nativeSearch(query, { rootLabel, indexBase, hidden, hiddenExact, cancelled, signal, limit, nativePattern, caseSensitive, scopePath }) {
     this.#check(signal);
     if (cancelled()) return null;
     for (const cancel of this.#searchJobs.values()) cancel();
@@ -119,7 +119,10 @@ export class IndexedDataSource {
     signal?.addEventListener('abort', cancel, { once: true });
     try {
       const advanced = { ...(nativePattern == null ? {} : { nativePattern, caseSensitive }), ...(scopePath ? { scopePath } : {}) };
-      const result = await this.#call('search', { searchId, query, rootLabel, indexBase, hidden: [...hidden], limit, ...advanced }, signal);
+      const result = await this.#call('search', {
+        searchId, query, rootLabel, indexBase, hidden: [...hidden], limit, ...advanced,
+        ...(hiddenExact?.size ? { hiddenExact: [...hiddenExact] } : {})
+      }, signal);
       this.#checkVersion(version, signal);
       return stopped || cancelled() ? null : result;
     } catch (error) {
@@ -131,12 +134,12 @@ export class IndexedDataSource {
       clearInterval(timer); signal?.removeEventListener('abort', cancel); this.#searchJobs.delete(searchId);
     }
   }
-  async search(query, { rootLabel = 'root', indexBase = 0, hidden = new Set(), cancelled = () => false, signal, limit = 1000, caseSensitive = false, wholeWord = false, regex = false, scopePath = null } = {}) {
+  async search(query, { rootLabel = 'root', indexBase = 0, hidden = new Set(), hiddenExact, cancelled = () => false, signal, limit = 1000, caseSensitive = false, wholeWord = false, regex = false, scopePath = null } = {}) {
     const matcher = compileSearch(query, { caseSensitive, wholeWord, regex });
     // JSON IPC cannot represent lone UTF-16 surrogates. Keep the old local
     // matcher for those unusual queries rather than changing their meaning.
     if (this.info.nativeSearch && query && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(query)) {
-      return this.#nativeSearch(matcher.nativePattern == null ? query.toLowerCase() : query, { rootLabel, indexBase, hidden, cancelled, signal, limit, scopePath, ...matcher });
+      return this.#nativeSearch(matcher.nativePattern == null ? query.toLowerCase() : query, { rootLabel, indexBase, hidden, hiddenExact, cancelled, signal, limit, scopePath, ...matcher });
     }
     const hits = [], stack = [{ node: this.getRoot(), key: rootLabel }];
     const version = this.#version, batches = new Map();
@@ -153,7 +156,7 @@ export class IndexedDataSource {
       this.#checkVersion(version, signal);
       return cancelled() ? null : { hits, truncated };
     };
-    const visible = node => !hidden.has(normalizeDataPath(encodeDataPath(node.path))) && (pathInside(node.path, scopePath) || pathInside(scopePath || [], node.path));
+    const visible = node => !isHiddenDataPath(node.path, hidden, hiddenExact) && (pathInside(node.path, scopePath) || pathInside(scopePath || [], node.path));
     const small = node => (node.type === 'array' || node.type === 'object') && node.childCount > 0 && node.childCount <= 16;
     const pageFor = async frame => {
       this.#checkVersion(version, signal);

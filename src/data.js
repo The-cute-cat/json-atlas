@@ -41,15 +41,14 @@ export function parseDocument(text, name) {
   return { kind, ...result, error: result.records.length ? null : t('JSONL 内没有可解析的记录') };
 }
 
-export function* walkData(value, rootLabel = 'root', indexBase = 0, hidden = new Set(), initialPath = [], lowercase = true) {
+export function* walkData(value, rootLabel = 'root', indexBase = 0, hidden, initialPath = [], lowercase = true, hiddenExact) {
   // Frames carry a cursor rather than pushing every array item onto a stack.
   const stack = [{ value, path: initialPath, key: rootLabel, visited: false }];
   while (stack.length) {
     const frame = stack[stack.length - 1];
     if (!frame.visited) {
       frame.visited = true;
-      const norm = normalizeDataPath(encodeDataPath(frame.path));
-      if (hidden.has(norm)) { stack.pop(); continue; }
+      if (isHiddenDataPath(frame.path, hidden, hiddenExact)) { stack.pop(); continue; }
       const v = frame.value;
       const type = v !== null && typeof v === 'object' ? (Array.isArray(v) ? 'array' : 'object') : String(v);
       const rawText = frame.key + ' ' + type;
@@ -77,7 +76,13 @@ export function normalizeDataPath(path) {
     segment => segment.startsWith('["') ? segment : '[0]');
 }
 
-export async function searchData(value, query, { rootLabel, indexBase, hidden, scopePath, textLines = false, caseSensitive = false, wholeWord = false, regex = false, cancelled = () => false,
+export function isHiddenDataPath(path, hidden, hiddenExact) {
+  if (!hidden?.size && !hiddenExact?.size) return false;
+  const encoded = encodeDataPath(path);
+  return hiddenExact?.has(encoded) === true || (hidden?.size > 0 && hidden.has(normalizeDataPath(encoded)));
+}
+
+export async function searchData(value, query, { rootLabel, indexBase, hidden, hiddenExact, scopePath, textLines = false, caseSensitive = false, wholeWord = false, regex = false, cancelled = () => false,
   yieldTask = () => new Promise(resolve => setTimeout(resolve, 0)), limit = 1000 } = {}) {
   const hits = [];
   const matcher = compileSearch(query, { caseSensitive, wholeWord, regex });
@@ -98,10 +103,10 @@ export async function searchData(value, query, { rootLabel, indexBase, hidden, s
       value = value[key];
     }
     const key = scopePath.at(-1); rootLabel = typeof key === 'number' ? String(key + (indexBase || 0)) : key;
-    for (let i = 0; i <= scopePath.length; i++) if (hidden?.has(normalizeDataPath(encodeDataPath(scopePath.slice(0, i))))) return { hits: [], truncated: false };
+    for (let i = 0; i <= scopePath.length; i++) if (isHiddenDataPath(scopePath.slice(0, i), hidden, hiddenExact)) return { hits: [], truncated: false };
   }
   let count = 0;
-  for (const item of walkData(value, rootLabel, indexBase, hidden, scopePath || [], false)) {
+  for (const item of walkData(value, rootLabel, indexBase, hidden, scopePath || [], false, hiddenExact)) {
     if (cancelled()) return null;
     if (matcher.test(item.text)) {
       if (hits.length >= limit) return { hits, truncated: true };

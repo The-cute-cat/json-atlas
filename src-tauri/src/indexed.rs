@@ -1,5 +1,6 @@
 //! A bounded-memory JSON scanner. The preorder index lives on disk; only the
 //! parser stack, fixed-size I/O buffers and one page of previews stay in memory.
+use crate::native_error::NativeError;
 use serde_json::{json, Value};
 use std::{
     collections::{hash_map::RandomState, HashMap},
@@ -31,7 +32,7 @@ mod key_index;
 pub(super) mod native_search;
 #[path = "search_regex.rs"]
 mod search_regex;
-type Result<T> = std::result::Result<T, String>;
+type Result<T> = std::result::Result<T, NativeError>;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct KeyState(u64, u64);
@@ -89,17 +90,25 @@ impl IndexState {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-')
         {
-            return Err("无效的搜索标识".into());
+            return Err(NativeError::localized(
+                "Invalid search ID",
+                "无效的搜索标识",
+            ));
         }
         let sessions = self.sessions.lock().map_err(err)?;
-        let doc = sessions
-            .get(id)
-            .cloned()
-            .ok_or("索引已关闭，请重新打开文件")?;
+        let doc = sessions.get(id).cloned().ok_or_else(|| {
+            NativeError::localized(
+                "The index is closed. Reopen the file",
+                "索引已关闭，请重新打开文件",
+            )
+        })?;
         let mut jobs = self.searches.lock().map_err(err)?;
         let key = (id.to_string(), query_id.to_string());
         if jobs.contains_key(&key) {
-            return Err("搜索标识已存在".into());
+            return Err(NativeError::localized(
+                "The search ID is already in use",
+                "搜索标识已存在",
+            ));
         }
         for ((owner, _), cancel) in jobs.iter() {
             if owner == id {
@@ -188,7 +197,9 @@ impl NodeBuffer {
         Ok(())
     }
     fn load(&mut self, file: &mut File, id: u64) -> Result<usize> {
-        let pos = id.checked_mul(self.record()).ok_or("索引位置溢出")?;
+        let pos = id
+            .checked_mul(self.record())
+            .ok_or_else(|| NativeError::localized("Index position overflow", "索引位置溢出"))?;
         let offset = (id & if self.width == 4 { 8191 } else { 4095 }) * self.record();
         let base = pos - offset;
         if self.base != Some(base) {
@@ -218,16 +229,22 @@ impl Node {
             .ke
             .checked_sub(self.ks)
             .filter(|n| *n <= 64 * 1024)
-            .ok_or("字段名索引无效")?;
+            .ok_or_else(|| NativeError::localized("Invalid field name index", "字段名索引无效"))?;
         if !(1..=6).contains(&self.kind) {
-            return Err("节点类型无效".into());
+            return Err(NativeError::localized("Invalid node type", "节点类型无效"));
         }
         let words = [
             self.start,
-            self.end.checked_sub(self.start).ok_or("值范围无效")?,
-            self.next.checked_sub(id).ok_or("子树范围无效")?,
+            self.end
+                .checked_sub(self.start)
+                .ok_or_else(|| NativeError::localized("Invalid value range", "值范围无效"))?,
+            self.next
+                .checked_sub(id)
+                .ok_or_else(|| NativeError::localized("Invalid subtree range", "子树范围无效"))?,
             self.count,
-            self.start.checked_sub(self.ks).ok_or("字段名位置无效")?,
+            self.start.checked_sub(self.ks).ok_or_else(|| {
+                NativeError::localized("Invalid field name position", "字段名位置无效")
+            })?,
             (key_len << 3) | self.kind,
         ];
         if buffer.width == 4 {
@@ -247,7 +264,10 @@ impl Node {
         let offset = buffer.load(file, id)?;
         let record = buffer.record() as usize;
         if offset + record > buffer.valid {
-            return Err("索引文件不完整".into());
+            return Err(NativeError::localized(
+                "The index file is incomplete",
+                "索引文件不完整",
+            ));
         }
         let bytes = &buffer.bytes[offset..offset + record];
         let mut v = [0; 6];
@@ -260,18 +280,26 @@ impl Node {
                 v[i] = read_word(chunk);
             }
         }
-        let ks = v[0].checked_sub(v[4]).ok_or("字段名位置无效")?;
+        let ks = v[0].checked_sub(v[4]).ok_or_else(|| {
+            NativeError::localized("Invalid field name position", "字段名位置无效")
+        })?;
         let kind = v[5] & 7;
         if !(1..=6).contains(&kind) || v[5] >> 3 > 64 * 1024 {
-            return Err("节点索引无效".into());
+            return Err(NativeError::localized("Invalid node index", "节点索引无效"));
         }
         Ok(Self {
             start: v[0],
-            end: v[0].checked_add(v[1]).ok_or("值范围溢出")?,
-            next: id.checked_add(v[2]).ok_or("子树范围溢出")?,
+            end: v[0]
+                .checked_add(v[1])
+                .ok_or_else(|| NativeError::localized("Value range overflow", "值范围溢出"))?,
+            next: id
+                .checked_add(v[2])
+                .ok_or_else(|| NativeError::localized("Subtree range overflow", "子树范围溢出"))?,
             count: v[3],
             ks,
-            ke: ks.checked_add(v[5] >> 3).ok_or("字段名范围溢出")?,
+            ke: ks.checked_add(v[5] >> 3).ok_or_else(|| {
+                NativeError::localized("Field name range overflow", "字段名范围溢出")
+            })?,
             kind,
             children: 0,
         })
@@ -296,7 +324,9 @@ fn write_word(bytes: &mut [u8], n: u64) -> Result<()> {
     if bytes.len() == 4 {
         bytes.copy_from_slice(
             &u32::try_from(n)
-                .map_err(|_| "32 位索引位置溢出")?
+                .map_err(|_| {
+                    NativeError::localized("32-bit index position overflow", "32 位索引位置溢出")
+                })?
                 .to_le_bytes(),
         );
     } else {
@@ -309,8 +339,8 @@ fn sidecar(path: &Path, suffix: &str) -> PathBuf {
     name.push(suffix);
     PathBuf::from(name)
 }
-fn err(e: impl std::fmt::Display) -> String {
-    e.to_string()
+fn err(e: impl std::fmt::Display) -> NativeError {
+    NativeError::from_display(e)
 }
 
 pub fn stat(path: &str) -> Result<Value> {
@@ -319,7 +349,10 @@ pub fn stat(path: &str) -> Result<Value> {
     super::documents::validate_local_path(&path.to_string_lossy())?;
     let meta = path.metadata().map_err(err)?;
     if !meta.is_file() {
-        return Err("请选择文件，不能打开目录".into());
+        return Err(NativeError::localized(
+            "Choose a file instead of a directory",
+            "请选择文件，不能打开目录",
+        ));
     }
     let ext = path
         .extension()
@@ -327,7 +360,10 @@ pub fn stat(path: &str) -> Result<Value> {
         .unwrap_or("")
         .to_ascii_lowercase();
     if !["json", "jsonl", "ndjson", "jsonlines", "txt"].contains(&ext.as_str()) {
-        return Err("只支持 JSON / JSONL / NDJSON / JSONLines / TXT 文件".into());
+        return Err(NativeError::localized(
+            "Only JSON, JSONL, NDJSON, JSONLines and TXT files are supported",
+            "只支持 JSON / JSONL / NDJSON / JSONLines / TXT 文件",
+        ));
     }
     Ok(
         json!({"path":super::documents::display_path(&path), "name":path.file_name().unwrap_or_default().to_string_lossy(), "size":meta.len()}),
@@ -359,9 +395,14 @@ impl Scanner<'_> {
             .copied())
     }
     fn byte(&mut self) -> Result<u8> {
-        let b = self.peek()?.ok_or("文件意外结束")?;
+        let b = self
+            .peek()?
+            .ok_or_else(|| NativeError::localized("Unexpected end of file", "文件意外结束"))?;
         if self.line_mode && b == b'\n' {
-            return Err("JSONL 记录不能跨行".into());
+            return Err(NativeError::localized(
+                "A JSONL record cannot span multiple lines",
+                "JSONL 记录不能跨行",
+            ));
         }
         self.advance(1)?;
         Ok(b)
@@ -371,11 +412,11 @@ impl Scanner<'_> {
         self.input.consume(count);
         self.pos += count as u64;
         if count > 1 && self.cancel.load(Ordering::Relaxed) {
-            return Err("已取消".into());
+            return Err(NativeError::localized("Cancelled", "已取消"));
         }
         if self.pos >= self.next_progress {
             if self.cancel.load(Ordering::Relaxed) {
-                return Err("已取消".into());
+                return Err(NativeError::localized("Cancelled", "已取消"));
             }
             (self.progress)(self.pos);
             self.next_progress = self.pos + 256 * 1024;
@@ -393,7 +434,10 @@ impl Scanner<'_> {
     }
     fn expect(&mut self, b: u8) -> Result<()> {
         if self.peek()? != Some(b) {
-            return Err(format!("字节 {}：JSON 语法错误", self.pos));
+            return Err(NativeError::localized(
+                format!("Byte {}: JSON syntax error", self.pos),
+                format!("字节 {}：JSON 语法错误", self.pos),
+            ));
         }
         self.byte()?;
         Ok(())
@@ -407,7 +451,12 @@ impl Scanner<'_> {
                     b'0'..=b'9' => (c - b'0') as u16,
                     b'a'..=b'f' => (c - b'a' + 10) as u16,
                     b'A'..=b'F' => (c - b'A' + 10) as u16,
-                    _ => return Err("无效的 Unicode 转义".into()),
+                    _ => {
+                        return Err(NativeError::localized(
+                            "Invalid Unicode escape",
+                            "无效的 Unicode 转义",
+                        ))
+                    }
                 };
         }
         Ok(n)
@@ -415,7 +464,10 @@ impl Scanner<'_> {
     /// Reads the byte after a backslash, rejecting a raw line break inside JSONL.
     fn escape(&mut self) -> Result<u8> {
         if self.line_mode && self.peek()? == Some(b'\n') {
-            return Err("无效的字符串转义".into());
+            return Err(NativeError::localized(
+                "Invalid string escape",
+                "无效的字符串转义",
+            ));
         }
         self.byte()
     }
@@ -444,7 +496,12 @@ impl Scanner<'_> {
                     self.advance(end)?;
                     return self.string_tail();
                 }
-                0..=31 => return Err("字符串包含未转义控制字符".into()),
+                0..=31 => {
+                    return Err(NativeError::localized(
+                        "The string contains an unescaped control character",
+                        "字符串包含未转义控制字符",
+                    ))
+                }
                 _ => {}
             }
         }
@@ -459,12 +516,20 @@ impl Scanner<'_> {
                 let end = memchr::memchr2(b'"', b'\\', bytes).unwrap_or(bytes.len());
                 let plain = &bytes[..end];
                 if plain.iter().any(|b| *b < 32) {
-                    return Err("字符串包含未转义控制字符".into());
+                    return Err(NativeError::localized(
+                        "The string contains an unescaped control character",
+                        "字符串包含未转义控制字符",
+                    ));
                 }
                 match std::str::from_utf8(plain) {
                     Ok(_) => plain.len(),
                     Err(e) if e.error_len().is_none() => e.valid_up_to(),
-                    Err(_) => return Err("文件不是有效 UTF-8".into()),
+                    Err(_) => {
+                        return Err(NativeError::localized(
+                            "The file is not valid UTF-8",
+                            "文件不是有效 UTF-8",
+                        ))
+                    }
                 }
             };
             if count > 0 {
@@ -485,25 +550,40 @@ impl Scanner<'_> {
             0xC2..=0xDF => 2,
             0xE0..=0xEF => 3,
             0xF0..=0xF4 => 4,
-            _ => return Err("文件不是有效 UTF-8".into()),
+            _ => {
+                return Err(NativeError::localized(
+                    "The file is not valid UTF-8",
+                    "文件不是有效 UTF-8",
+                ))
+            }
         };
         let mut bytes = [0; 4];
         bytes[0] = b;
         for c in bytes.iter_mut().take(len).skip(1) {
             *c = self.byte()?;
         }
-        std::str::from_utf8(&bytes[..len]).map_err(|_| "文件不是有效 UTF-8")?;
+        std::str::from_utf8(&bytes[..len]).map_err(|_| {
+            NativeError::localized("The file is not valid UTF-8", "文件不是有效 UTF-8")
+        })?;
         Ok(())
     }
     fn string_tail(&mut self) -> Result<()> {
         loop {
             if self.line_mode && self.peek()? == Some(b'\n') {
-                return Err("字符串包含未转义换行".into());
+                return Err(NativeError::localized(
+                    "The string contains an unescaped newline",
+                    "字符串包含未转义换行",
+                ));
             }
             let b = self.byte()?;
             match b {
                 b'"' => return Ok(()),
-                0..=31 => return Err("字符串包含未转义控制字符".into()),
+                0..=31 => {
+                    return Err(NativeError::localized(
+                        "The string contains an unescaped control character",
+                        "字符串包含未转义控制字符",
+                    ))
+                }
                 b'\\' => match self.escape()? {
                     b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
                     b'u' => {
@@ -512,13 +592,24 @@ impl Scanner<'_> {
                             self.expect(b'\\')?;
                             self.expect(b'u')?;
                             if !(0xDC00..=0xDFFF).contains(&self.hex()?) {
-                                return Err("无效的 Unicode 代理对".into());
+                                return Err(NativeError::localized(
+                                    "Invalid Unicode surrogate pair",
+                                    "无效的 Unicode 代理对",
+                                ));
                             }
                         } else if (0xDC00..=0xDFFF).contains(&n) {
-                            return Err("无效的 Unicode 代理对".into());
+                            return Err(NativeError::localized(
+                                "Invalid Unicode surrogate pair",
+                                "无效的 Unicode 代理对",
+                            ));
                         }
                     }
-                    _ => return Err("无效的字符串转义".into()),
+                    _ => {
+                        return Err(NativeError::localized(
+                            "Invalid string escape",
+                            "无效的字符串转义",
+                        ))
+                    }
                 },
                 128..=255 => self.utf8(b)?,
                 _ => {}
@@ -527,10 +618,13 @@ impl Scanner<'_> {
     }
     fn value(&mut self, depth: usize, ks: u64, ke: u64) -> Result<u64> {
         if self.cancel.load(Ordering::Relaxed) {
-            return Err("已取消".into());
+            return Err(NativeError::localized("Cancelled", "已取消"));
         }
         if depth > 128 {
-            return Err("JSON 嵌套超过 128 层".into());
+            return Err(NativeError::localized(
+                "JSON nesting exceeds 128 levels",
+                "JSON 嵌套超过 128 层",
+            ));
         }
         self.space()?;
         let id = self.nodes;
@@ -541,14 +635,22 @@ impl Scanner<'_> {
             ke,
             ..Default::default()
         };
-        node.kind = match self.peek()?.ok_or("缺少 JSON 值")? {
+        node.kind = match self
+            .peek()?
+            .ok_or_else(|| NativeError::localized("Missing JSON value", "缺少 JSON 值"))?
+        {
             b'{' => 1,
             b'[' => 2,
             b'"' => 3,
             b't' | b'f' => 4,
             b'n' => 5,
             b'-' | b'0'..=b'9' => 6,
-            _ => return Err(format!("字节 {}：无效的 JSON 值", self.pos)),
+            _ => {
+                return Err(NativeError::localized(
+                    format!("Byte {}: invalid JSON value", self.pos),
+                    format!("字节 {}：无效的 JSON 值", self.pos),
+                ))
+            }
         };
         match node.kind {
             1 | 2 => {
@@ -563,7 +665,10 @@ impl Scanner<'_> {
                             self.string()?;
                             let stop = self.pos;
                             if stop - start > 64 * 1024 {
-                                return Err("索引模式暂不支持超过 64 KiB 的字段名".into());
+                                return Err(NativeError::localized(
+                                    "Indexed mode supports field names up to 64 KiB",
+                                    "索引模式暂不支持超过 64 KiB 的字段名",
+                                ));
                             }
                             self.space()?;
                             self.expect(b':')?;
@@ -590,7 +695,10 @@ impl Scanner<'_> {
                         break;
                     }
                     if token.len() >= 1024 {
-                        return Err("数字超过 1024 字节".into());
+                        return Err(NativeError::localized(
+                            "A number exceeds 1,024 bytes",
+                            "数字超过 1024 字节",
+                        ));
                     }
                     token.push(self.byte()?);
                 }
@@ -815,7 +923,10 @@ impl Indexed {
             s.value(0, 0, 0)?;
             s.space()?;
             if s.peek()?.is_some() {
-                return Err("根节点后存在多余内容".into());
+                return Err(NativeError::localized(
+                    "Unexpected content after the root value",
+                    "根节点后存在多余内容",
+                ));
             }
             Ok(())
         })();
@@ -831,11 +942,17 @@ impl Indexed {
     }
     pub fn check(&self) -> Result<()> {
         if self.invalidated {
-            return Err("文件内容已变化，正在重新建立索引".into());
+            return Err(NativeError::localized(
+                "The file changed. Rebuilding the index",
+                "文件内容已变化，正在重新建立索引",
+            ));
         }
         let m = self.source.metadata().map_err(err)?;
         if m.len() != self.size || m.modified().ok() != self.modified {
-            return Err("文件已发生变化，请重新打开以建立索引".into());
+            return Err(NativeError::localized(
+                "The file changed. Reopen it to rebuild the index",
+                "文件已发生变化，请重新打开以建立索引",
+            ));
         }
         Ok(())
     }
@@ -851,7 +968,9 @@ impl Indexed {
             return Ok(*offset);
         }
         // Directory records are appended in preorder, including JSONL long rows.
-        let file = self.branches.as_mut().ok_or("宽容器索引缺失")?;
+        let file = self.branches.as_mut().ok_or_else(|| {
+            NativeError::localized("Missing index for a wide container", "宽容器索引缺失")
+        })?;
         let (mut left, mut right) = (0, self.branch_count);
         let mut bytes = [0; 24];
         while left < right {
@@ -875,7 +994,10 @@ impl Indexed {
                 return Ok(branch);
             }
         }
-        Err("宽容器索引缺失".into())
+        Err(NativeError::localized(
+            "Missing index for a wide container",
+            "宽容器索引缺失",
+        ))
     }
     /// A bounded-memory second pass writes contiguous IDs only for wide containers.
     fn build_children(&mut self, start: u64, end: u64, cancel: &AtomicBool) -> Result<()> {
@@ -884,7 +1006,7 @@ impl Indexed {
         let mut key_reader = None;
         for id in start..end {
             if id % 4096 == 0 && cancel.load(Ordering::Relaxed) {
-                return Err("已取消".into());
+                return Err(NativeError::localized("Cancelled", "已取消"));
             }
             let node = Node::read(file, &mut buffer, id)?;
             if node.count <= 100 {
@@ -924,7 +1046,7 @@ impl Indexed {
             let mut child = id + 1;
             for i in 0..node.count {
                 if i % 4096 == 0 && cancel.load(Ordering::Relaxed) {
-                    return Err("已取消".into());
+                    return Err(NativeError::localized("Cancelled", "已取消"));
                 }
                 let mut bytes = [0; 8];
                 write_word(&mut bytes[..self.width], child)?;
@@ -968,16 +1090,21 @@ impl Indexed {
         self.node_buffer = NodeBuffer::new(self.width);
         self.branch_cache.clear();
         if cancel.load(Ordering::Relaxed) {
-            return Err("已取消".into());
+            return Err(NativeError::localized("Cancelled", "已取消"));
         }
         Ok(())
     }
     fn child_ids(&mut self, id: u64, parent: Node, start: u64, count: u64) -> Result<Vec<u64>> {
         if start > parent.count || count > parent.count - start || count > 100 {
-            return Err("无效的子节点范围".into());
+            return Err(NativeError::localized(
+                "Invalid child node range",
+                "无效的子节点范围",
+            ));
         }
         if parent.children != 0 {
-            let table = self.children.as_mut().ok_or("子节点索引缺失")?;
+            let table = self.children.as_mut().ok_or_else(|| {
+                NativeError::localized("Missing child node index", "子节点索引缺失")
+            })?;
             table
                 .seek(SeekFrom::Start(
                     parent.children - 1 + start * self.width as u64,
@@ -1000,7 +1127,10 @@ impl Indexed {
     }
     fn bytes(&mut self, start: u64, end: u64, limit: u64) -> Result<Vec<u8>> {
         if end < start || end - start > limit {
-            return Err("内容过大，暂不支持全文读取或复制（上限 8 MiB）".into());
+            return Err(NativeError::localized(
+                "The value is too large to read or copy in full (limit: 8 MiB)",
+                "内容过大，暂不支持全文读取或复制（上限 8 MiB）",
+            ));
         }
         self.source.seek(SeekFrom::Start(start)).map_err(err)?;
         let mut bytes = vec![0; (end - start) as usize];
@@ -1018,7 +1148,10 @@ impl Indexed {
         }
     }
     fn key_pair(&mut self, base: u64, ordinal: u64) -> Result<(u64, u64)> {
-        let file = self.keys.as_mut().ok_or("键名索引缺失")?;
+        let file = self
+            .keys
+            .as_mut()
+            .ok_or_else(|| NativeError::localized("Missing key index", "键名索引缺失"))?;
         file.seek(SeekFrom::Start(base + ordinal * (8 + self.width) as u64))
             .map_err(err)?;
         let mut bytes = [0; 16];
@@ -1035,13 +1168,17 @@ impl Indexed {
         let text = key
             .as_str()
             .filter(|_| parent.kind == 1)
-            .ok_or("节点不存在")?;
+            .ok_or_else(|| NativeError::localized("Node not found", "节点不存在"))?;
         let mut position = 0;
         let mut base = None;
         let mut hash = 0;
         let mut small = Vec::new();
         if parent.children != 0 {
-            let offset = self.branch(id)?.keys.checked_sub(1).ok_or("键名索引缺失")?;
+            let offset = self
+                .branch(id)?
+                .keys
+                .checked_sub(1)
+                .ok_or_else(|| NativeError::localized("Missing key index", "键名索引缺失"))?;
             hash = self.key_state.hash_one(text);
             let (mut left, mut right) = (0, parent.count);
             while left < right {
@@ -1065,7 +1202,7 @@ impl Indexed {
                     break;
                 }
                 if ordinal >= parent.count {
-                    return Err("键名索引无效".into());
+                    return Err(NativeError::localized("Invalid key index", "键名索引无效"));
                 }
                 (ordinal, self.child_ids(id, parent, ordinal, 1)?[0])
             } else {
@@ -1075,7 +1212,7 @@ impl Indexed {
             // Hashes narrow candidates only. Decoded key equality is authoritative.
             if self.key(node)? == *key {
                 if found.is_some() {
-                    return Err("对象包含重复字段，索引模式无法唯一定位该路径".into());
+                    return Err(NativeError::localized("The object has duplicate fields. Indexed mode cannot uniquely identify this path", "对象包含重复字段，索引模式无法唯一定位该路径"));
                 }
                 found = Some((ordinal, child));
                 if !unique {
@@ -1084,7 +1221,7 @@ impl Indexed {
             }
             position += 1;
         }
-        found.ok_or_else(|| "节点不存在".into())
+        found.ok_or_else(|| NativeError::localized("Node not found", "节点不存在"))
     }
     fn resolve(&mut self, path: &[Value], wrap: bool) -> Result<u64> {
         let mut id = self.root_id(wrap);
@@ -1094,7 +1231,7 @@ impl Indexed {
                 let offset = key
                     .as_u64()
                     .filter(|i| *i < parent.count)
-                    .ok_or("节点不存在")?;
+                    .ok_or_else(|| NativeError::localized("Node not found", "节点不存在"))?;
                 id = self.child_ids(id, parent, offset, 1)?[0];
                 continue;
             }
@@ -1130,7 +1267,10 @@ impl Indexed {
                         break Value::String(text);
                     }
                     if b.len() <= 1 {
-                        return Err("无法读取字符串预览".into());
+                        return Err(NativeError::localized(
+                            "Could not read the string preview",
+                            "无法读取字符串预览",
+                        ));
                     }
                     b.pop();
                 }
@@ -1145,9 +1285,10 @@ impl Indexed {
     pub fn info(&mut self, wrap: bool, strict: bool) -> Result<Value> {
         self.check()?;
         if strict && self.kind == "jsonl" && self.bad + self.comments > 0 {
-            return Err(format!(
-                "严格模式下拒绝加载：{} 行不合规（含注释行）",
-                self.bad + self.comments
+            let invalid_lines = self.bad + self.comments;
+            return Err(NativeError::localized(
+                format!("Strict mode rejected the file: {invalid_lines} invalid or comment lines"),
+                format!("严格模式下拒绝加载：{invalid_lines} 行不合规（含注释行）"),
             ));
         }
         let root = if let Some(lines) = self.jsonl.as_mut() {
@@ -1161,7 +1302,10 @@ impl Indexed {
     }
     pub fn search_pages(&mut self, paths: &[Vec<Value>], wrap: bool) -> Result<Value> {
         if paths.is_empty() || paths.len() > 8 {
-            return Err("无效的搜索批次".into());
+            return Err(NativeError::localized(
+                "Invalid search batch",
+                "无效的搜索批次",
+            ));
         }
         self.check()?;
         let mut pages = Vec::with_capacity(paths.len());
@@ -1169,12 +1313,21 @@ impl Indexed {
         for path in paths {
             let page = self.page(path, 0, None, 16, false, wrap)?;
             if page["total"].as_u64().unwrap_or(0) > 16 {
-                return Err("搜索批次只支持小分支".into());
+                return Err(NativeError::localized(
+                    "Search batches support only small branches",
+                    "搜索批次只支持小分支",
+                ));
             }
-            items += page["items"].as_array().ok_or("搜索分页无效")?.len();
+            items += page["items"]
+                .as_array()
+                .ok_or_else(|| NativeError::localized("Invalid search page", "搜索分页无效"))?
+                .len();
             bytes += serde_json::to_vec(&page).map_err(err)?.len();
             if items > 64 || bytes > 1024 * 1024 {
-                return Err("搜索批次过大".into());
+                return Err(NativeError::localized(
+                    "The search batch is too large",
+                    "搜索批次过大",
+                ));
             }
             pages.push(page);
         }
@@ -1192,7 +1345,10 @@ impl Indexed {
     ) -> Result<Value> {
         self.check()?;
         if !(1..=100).contains(&limit) {
-            return Err("无效的分页参数".into());
+            return Err(NativeError::localized(
+                "Invalid pagination parameters",
+                "无效的分页参数",
+            ));
         }
         if let Some(lines) = self.jsonl.as_mut() {
             let page = lines.page(path, offset, key, limit, first, wrap)?;
@@ -1209,7 +1365,10 @@ impl Indexed {
         let mut selected = offset;
         if let Some(key) = key {
             if parent.kind == 2 {
-                selected = key.as_u64().filter(|i| *i < total).ok_or("节点不存在")?;
+                selected = key
+                    .as_u64()
+                    .filter(|i| *i < total)
+                    .ok_or_else(|| NativeError::localized("Node not found", "节点不存在"))?;
             } else {
                 selected = self.object_field(id, parent, key, false)?.0;
             }
@@ -1254,7 +1413,10 @@ impl Indexed {
             for i in 0..n.count {
                 let c = self.node(child)?;
                 if text.len() as u64 + c.end - c.start + 2 > TEXT_LIMIT {
-                    return Err("内容过大，暂不支持全文读取或复制（上限 8 MiB）".into());
+                    return Err(NativeError::localized(
+                        "The value is too large to read or copy in full (limit: 8 MiB)",
+                        "内容过大，暂不支持全文读取或复制（上限 8 MiB）",
+                    ));
                 }
                 if i > 0 {
                     text.push(',');
@@ -1386,7 +1548,7 @@ mod tests {
                     if scanner.peek()?.is_none() {
                         Ok(())
                     } else {
-                        Err("trailing".into())
+                        Err(NativeError::from_display("trailing"))
                     }
                 });
                 assert_eq!(parsed.is_ok(), valid, "capacity={capacity} bytes={bytes:?}");
@@ -1586,7 +1748,8 @@ mod tests {
             assert!(d
                 .text(&[json!("dup")], true)
                 .unwrap_err()
-                .contains("重复字段"));
+                .message
+                .contains("duplicate fields"));
             assert_eq!(
                 d.page(&[json!("empty")], 0, None, 100, false, true)
                     .unwrap()["items"],
@@ -1653,7 +1816,8 @@ mod tests {
             assert!(doc
                 .text(&[json!("a")], true)
                 .unwrap_err()
-                .contains("重复字段"));
+                .message
+                .contains("duplicate fields"));
             let selected = doc
                 .page(&[], 0, Some(&json!("a")), 100, false, true)
                 .unwrap();
@@ -1707,7 +1871,8 @@ mod tests {
                     assert!(doc
                         .text(&[json!(key)], true)
                         .unwrap_err()
-                        .contains("节点不存在"));
+                        .message
+                        .contains("Node not found"));
                 } else {
                     assert_eq!(doc.text(&[json!(key)], true).unwrap(), "204");
                     assert_eq!(
@@ -1874,7 +2039,8 @@ mod tests {
             assert!(d
                 .text(&[json!("x")], true)
                 .unwrap_err()
-                .contains("重复字段"));
+                .message
+                .contains("duplicate fields"));
         });
     }
     #[test]

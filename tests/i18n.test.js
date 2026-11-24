@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getLanguage, initializeLanguage, msg, normalizeLanguage, saveLanguage, setLanguage, t, translateNativeError } from '../src/i18n.js';
+import { getLanguage, initializeLanguage, msg, nativeErrorMessage, normalizeLanguage, saveLanguage, setLanguage, t } from '../src/i18n.js';
 import { parseDocument } from '../src/data.js';
 
 test('English translates interface messages and parser diagnostics while preserving document data', () => {
@@ -10,10 +10,25 @@ test('English translates interface messages and parser diagnostics while preserv
     assert.equal(t('打开文件'), 'Open file');
     const filename = '设置.json';
     assert.equal(msg`已关闭 ${filename}`, 'Closed 设置.json');
-    assert.equal(translateNativeError('无法打开发布页（exit status (1)）'), 'Could not open the releases page (exit status (1))');
-    assert.equal(translateNativeError('字节 42：无效的 JSON 值'), 'Byte 42: invalid JSON value');
     assert.match(parseDocument('{"broken":}', 'broken.json').error, /^JSON parsing failed:/);
     assert.deepEqual(parseDocument('{"设置":"打开文件"}', filename).parsed, { 设置: '打开文件' });
+  } finally {
+    setLanguage('en');
+  }
+});
+
+test('native errors use their English message by default and select Chinese when available', () => {
+  const error = {
+    message: 'Byte 42: invalid JSON value',
+    messageZhCn: '字节 42：无效的 JSON 值'
+  };
+  assert.equal(nativeErrorMessage(error), error.message);
+  setLanguage('zh-CN');
+  try {
+    assert.equal(nativeErrorMessage(error), error.messageZhCn);
+    assert.equal(nativeErrorMessage({ message: 'New native error' }), 'New native error');
+    assert.equal(nativeErrorMessage(new Error('IPC unavailable')), 'IPC unavailable');
+    assert.equal(nativeErrorMessage('Command not found'), 'Command not found');
   } finally {
     setLanguage('en');
   }

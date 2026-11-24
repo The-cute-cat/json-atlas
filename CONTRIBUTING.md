@@ -101,6 +101,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --release --locked indexed::benc
 ## 提交改动
 
 - 修复问题时提供最小复现和相应回归测试；界面调整说明操作方式，并附相关截图。
+- 桌面文档、索引和发布页命令的错误通过 `NativeError` 返回。应用编写的错误以英文为必填文案，可用 `NativeError::localized` 同时提供简体中文。系统或第三方错误可通过 `NativeError::from_display` 保留原诊断。
 - 日志、截图和样例应脱敏，不包含用户目录、真实路径、凭据或业务内容。
 - 可复现的测试和生成脚本属于项目源码；大样本、原始性能日志、个人笔记及设计草稿保留在本地。
 - 修改用户可见行为时同步更新 README 或更新记录。避免提交与本次修改无关的格式变化。

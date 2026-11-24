@@ -1,7 +1,7 @@
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { getLanguage, translateNativeError } from './i18n.js';
+import { getLanguage, nativeErrorMessage } from './i18n.js';
 import { IndexedDataSource } from './large-files.js';
 
 export const desktop = isTauri();
@@ -33,8 +33,7 @@ export function updateDocumentMenu(items) {
 }
 function invokeDocument(command, args) {
   return invoke(command, args).catch(error => {
-    const original = error instanceof Error ? error.message : String(error);
-    throw new Error(translateNativeError(original), { cause: error });
+    throw new Error(nativeErrorMessage(error), { cause: error });
   });
 }
 export const readNativeFile = (path, maxBytes) => invokeDocument('read_document', { path, maxBytes });

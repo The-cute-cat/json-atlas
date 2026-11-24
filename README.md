@@ -130,7 +130,7 @@ Select a tree node card and press Ctrl/⌘+C to copy its content, same as the ri
 
 Right-click *Copy path* copies the node's full JSON path, for example `$.records[0].metadata`, using bracket notation for special field names. Click a node's arrow to expand one level.
 
-Right-click a node and choose **Temporarily hide node** to hide its path in the current file's tree view and search. Array items share one path rule. To restore a path, right-click the blank canvas and choose **Manage hidden rules**. Temporary rules clear when you close the file. Use the template editor to save rules that apply across files. **Settings → Keyboard and menus → Context menu** (`设置 → 键盘与菜单 → 右键菜单`) adjusts which items appear and their order.
+Right-click a node and choose **Temporarily hide node** to hide that node and its descendants in the current file's tree view and search. Temporary rules keep the selected array index. To restore a path, right-click the blank canvas and choose **Manage hidden rules**. Temporary rules clear when you close the file. Use the template editor to save rules that apply across files and match the same structure across array items. **Settings → Keyboard and menus → Context menu** (`设置 → 键盘与菜单 → 右键菜单`) adjusts which items appear and their order.
 
 From **More → Template editor**, check the fields to show on the current canvas; search finds fields by key. Arrays show only the first item's structure. **Apply template** saves visibility rules; **Exit template editor** discards changes and returns to reading.
 
