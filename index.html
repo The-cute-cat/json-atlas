@@ -225,7 +225,10 @@
   <p class="s-hint">临时隐藏只对当前文件有效，关闭文件后自动清除。模板规则可在此为当前文件屏蔽或重新启用。</p>
   <p id="canvasRulesEmpty" class="s-hint" role="status" hidden>当前文件没有匹配的隐藏规则。</p>
   <div class="hidden-rule-group" id="canvasRulesGroup" hidden><ul id="canvasRulesList"></ul></div>
-  <div class="edit-actions"><button id="canvasRulesClose" type="button" autofocus>完成</button></div>
+  <div class="edit-actions">
+    <button id="canvasRulesShowOther" type="button" hidden>显示其余模板规则</button>
+    <button id="canvasRulesClose" type="button" autofocus>完成</button>
+  </div>
 </dialog>
 
 <div id="settingsMask">

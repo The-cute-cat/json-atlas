@@ -1303,6 +1303,48 @@ test('the blank canvas menu masks and restores rules for the active file only', 
   assert.equal(second.maskedHiddenRules,undefined);
 });
 
+test('indexed canvas rule matching stops after 64 page reads and offers the other rules', async () => {
+  const total = 2_000_000;
+  const info = {root:{path:[], type:'array', childCount:total}, kind:'json', records:0, badCount:0, commentCount:0};
+  let reads = 0;
+  const indexed = new IndexedDataSource(async (op, _id, {path, offset, limit}) => {
+    if(op === 'verify') return true;
+    if(op !== 'page') return;
+    reads++;
+    if(path.length){
+      return {start:0, end:1, total:1, items:[
+        {key:'known', path:[0, 'known'], type:'number', value:1, childCount:0}
+      ]};
+    }
+    const end = Math.min(total, offset + limit);
+    return {start:offset, end, total, items:Array.from({length:end - offset}, (_, i) => ({
+      key:offset + i, arrayItem:true, path:[offset + i], type:'object', childCount:offset + i === 0 ? 1 : 0
+    }))};
+  }, 'bounded-rule-matching', info);
+  const {api, elements} = reader(new Map(), {
+    statNativeFile:async path => ({path, name:'large.json', size:70 * 1024 ** 2}),
+    openIndexedFile:async () => indexed
+  });
+  api.setTemplate({paths:[], hidden:['$[0].known', '$[0].missing'], savedAt:1});
+  await api.loadFile({path:'D:/large.json'});
+  elements.get('ctxCanvasRules').click();
+  await new Promise(resolve => setImmediate(resolve));
+
+  const list = elements.get('canvasRulesList');
+  const paths = () => list.children.map(row => row.firstElementChild.textContent);
+  assert.deepEqual(paths(), ['$[0].known']);
+  assert.equal(reads, 64);
+  assert.match(elements.get('canvasRulesEmpty').textContent, /已停止自动匹配/);
+  const showOther = elements.get('canvasRulesShowOther');
+  assert.equal(showOther.hidden, false);
+  showOther.onclick();
+  assert.deepEqual(paths(), ['$[0].known', '$[0].missing']);
+  assert.equal(showOther.hidden, true);
+  assert.equal(reads, 64);
+  list.children[1].children[1].click();
+  assert.ok(api.state().doc.maskedHiddenRules.has('$[0].missing'));
+});
+
 test('switching files preserves unapplied template changes on the originating tab', async () => {
   const {api,elements} = reader();
   const first = api.buildDoc('{"secret":1}', 'first.json', 12);

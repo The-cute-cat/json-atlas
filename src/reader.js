@@ -3211,7 +3211,8 @@ async function findMatchingHiddenRules(source, rules, signal){
     branch.rule = rule;
   }
 
-  let pages = 0;
+  const pageLimit = source.indexed ? 64 : 256;
+  let pages = 0, limited = false;
   async function visit(dataSource, node, branch){
     signal.throwIfAborted();
     if(branch.rule){
@@ -3234,6 +3235,8 @@ async function findMatchingHiddenRules(source, rules, signal){
     // in the reader, so each relevant key only needs one lookup per object.
     const remaining = new Set([...branch.children.keys()].filter(key => node.type === 'array' ? key === 0 : typeof key === 'string'));
     for(let offset = 0; remaining.size && offset < node.childCount;){
+      if(pages >= pageLimit){ limited = true; return; }
+      const pageNumber = ++pages;
       const page = await dataSource.getChildren(node.path, {offset, signal, cache:false});
       signal.throwIfAborted();
       for(const item of page.items){
@@ -3241,6 +3244,7 @@ async function findMatchingHiddenRules(source, rules, signal){
         if(!remaining.has(key)) continue;
         const child = branch.children.get(key);
         await visit(dataSource, item, child);
+        if(limited) return;
         if(!child.rule && !child.children.size){
           branch.children.delete(key);
           remaining.delete(key);
@@ -3249,11 +3253,11 @@ async function findMatchingHiddenRules(source, rules, signal){
       }
       if(page.end <= offset) break;
       offset = page.end;
-      if(++pages % 32 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+      if(!source.indexed && pageNumber % 32 === 0) await new Promise(resolve => setTimeout(resolve, 0));
     }
   }
   if(root.children.size) await visit(source, source.getRoot(), root);
-  return [...rules].filter(rule => matches.has(rule));
+  return {matched:[...rules].filter(rule => matches.has(rule)), limited};
 }
 
 async function openCanvasRules(){
@@ -3266,12 +3270,16 @@ async function openCanvasRules(){
   const list = document.getElementById('canvasRulesList');
   const status = document.getElementById('canvasRulesEmpty');
   const group = document.getElementById('canvasRulesGroup');
+  const showOther = document.getElementById('canvasRulesShowOther');
+  const isCurrent = () => !scan.signal.aborted && canvasRulesDialog.open && activeDoc() === doc;
   const updateRulesStatus = () => {
     group.hidden = !list.firstElementChild;
     status.hidden = !group.hidden;
     status.textContent = t('当前文件没有匹配的隐藏规则。');
   };
   list.replaceChildren();
+  showOther.hidden = true;
+  showOther.onclick = null;
   status.hidden = false;
   status.textContent = t('正在匹配当前文件中的规则…');
   document.getElementById('canvasRulesFile').textContent = doc.name;
@@ -3280,7 +3288,7 @@ async function openCanvasRules(){
     const code = document.createElement('code');
     code.textContent = path;
     const restore = makeRuleButton(t('还原临时隐藏'), msg`还原临时隐藏规则 ${path}`, () => {
-      if(scan.signal.aborted || !canvasRulesDialog.open || activeDoc() !== doc) return;
+      if(!isCurrent()) return;
       doc.temporaryHiddenRules.delete(path);
       row.remove();
       if(!status.hidden) group.hidden = !list.firstElementChild;
@@ -3294,10 +3302,7 @@ async function openCanvasRules(){
   group.hidden = !list.firstElementChild;
   canvasRulesDialog.showModal();
 
-  try{
-    const templateRules = getHiddenSet(null);
-    const rules = templateRules.size ? await findMatchingHiddenRules(doc.source, templateRules, scan.signal) : [];
-    if(scan.signal.aborted || !canvasRulesDialog.open || activeDoc() !== doc) return;
+  const appendTemplateRules = rules => {
     for(const path of rules){
       const row = document.createElement('li');
       const code = document.createElement('code');
@@ -3305,9 +3310,30 @@ async function openCanvasRules(){
       row.append(code, makeRuleMask(doc, path));
       list.appendChild(row);
     }
+  };
+  try{
+    const templateRules = getHiddenSet(null);
+    const {matched, limited} = templateRules.size ? await findMatchingHiddenRules(doc.source, templateRules, scan.signal) : {matched:[], limited:false};
+    if(!isCurrent()) return;
+    appendTemplateRules(matched);
     updateRulesStatus();
+    if(limited){
+      const confirmed = new Set(matched);
+      status.hidden = false;
+      status.textContent = t('已停止自动匹配。其余模板规则中可能还有适用于当前文件的规则。');
+      showOther.hidden = false;
+      showOther.onclick = () => {
+        if(!isCurrent()) return;
+        appendTemplateRules([...templateRules].filter(path => !confirmed.has(path)));
+        group.hidden = !list.firstElementChild;
+        status.textContent = t('已显示其余模板规则，其中部分规则可能不适用于当前文件。');
+        showOther.hidden = true;
+        showOther.onclick = null;
+        document.getElementById('canvasRulesClose').focus();
+      };
+    }
   }catch(error){
-    if(!scan.signal.aborted && canvasRulesDialog.open && activeDoc() === doc){
+    if(isCurrent()){
       status.textContent = t('无法检查当前文件的隐藏规则：') + error.message;
     }
   }
@@ -3319,6 +3345,7 @@ canvasRulesDialog.addEventListener('close', () => {
   canvasRulesScan?.abort();
   canvasRulesScan = null;
   canvasRulesDoc = null;
+  document.getElementById('canvasRulesShowOther').onclick = null;
 });
 
 function renderHiddenRules(hidden){
