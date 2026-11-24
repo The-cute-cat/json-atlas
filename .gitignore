@@ -15,10 +15,15 @@ src-tauri/gen/
 .codex/
 .agents/
 
-# Maintainer notes and raw benchmark logs stay local.
-# Public-facing docs are README.md, CHANGELOG.md and CONTRIBUTING.md at the repo root.
+# Publish only these user-facing docs. Keep maintainer notes and local drafts ignored.
 /docs/*
-!/docs/README.*.md
+!/docs/README.es.md
+!/docs/README.fr.md
+!/docs/README.ja.md
+!/docs/README.zh-CN.md
+!/docs/guides/
+/docs/guides/*
+!/docs/guides/large-files.md
 
 # Local references and design sources
 /reference/

@@ -1,0 +1,44 @@
+name: Bug report
+description: Report unexpected behavior in JSON Atlas.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues are public. Use a small synthetic or sanitized sample. Remove sensitive values, private file paths, tokens, and personal data from attachments and screenshots. Follow the [security policy](https://github.com/The-cute-cat/json-atlas/security/policy) for vulnerabilities.
+  - type: input
+    id: version
+    attributes:
+      label: JSON Atlas version / 应用版本
+      placeholder: "0.5.0-beta.1"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and installation method / 系统与安装方式
+      description: Include the OS version and one of EXE installer, MSI, portable ZIP, MSIX, macOS preview, or browser. For the browser edition, include its name and version.
+      placeholder: "Windows 11 24H2, EXE installer"
+    validations:
+      required: true
+  - type: input
+    id: input-file
+    attributes:
+      label: File type and size / 文件格式和大小
+      description: Enter the extension and approximate size. Use N/A if the bug occurs without a file.
+      placeholder: ".jsonl, 180 MiB"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      description: Include any settings needed to reproduce the problem and attach a small sanitized sample if possible.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior / 预期与实际行为
+      description: Include the exact error message or a sanitized screenshot when available.
+    validations:
+      required: true

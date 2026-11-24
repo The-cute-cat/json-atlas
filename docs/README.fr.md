@@ -6,13 +6,15 @@
 
 JSON Atlas est une application libre et gratuite qui lit et modifie des fichiers locaux JSON, JSONL et NDJSON. Développez des réponses d’API et des fichiers de configuration, recherchez des clés ou des valeurs et modifiez le texte source dans la vue IDE. L’analyse, l’indexation et la recherche s’exécutent sur votre appareil.
 
-[Site du projet](https://the-cute-cat.github.io/json-atlas/) · [Essayer dans le navigateur](https://the-cute-cat.github.io/json-atlas/app.html) · [Télécharger pour Windows](https://github.com/The-cute-cat/json-atlas/releases/latest) · [Signaler un problème](https://github.com/The-cute-cat/json-atlas/issues)
+[Site du projet](https://the-cute-cat.github.io/json-atlas/) · [Essayer dans le navigateur](https://the-cute-cat.github.io/json-atlas/app.html) · [Télécharger pour Windows](https://github.com/The-cute-cat/json-atlas/releases) · [Signaler un problème](https://github.com/The-cute-cat/json-atlas/issues/new/choose)
 
 ![Exemple de réponse d’API affichée dans l’arborescence de JSON Atlas](../assets/screenshots/hero.png)
 
 ## Installation
 
 Sous Windows 10 et 11 en 64 bits, choisissez le programme d’installation EXE ou MSI. Microsoft Edge WebView2 est requis. Une version portable et une version navigateur sont également disponibles. Le fichier HTML autonome fonctionne hors ligne. Le [guide d’installation](../README.md#install) détaille les options Windows et la préversion destinée aux Mac équipés d’une puce Apple sous macOS 15 ou ultérieur.
+
+L’interface est actuellement en chinois simplifié. Dans l’application de bureau, ouvrez les paramètres via **Affichage → Paramètres** (`查看 → 设置…`). Utilisez **Fichier → Enregistrer** (`文件 → 保存`) ou **Enregistrer sous** (`另存为…`), et **Affichage → Rechercher** (`查看 → 查找…`).
 
 ## Prise en main
 
@@ -29,7 +31,11 @@ Enregistrez avec Ctrl/⌘+S ou enregistrez une copie avec Ctrl/⌘+Shift+S. Si l
 
 ## Fichiers volumineux
 
+Réglez le seuil dans **Paramètres → Performances et mémoire → Seuil des fichiers volumineux** (`设置 → 性能与内存 → 大文件处理阈值`).
+
 Le seuil est réglable sur 32, 64, 128 ou 256 Mo. La valeur par défaut est de 64 Mo. Jusqu’à ce seuil, les fichiers sont traités en mémoire. Au-delà, l’application de bureau construit un index sur disque et charge les données par pages en lecture seule. La version navigateur refuse d’ouvrir ces fichiers.
+
+Consultez le [guide des fichiers volumineux](guides/large-files.md) (en anglais) pour réutiliser les index et gérer la mémoire.
 
 ## Développement et licence
 

@@ -6,13 +6,15 @@
 
 JSON Atlas es una aplicación gratuita y de código abierto para leer y editar archivos locales JSON, JSONL y NDJSON. Despliega respuestas de API y configuraciones, busca claves o valores y edita el código fuente en la vista IDE. El análisis, la indexación y la búsqueda se realizan en tu dispositivo.
 
-[Sitio del proyecto](https://the-cute-cat.github.io/json-atlas/) · [Probar en el navegador](https://the-cute-cat.github.io/json-atlas/app.html) · [Descargar para Windows](https://github.com/The-cute-cat/json-atlas/releases/latest) · [Informar de un problema](https://github.com/The-cute-cat/json-atlas/issues)
+[Sitio del proyecto](https://the-cute-cat.github.io/json-atlas/) · [Probar en el navegador](https://the-cute-cat.github.io/json-atlas/app.html) · [Descargar para Windows](https://github.com/The-cute-cat/json-atlas/releases) · [Informar de un problema](https://github.com/The-cute-cat/json-atlas/issues/new/choose)
 
 ![Respuesta de API de ejemplo en el árbol de JSON Atlas](../assets/screenshots/hero.png)
 
 ## Instalación
 
 Para Windows 10 y 11 de 64 bits, elige el instalador EXE o MSI. Se requiere Microsoft Edge WebView2. También hay un paquete portátil y una versión para el navegador. La versión de un solo archivo HTML funciona sin conexión. Consulta la [guía de instalación](../README.md#install) para ver los detalles de Windows y de la versión preliminar para equipos Apple Silicon con macOS 15 o posterior.
+
+La interfaz está actualmente en chino simplificado. En la aplicación de escritorio, abre la configuración desde **Ver → Configuración** (`查看 → 设置…`). Usa **Archivo → Guardar** (`文件 → 保存`) o **Guardar como** (`另存为…`) y **Ver → Buscar** (`查看 → 查找…`).
 
 ## Primeros pasos
 
@@ -29,7 +31,9 @@ Guarda con Ctrl/⌘+S o guarda una copia con Ctrl/⌘+Shift+S. En el escritorio,
 
 ## Archivos grandes
 
-El umbral es configurable y admite 32, 64, 128 o 256 MB. El valor predeterminado es 64 MB. Los archivos que no superan el umbral se procesan en memoria. Por encima del umbral, la aplicación de escritorio crea un índice en disco y carga los datos por páginas en modo de solo lectura. La versión del navegador rechaza esos archivos.
+En **Configuración → Rendimiento y memoria → Umbral para archivos grandes** (`设置 → 性能与内存 → 大文件处理阈值`) puedes ajustar el umbral. El umbral es configurable y admite 32, 64, 128 o 256 MB. El valor predeterminado es 64 MB. Los archivos que no superan el umbral se procesan en memoria. Por encima del umbral, la aplicación de escritorio crea un índice en disco y carga los datos por páginas en modo de solo lectura. La versión del navegador rechaza esos archivos.
+
+Consulta la [guía de archivos grandes](guides/large-files.md) (en inglés) para reutilizar índices y gestionar la memoria.
 
 ## Desarrollo y licencia
 

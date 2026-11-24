@@ -6,13 +6,15 @@
 
 JSON Atlas は、ローカルの JSON、JSONL、NDJSON ファイルを閲覧・編集するオープンソースアプリです。API レスポンスや設定ファイルを展開し、キーや値を検索できます。解析・索引作成・検索は端末内で行われます。
 
-[プロジェクトサイト](https://the-cute-cat.github.io/json-atlas/) · [ブラウザーで試す](https://the-cute-cat.github.io/json-atlas/app.html) · [Windows 版をダウンロード](https://github.com/The-cute-cat/json-atlas/releases/latest) · [問題を報告](https://github.com/The-cute-cat/json-atlas/issues)
+[プロジェクトサイト](https://the-cute-cat.github.io/json-atlas/) · [ブラウザーで試す](https://the-cute-cat.github.io/json-atlas/app.html) · [Windows 版をダウンロード](https://github.com/The-cute-cat/json-atlas/releases) · [問題を報告](https://github.com/The-cute-cat/json-atlas/issues/new/choose)
 
 ![サンプルの API レスポンスを表示するツリー](../assets/screenshots/hero.png)
 
 ## インストール
 
 Windows 10 / 11（64 ビット）では EXE または MSI を選べます。Microsoft Edge WebView2 が必要です。ポータブル版や、インストールせずに使えるブラウザー版もあります。単一 HTML 版はオフラインで動作します。Apple シリコンと macOS 15 以降向けのプレビューについては、[インストール手順](../README.md#install)を参照してください。
+
+現在のインターフェースは簡体字中国語です。デスクトップ版では **表示 → 設定**（`查看 → 设置…`）、**ファイル → 保存**（`文件 → 保存`）、**名前を付けて保存**（`另存为…`）、**表示 → 検索**（`查看 → 查找…`）を使います。
 
 ## 使い方
 
@@ -29,7 +31,11 @@ Ctrl/⌘+S で保存し、Ctrl/⌘+Shift+S で別名保存します。デスク�
 
 ## 大きなファイル
 
+しきい値は **設定 → パフォーマンスとメモリ → 大きなファイルのしきい値**（`设置 → 性能与内存 → 大文件处理阈值`）で変更できます。
+
 しきい値は 32、64、128、256 MB から選べます。初期値は 64 MB です。しきい値以下ではメモリで処理します。デスクトップ版はしきい値を超えるファイルにディスク索引を作成し、読み取り専用でページ単位に表示します。ブラウザー版はしきい値を超えるファイルを開けません。
+
+索引の再利用とメモリ管理については、[大きなファイルのガイド](guides/large-files.md)（英語）を参照してください。
 
 ## 開発とライセンス
 

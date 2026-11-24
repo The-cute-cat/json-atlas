@@ -10,11 +10,13 @@ JSON Atlas is a free, open-source reader and editor for local JSON, JSONL, and N
 [![CI](https://github.com/The-cute-cat/json-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/The-cute-cat/json-atlas/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-[Project site](https://the-cute-cat.github.io/json-atlas/) · [Try in your browser](https://the-cute-cat.github.io/json-atlas/app.html) · [Download for Windows](https://github.com/The-cute-cat/json-atlas/releases/latest) · [Report an issue](https://github.com/The-cute-cat/json-atlas/issues)
+[Project site](https://the-cute-cat.github.io/json-atlas/) · [Try in your browser](https://the-cute-cat.github.io/json-atlas/app.html) · [Download for Windows](https://github.com/The-cute-cat/json-atlas/releases) · [Report an issue](https://github.com/The-cute-cat/json-atlas/issues/new/choose)
 
 ![A sample API response on the JSON Atlas tree canvas](assets/screenshots/hero.png)
 
 Current code version **0.5.0-beta.1**. Published builds are listed on [Releases](https://github.com/The-cute-cat/json-atlas/releases); changes are tracked in the [changelog](CHANGELOG.md) and build instructions in the [contribution guide](CONTRIBUTING.md).
+
+The interface is currently in Simplified Chinese. This guide includes the Chinese labels for key commands and settings.
 
 ### What it's for
 
@@ -36,13 +38,17 @@ The browser edition loads site resources on first visit but processes file conte
 
 ## Install
 
-The desktop app checks GitHub Releases daily for new stable versions. **Check for updates** opens a dialog where you can see the result or turn off automatic checks.
+The [Releases page](https://github.com/The-cute-cat/json-atlas/releases) includes stable builds and pre-releases. Pre-release Windows builds provide an EXE installer and a portable ZIP. Stable builds also provide an MSI.
+
+The desktop app checks GitHub Releases daily for new stable versions. **Check for updates** (`检查更新…`) opens a dialog where you can see the result or turn off automatic checks.
 
 | Edition | Requirements and setup |
 | --- | --- |
 | Windows desktop | Windows 10 or 11 (64-bit) and Microsoft Edge WebView2. Choose the EXE or MSI installer from [Releases](https://github.com/The-cute-cat/json-atlas/releases). A portable package is also available and requires WebView2. |
 | Browser | Open the [browser app](https://the-cute-cat.github.io/json-atlas/app.html). The standalone HTML version can run offline. Saving downloads an edited copy. |
 | macOS preview | Apple silicon and macOS 15 or later. Sign in to GitHub and download the artifact from a successful [preview workflow run](https://github.com/The-cute-cat/json-atlas/actions/workflows/macos-preview.yml). Open the DMG and drag the app into Applications. Gatekeeper may block the preview because it is not notarized. |
+
+If the app reports a missing WebView2 Runtime, install the Evergreen Runtime and try again. [Download WebView2 from Microsoft](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download).
 
 The Windows installers can associate `.json`, `.jsonl`, `.ndjson`, and `.jsonlines` files. The EXE installer offers a choice, while the MSI registers these types. To switch from EXE to MSI, uninstall the EXE installation first; the MSI keeps compatibility with the existing file-type identifier. If another app is set as the default, choose JSON Atlas under Windows *Settings → Apps → Default apps*. MSI uninstallation clears the current user's local settings, reading history, and cache without prompting; upgrades preserve them. Only app-specific directories are cleared, and other Windows users' data is untouched.
 
@@ -73,15 +79,15 @@ Settings use a two-column layout with categories on the left and options on the 
 
 ## IDE view
 
-In **Settings → Reading and layout → Keep IDE fold arrows visible**, choose whether fold icons are always shown (off by default; they appear on hover over the line-number area and when keyboard-focused). Folded nodes keep their arrows and a shaded row; the cursor line, matching brackets, and the current nesting guide are highlighted. Icons scale with the font size and have no hover animation. Folding affects display only — saving, formatting, and search use the full content. Search expands folded matches, and a deletion spanning folded content expands it first to avoid removing hidden fields.
+In **Settings → Appearance and view → Keep IDE fold arrows visible** (`设置 → 外观与视图 → IDE 折叠箭头常驻显示`), choose whether fold icons are always shown (off by default; they appear on hover over the line-number area and when keyboard-focused). Folded nodes keep their arrows and a shaded row; the cursor line, matching brackets, and the current nesting guide are highlighted. Icons scale with the font size and have no hover animation. Folding affects display only — saving, formatting, and search use the full content. Search expands folded matches, and a deletion spanning folded content expands it first to avoid removing hidden fields.
 
-In **Settings → Reading and layout → Appearance theme**, choose light, dark, or follow system (the default). Manual choices are saved locally.
+In **Settings → Appearance and view → Appearance theme** (`设置 → 外观与视图 → 外观主题`), choose light, dark, or follow system (the default). Manual choices are saved locally.
 
-In **Settings → Reading and layout → File view mode**, choose *simple structures use the IDE automatically* or *prefer the IDE*. The tree remains the default view; the desktop **View** menu and the browser **⋯** menu can switch the current file temporarily. Both views share content, edits, and search results, and IDE search jumps to the matching line.
+In **Settings → Appearance and view → File view mode** (`设置 → 外观与视图 → 文件查看方式`), choose *simple structures use the IDE automatically* or *prefer the IDE*. The tree remains the default view; the desktop **View** menu and the browser **⋯** menu can switch the current file temporarily. Both views share content, edits, and search results, and IDE search jumps to the matching line.
 
-The IDE edits source text directly, including renaming keys and adding or deleting fields. Changes stay in a working copy until **File → Save** (Ctrl/⌘+S) writes them back or **File → Save As** (Ctrl/⌘+Shift+S) exports a copy. Syntax errors may exist temporarily in the draft and survive a file switch; fix them before switching to the tree view or saving. Both views share undo history of up to 50 steps; larger documents reduce it by snapshot size to a minimum of 10 steps. The IDE groups consecutive typing into one step. Undo with Ctrl/⌘+Z and redo with Ctrl/⌘+Shift+Z.
+The IDE edits source text directly, including renaming keys and adding or deleting fields. Changes stay in a working copy until **File → Save** (`文件 → 保存`) (Ctrl/⌘+S) writes them back or **File → Save As** (`文件 → 另存为…`) (Ctrl/⌘+Shift+S) exports a copy. Syntax errors may exist temporarily in the draft and survive a file switch; fix them before switching to the tree view or saving. Both views share undo history of up to 50 steps; larger documents reduce it by snapshot size to a minimum of 10 steps. The IDE groups consecutive typing into one step. Undo with Ctrl/⌘+Z and redo with Ctrl/⌘+Shift+Z.
 
-Choose **Edit → Format document** (or **⋯** in the browser), or press Ctrl+Alt+L / ⌘+⌥+L: JSON uses two-space indentation; JSONL becomes one record per line with all records shown, regardless of the tree's first-record option. Formatting validates the whole document and reports errors or comment lines instead of skipping or deleting them; it can be undone.
+Choose **Edit → Format document** (`编辑 → 格式化文档`) (or **⋯** in the browser), or press Ctrl+Alt+L / ⌘+⌥+L: JSON uses two-space indentation; JSONL becomes one record per line with all records shown, regardless of the tree's first-record option. Formatting validates the whole document and reports errors or comment lines instead of skipping or deleting them; it can be undone.
 
 In the IDE, press Ctrl/⌘ with `+` / `-` to change the font size and Ctrl/⌘+0 to reset, or hold Ctrl/⌘ while scrolling. Brackets are colored by nesting depth with dotted structure guides; brackets inside strings are excluded. Zoom affects display only, not content.
 
@@ -89,7 +95,7 @@ Files above the memory threshold or already disk-indexed always use the tree vie
 
 ## Keyboard shortcuts
 
-Common actions adapt the [IDEA Windows keymap](https://www.jetbrains.com/help/idea/reference-keymap-win-default.html) and [macOS keymap](https://www.jetbrains.com/help/idea/reference-keymap-mac-default.html). **Settings → Keyboard Shortcuts**, button tooltips, and footer hints show Ctrl or ⌘ according to your system.
+Common actions adapt the [IDEA Windows keymap](https://www.jetbrains.com/help/idea/reference-keymap-win-default.html) and [macOS keymap](https://www.jetbrains.com/help/idea/reference-keymap-mac-default.html). **Settings → Keyboard and menus** (`设置 → 键盘与菜单`), button tooltips, and footer hints show Ctrl or ⌘ according to your system.
 
 | Action | Windows / Linux | macOS |
 | --- | --- | --- |
@@ -116,11 +122,11 @@ Expand and collapse act on the tree view only and still respect paging and displ
 
 ## Editing nodes
 
-Select a tree node card and press Ctrl/⌘+C to copy its content, same as the right-click *Copy node content*: objects and arrays become formatted JSON, strings become unquoted text. **Settings → Reading and layout → Show node selection outline** is off by default; enable it to outline the selected node. Clicking blank canvas clears the selection. Inputs, the IDE, and existing text selections keep normal copy behavior.
+Select a tree node card and press Ctrl/⌘+C to copy its content, same as the right-click *Copy node content*: objects and arrays become formatted JSON, strings become unquoted text. **Settings → Tree reading → Show node selection outline** (`设置 → 树形阅读 → 显示节点选中描边`) is off by default; enable it to outline the selected node. Clicking blank canvas clears the selection. Inputs, the IDE, and existing text selections keep normal copy behavior.
 
 Right-click *Copy path* copies the node's full JSON path, for example `$.records[0].metadata`, using bracket notation for special field names. Click a node's arrow to expand one level.
 
-Right-click *Hide node* adds that path to the template's hide rules. Rules match by structure across files, and array items share one path rule. Restore them one by one in **Settings → Templates and backup**. Hiding affects only the tree view and its search, not the file content. **Settings → Context menu** adjusts which items appear and their order.
+Right-click *Hide node* adds that path to the template's hide rules. Rules match by structure across files, and array items share one path rule. Restore them one by one in **Settings → Templates and backup** (`设置 → 模板与备份`). Hiding affects only the tree view and its search, not the file content. **Settings → Keyboard and menus → Context menu** (`设置 → 键盘与菜单 → 右键菜单`) adjusts which items appear and their order.
 
 From **More → Template editor**, check the fields to show on the current canvas; search finds fields by key. Arrays show only the first item's structure. **Apply template** saves visibility rules; **Exit template editor** discards changes and returns to reading.
 
@@ -128,9 +134,9 @@ In template mode, press Ctrl+F (⌘+F on Mac) for advanced search with case sens
 
 Right-click a node and choose *Edit node…* to change strings, numbers, booleans, `null`, objects, or arrays. Strings are plain text; other types require valid JSON, and the type selector can change a value's type.
 
-On desktop, enable editing from **Edit → Edit mode** and click a card to edit; **Edit → Undo changes** supports the shared undo history described above. The browser uses the **⋯** menu. The *Vim-style editing shortcuts* setting is off by default; when enabled, focus blank canvas and press `i` to enter edit mode and Esc to leave. Search boxes, edit dialogs, and other inputs do not trigger these shortcuts.
+On desktop, enable editing from **Edit → Edit mode** (`编辑 → 编辑模式`) and click a card to edit; **Edit → Undo changes** supports the shared undo history described above. The browser uses the **⋯** menu. The *Vim-style editing shortcuts* setting is off by default; when enabled, focus blank canvas and press `i` to enter edit mode and Esc to leave. Search boxes, edit dialogs, and other inputs do not trigger these shortcuts.
 
-Changes stay in a working copy. On desktop, Ctrl/⌘+S or **File → Save** writes back to the original file; if it changed on disk, saving stops and offers to reopen or Save As. You can still undo after saving, and undone changes need another save. **Save As** opens a location picker to export a differently named copy. Closing an unsaved file or quitting prompts for confirmation. The browser edition downloads an edited copy.
+Changes stay in a working copy. On desktop, Ctrl/⌘+S or **File → Save** (`文件 → 保存`) writes back to the original file; if it changed on disk, saving stops and offers to reopen or Save As. You can still undo after saving, and undone changes need another save. **Save As** opens a location picker to export a differently named copy. Closing an unsaved file or quitting prompts for confirmation. The browser edition downloads an edited copy.
 
 Tree-edited JSONL exports only valid records, dropping comments, blank lines, and skipped bad lines. If any lines were skipped on load, a direct save prompts you to use Save As instead of overwriting the original.
 
@@ -138,7 +144,7 @@ When opening an existing file, the tree edit dialog changes a node's value, whil
 
 ## Search
 
-A quick search box sits on the toolbar. Press Ctrl+F or choose **View → Find…** for the advanced popover: drag its left handle to move it, click the pin to keep it in place, and its position and pinned state are remembered. It moves back on screen when the window shrinks. The popover starts closed.
+A quick search box sits on the toolbar. Press Ctrl+F or choose **View → Find…** (`查看 → 查找…`) for the advanced popover: drag its left handle to move it, click the pin to keep it in place, and its position and pinned state are remembered. It moves back on screen when the window shrinks. The popover starts closed.
 
 Inside, `Aa` toggles case sensitivity, `ab` toggles whole words, and `.*` toggles regex. Enter / Shift+Enter or the arrow keys cycle results; F3 / Shift+F3 also work. Esc or the × closes the popover and keeps results; the × next to the input clears the search. Typing in the top toolbar box returns to quick search, and spaces are kept as query content.
 
@@ -148,12 +154,15 @@ Regex supports groups, character classes, repetition, anchors, and Unicode prope
 
 ## Large files and known limits
 
-- In **Settings** (**View → Settings…**) set the large-file threshold to 32 / 64 / 128 / 256 MB, default 64 MB (1 MB = 1,048,576 bytes). Files above the threshold are not read whole into memory; the app scans them in the background, builds a temporary disk index, and deletes it when the file closes.
+Open **View → Settings…** (`查看 → 设置…`) and choose **Performance and memory → Large-file threshold** (`性能与内存 → 大文件处理阈值`). The default is 64 MB. The desktop app indexes larger files on disk and can reuse a saved index after restart. See the [large-file guide](docs/guides/large-files.md) for threshold options, index reuse, and memory settings.
+
 - Indexed mode: 100 items per page, a fixed page-cache budget that prioritizes displayed pages, and at most 1,000 search results. Changing the query or closing the document cancels the background search.
 - Small files support *Expand all / Expand all descendants*. To protect the UI, expansion pauses at around 5,000 displayed nodes; use *Simplify distant nodes* to keep the current reading area and release distant content, or collapse some branches to continue.
 - Long fields show a preview; a single full-text read or copy is capped at 8 MiB. Search is not subject to this limit.
 - Indexed mode supports at most 128 levels of JSON nesting and field names up to 64 KiB.
 - Release builds target Windows. The browser edition opens only files within the threshold and still loads the whole file into memory. Generate the offline single-file build and the site with `npm run build:single` and `npm run build:site`.
+
+For installation or usage questions that need a private reply, contact [support@hopecat.dpdns.org](mailto:support@hopecat.dpdns.org). For security reports, see the [security policy](SECURITY.md).
 
 ## Development and license
 
