@@ -1,6 +1,6 @@
 # 贡献指南
 
-欢迎提交问题报告、文档改进和代码修改。请先阅读 [简体中文 README](docs/README.zh-CN.md) 了解应用用途和使用限制。提交反馈时可选择 [Bug 报告或功能建议模板](https://github.com/The-cute-cat/json-atlas/issues/new/choose)。涉及安全漏洞时请阅读[安全披露说明](SECURITY.md)。合作或其他维护事务可通过邮件联系。 [contact@hopecat.dpdns.org](mailto:contact@hopecat.dpdns.org)
+欢迎提交问题报告、文档改进和代码修改。请先阅读 [简体中文 README](docs/README.zh-CN.md) 了解应用用途和使用限制。提交反馈时可选择 [Bug 报告或功能建议模板](https://github.com/The-cute-cat/json-atlas/issues/new/choose)。涉及安全漏洞时请阅读[安全披露说明](SECURITY.md)。合作或其他维护事务可通过邮件联系。 [contact@hopecat.dpdns.org](mailto:contact@hopecat.dpdns.org) 该地址仅用于项目维护相关事务；推广、营销、自动化群发及与项目无关的商业邀约不在受理范围内，将不予回复。
 
 ## 开发环境
 

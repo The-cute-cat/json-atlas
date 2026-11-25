@@ -171,7 +171,7 @@ JSONL 节点编辑后的文本仅保留有效记录，不保留注释、空白�
 - 索引模式不支持超过 128 层的 JSON 嵌套，以及超过 64 KiB 的字段名。
 - 正式安装包面向 Windows。浏览器版仅打开阈值以内的文件，仍需将整份文件载入内存。离线单文件版与站点可分别通过 `npm run build:single` 和 `npm run build:site` 生成。
 
-安装或使用问题若需要私下沟通，可联系 [support@hopecat.dpdns.org](mailto:support@hopecat.dpdns.org)。报告安全漏洞请参阅[安全披露说明](../SECURITY.md)。
+安装或使用问题若需要私下沟通，可联系 [support@hopecat.dpdns.org](mailto:support@hopecat.dpdns.org)。该地址仅用于用户支持；推广、营销与自动化群发邮件不在受理范围内，将不予回复。报告安全漏洞请参阅[安全披露说明](../SECURITY.md)。
 
 ## 开发
 

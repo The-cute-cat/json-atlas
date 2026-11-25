@@ -166,7 +166,7 @@ Open **View → Settings…** (`查看 → 设置…`) and choose **Performance 
 - Indexed mode supports at most 128 levels of JSON nesting and field names up to 64 KiB.
 - Release builds target Windows. The browser edition opens only files within the threshold and still loads the whole file into memory. Generate the offline single-file build and the site with `npm run build:single` and `npm run build:site`.
 
-For installation or usage questions that need a private reply, contact [support@hopecat.dpdns.org](mailto:support@hopecat.dpdns.org). For security reports, see the [security policy](SECURITY.md).
+For installation or usage questions that need a private reply, contact [support@hopecat.dpdns.org](mailto:support@hopecat.dpdns.org). This address is for user support only; unsolicited marketing, commercial outreach, and automated promotional messages are not permitted and will be ignored. For security reports, see the [security policy](SECURITY.md).
 
 ## Development and license
 
