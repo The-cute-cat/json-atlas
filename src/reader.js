@@ -16,7 +16,7 @@ import { openAbout } from './about.js';
 import { openUpdateCheck } from './update-dialog.js';
 import { isMacPlatform, shortcutLabel, shortcutAction, shortcutAlternativeLabel } from './shortcuts.js';
 import { MAX_FILE_BYTES, parseDocument, encodeDataPath as encodePath, normalizeDataPath as normalizePath, isHiddenDataPath } from './data.js';
-import { updateDocumentMenu, saveNativeDocument, saveDocumentCopy, guardEditedClose, desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop } from './desktop.js';
+import { updateDocumentMenu, saveNativeDocument, saveDocumentCopy, guardEditedClose, desktop, readNativeFile, statNativeFile, openIndexedFile, selectNativeFiles, updateWindowTitle, connectDesktop, restartApplication } from './desktop.js';
 
 initializeLanguage(document);
 
@@ -755,6 +755,7 @@ const badLinesPreview = list => list.slice(0, 10)
 
 /* 按当前 settings 把文档折算成可渲染状态：{data, rootLabel, sub, warn} 或 {error} */
 function resolveDoc(doc){
+  if(missingWithoutContents(doc)) return {error:doc.error};
   if(doc.source?.indexed){
     const info = doc.source.info;
     if(settings.strictJsonl && info.kind === 'jsonl' && info.badCount + info.commentCount > 0){
@@ -1052,7 +1053,8 @@ function updateDocHeader(doc){
 
   const kindTag = doc.kind === 'jsonl' ? ' · JSONL' : '';
   const rootType = doc.source?.indexed ? doc.source.getRoot().type : null;
-  const typeName = doc.error ? t('无法预览') : rootType ? ({array:'Array',object:'Object'}[rootType] || rootType) : getTypeName(doc.data);
+  const typeName = doc.error ? (missingWithoutContents(doc) ? t('文件缺失') : t('无法预览'))
+    : rootType ? ({array:'Array',object:'Object'}[rootType] || rootType) : getTypeName(doc.data);
   fileSub.textContent = `${formatBytes(doc.editedSize ?? doc.size)} · ${typeName}${kindTag}`;
   fileSub.title = doc.kind === 'jsonl' ? [doc.sub, jsonlModeHints()].filter(Boolean).join(' · ') : doc.sub;
 }
@@ -1094,7 +1096,7 @@ function railMeta(doc, problem = fileProblem(doc)){
   if(doc.temporary) bits.unshift(t('临时文件'));
   if(doc.dirty) bits.push(t('未保存'));
   if(doc.kind === 'jsonl' && doc.records) bits.push(msg`${doc.records.length} 条记录`);
-  if(problem.error) bits.push(t('无法预览'));
+  if(problem.error) bits.push(missingWithoutContents(doc) ? t('文件缺失') : t('无法预览'));
   else if(problem.skipped) bits.push(msg`已跳过 ${problem.skipped} 行`);
   bits.push(formatBytes(doc.editedSize ?? doc.size));
   return bits.join(' · ');
@@ -1344,7 +1346,7 @@ function renderDocError(doc){
   const dot = document.createElement('span');
   dot.className = 'dot';
   const label = document.createElement('span');
-  label.textContent = t('这份文件当前无法预览');
+  label.textContent = missingWithoutContents(doc) ? t('文件缺失') : t('这份文件当前无法预览');
   title.append(dot, label);
 
   const file = document.createElement('div');
@@ -1359,6 +1361,12 @@ function renderDocError(doc){
   const actions = document.createElement('div');
   actions.className = 'doc-error-actions';
   let retryButton;
+  if(missingWithoutContents(doc)){
+    retryButton = document.createElement('button');
+    retryButton.className = 'doc-error-primary';
+    retryButton.textContent = t('重新打开');
+    retryButton.addEventListener('click', () => queueFiles([{path:doc.path, resumeId:doc.id}]));
+  }
 
   /* 严格模式是唯一能让「被拒绝」的 JSONL 重新可读的设置，给一个就地开关 */
   const indexedInfo = doc.source?.info;
@@ -1679,6 +1687,7 @@ async function loadFile(file, sessions, job = null){
       restoreDocSession(duplicate, duplicate.resumeSession);
       delete duplicate.resumeSession;
       delete duplicate.unloaded;
+      delete duplicate.missingFile;
       attached = true;
       if(!job || selectedLoad === job || !activeDoc()) activateDoc(duplicate.id);
       scheduleIndexVerification(duplicate);
@@ -1695,6 +1704,7 @@ async function loadFile(file, sessions, job = null){
       duplicate.savedText = undefined; duplicate.diskText = undefined;
       duplicate.indexRebuild?.abort();
       duplicate.source?.dispose();
+      delete duplicate.missingFile;
       Object.assign(duplicate, { parsed: doc.parsed, records: doc.records, bad: doc.bad,
         totalLines: doc.totalLines, text: doc.text, size: doc.size, editedSize:undefined, kind: doc.kind, error: doc.error,
         rootLabel: 'root', data: undefined, source: indexedSource });
@@ -1717,11 +1727,78 @@ async function loadFile(file, sessions, job = null){
     scheduleMemoryRelease();
     if(!job) saveReopenCopy();
   }catch(error){
-    if(error.name !== 'AbortError') showToast(t('打开失败：') + (error.message || String(error)));
+    if(!controller.signal.aborted && isMissingFileError(error) && file.path){
+      const key = filePathKey(file.path);
+      const existing = docs.find(doc => doc.id === file.resumeId || docKey(doc) === key);
+      if(existing) markMissingFile(existing);
+      else if(sessions || job?.sessions){
+        const missing = makeDoc(name, file.size ?? 0, undefined, file.kind);
+        Object.assign(missing, {path:file.path, identity:key, loadOrder:job?.loadOrder});
+        const later = job ? docs.findIndex(doc => doc.loadOrder > job.loadOrder) : -1;
+        docs.splice(later < 0 ? docs.length : later, 0, missing);
+        markMissingFile(missing);
+        restoreDocSession(missing, (job?.sessions || sessions)[key]);
+        if(!activeDoc() || selectedLoad === job) activateDoc(missing.id);
+      }else showToast(t('打开失败：') + t('文件缺失'));
+    }else if(error.name !== 'AbortError') showToast(t('打开失败：') + (error.message || String(error)));
   }finally{
     if(indexedSource && !attached) indexedSource.dispose();
     if(activeLoad === controller){ activeLoad = null; loadingStatus.hidden = true; }
   }
+}
+
+function isMissingFileError(error){
+  return (error?.cause?.code ?? error?.code) === 'file_not_found';
+}
+
+function missingWithoutContents(doc){
+  return doc.missingFile && doc.text === undefined;
+}
+
+function markMissingFile(doc){
+  if(doc.missingFile) return;
+  const active = doc === activeDoc();
+  doc.missingFile = true;
+  if(!doc.unloaded && !doc.source?.indexed && typeof doc.text === 'string'){
+    doc.dirty = true;
+    if(active){ updateDocHeader(doc); syncEditing(); }
+    renderRail();
+    return;
+  }
+  if(active) snapshotDoc();
+  doc.indexRebuild?.abort();
+  doc.source?.dispose();
+  Object.assign(doc, {source:undefined, data:undefined, text:undefined, unloaded:undefined,
+    error:t('原文件已找不到。恢复到原位置后可重新打开。')});
+  if(active) activateDoc(doc.id);
+  else renderRail();
+}
+
+let checkingFilePaths = false;
+async function checkOpenFilePaths(){
+  if(checkingFilePaths) return;
+  checkingFilePaths = true;
+  try{
+    for(const doc of [...docs]){
+      const {path, source} = doc;
+      if(!path || doc.missingFile || doc.saving || fileLoads.some(job => job.key === docKey(doc))) continue;
+      try{ await statNativeFile(path); }
+      catch(error){
+        if(isMissingFileError(error) && docs.includes(doc) && doc.path === path && doc.source === source && !doc.saving){
+          markMissingFile(doc);
+        }
+      }
+    }
+  }finally{ checkingFilePaths = false; }
+}
+
+if(desktop){
+  window.addEventListener('focus', () => void checkOpenFilePaths());
+  const poll = async () => {
+    try{ await checkOpenFilePaths(); }
+    finally{ setTimeout(poll, 3000); }
+  };
+  setTimeout(poll, 3000);
 }
 
 // Run hashes one at a time, after the newly mounted tree gets a paint.
@@ -1768,7 +1845,8 @@ async function rebuildChangedIndex(doc, source){
     scheduleIndexVerification(doc);
   }catch(error){
     if(!controller.signal.aborted && doc.source === source) {
-      showToast(t('重建索引失败：') + (error.message || String(error)));
+      if(isMissingFileError(error)) markMissingFile(doc);
+      else showToast(t('重建索引失败：') + (error.message || String(error)));
     }
   }finally{
     replacement?.dispose();
@@ -2005,10 +2083,9 @@ reclaimNodesBtn.addEventListener('click', () => {
   if(nodeBudgetNotice.hidden) expandAllBtn.focus();
   showToast(removed ? msg`已精简 ${removed} 个远处节点，可通过“查看此处”或搜索重新访问` : t('当前没有可精简的远处未阅读节点，可手动收起部分分支'));
 });
-let branchParentPulse;
-tree.addEventListener('click', event => {
-  if(settings.branchLineAction === 'off' || !event.target.classList.contains('branch-line-target')) return;
-  const parent = canvasParent(event.target.parentElement);
+function jumpFromBranchLine(target){
+  if(settings.branchLineAction === 'off') return;
+  const parent = canvasParent(target.parentElement);
   if(!parent?.classList.contains('open')) return;
   if(settings.branchLineAction === 'collapse') collapseSubtree(parent);
   focusGeneration++;
@@ -2016,20 +2093,11 @@ tree.addEventListener('click', event => {
   selectedSearchPath = parent._source === activeDoc()?.source ? [...parent._path] : null;
   pathText.textContent = t('路径：') + parent.dataset.path;
   viewport.focus({preventScroll:true});
-  centerNode(parent, parent.firstElementChild);
-  branchParentPulse?.cancel();
-  branchParentPulse = null;
-  if(!window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches){
-    const pulse = parent._card.animate?.([
-      {outline:'2px solid transparent'},
-      {outline:'2px solid color-mix(in srgb, var(--accent) 38%, transparent)', offset:.3},
-      {outline:'2px solid transparent'}
-    ], {duration:500, easing:'ease-out'});
-    if(pulse){
-      branchParentPulse = pulse;
-      pulse.onfinish = () => { if(branchParentPulse === pulse) branchParentPulse = null; };
-    }
-  }
+  tree.querySelectorAll('.branch-parent-arrival').forEach(card => card.classList.remove('branch-parent-arrival'));
+  centerNode(parent, parent.firstElementChild, () => parent._card.classList.add('branch-parent-arrival'));
+}
+tree.addEventListener('animationend', event => {
+  if(event.animationName === 'branch-parent-arrival') event.target.classList.remove('branch-parent-arrival');
 });
 tree.addEventListener('pointerdown', e => {
   if(e.target.classList.contains('branch-line-target')) return;
@@ -2422,15 +2490,12 @@ function createNode(key, descriptor, path, isRoot=false, isArrayItem=false, sour
   });
 
   if(!isRoot){
-    const label = t('跳到父节点');
-    for(const segment of ['branch-line-target-start', 'branch-line-target-end']){
-      const lineTarget = document.createElement('button');
-      lineTarget.type = 'button';
-      lineTarget.className = `branch-line-target ${segment}`;
-      lineTarget.tabIndex = -1;
-      lineTarget.setAttribute('aria-label', label);
-      node.appendChild(lineTarget);
-    }
+    const lineTarget = document.createElement('button');
+    lineTarget.type = 'button';
+    lineTarget.className = 'branch-line-target';
+    lineTarget.tabIndex = -1;
+    lineTarget.setAttribute('aria-label', t('双击跳到父节点'));
+    node.appendChild(lineTarget);
   }
   if(isBranch) attachChildren(node, card, toggle, source, descriptor.path, path);
 
@@ -2860,7 +2925,7 @@ let settings = {
   largeFileThresholdMiB: 64,
   indexRebuild: 'smart',
   legacyTreeLayout: false,
-  branchLineAction: 'off',
+  branchLineAction: 'jump',
   autoTemplate: true,
   defaultLevels: 0,
   indexBase: 0,              /* 数组索引编号起始值：0 基 / 1 基（仅影响显示） */
@@ -2908,16 +2973,37 @@ try{
 }catch(_){ template = null; }
 
 const languageSelect = document.getElementById('optLanguage');
+const languageRestartDialog = document.getElementById('languageRestartDialog');
+const languageRestartNow = document.getElementById('languageRestartNow');
 languageSelect.value = getLanguage();
 languageSelect.addEventListener('change', event => {
   const preference = normalizeLanguage(event.target.value);
   if (saveLanguage(preference)) {
     languageSelect.value = preference;
-    if (preference !== getLanguage()) showToast(t('语言已保存，重新打开应用或刷新网页后生效。'));
+    if (preference !== getLanguage()) {
+      document.getElementById('languageRestartMessage').textContent = desktop
+        ? t('语言已保存。现在重启应用以应用更改吗？')
+        : t('语言已保存。现在刷新网页以应用更改吗？');
+      languageRestartNow.textContent = desktop ? t('立即重启') : t('立即刷新');
+      languageRestartDialog.showModal();
+    }
   } else {
     languageSelect.value = getLanguage();
     showToast(t('无法保存语言设置，请检查本地存储权限。'));
   }
+});
+document.getElementById('languageRestartLater').addEventListener('click', () => languageRestartDialog.close());
+languageRestartNow.addEventListener('click', async () => {
+  if(docs.some(doc => doc.saving)){
+    document.getElementById('languageRestartMessage').textContent = t('文件正在保存，请保存完成后再重启或刷新。');
+    return;
+  }
+  languageRestartDialog.close();
+  if(desktop && docs.some(doc => doc.dirty) && !await confirmDiscardOnExit()) return;
+  saveSession();
+  if(!desktop){ window.location.reload(); return; }
+  try{ await restartApplication(); }
+  catch(error){ showToast(t('无法重启应用：') + (error.message || String(error))); }
 });
 
 function saveSettings(){
@@ -3731,7 +3817,7 @@ document.getElementById('optIdeFoldAlwaysVisible').addEventListener('change', e 
 });
 
 function normalizeBranchLineAction(value){
-  return value === 'jump' || value === 'collapse' ? value : 'off';
+  return value === 'off' || value === 'collapse' ? value : 'jump';
 }
 function applyBranchLineAction(){
   tree.classList.toggle('branch-lines-interactive', settings.branchLineAction !== 'off');
@@ -4631,6 +4717,10 @@ document.getElementById('designTopicForm').addEventListener('submit', event => {
   } catch(error){ document.getElementById('designTopicError').textContent = error.message; }
 });
 tree.addEventListener('dblclick', event => {
+  if(event.target.classList?.contains('branch-line-target')){
+    jumpFromBranchLine(event.target);
+    return;
+  }
   if(event.target.closest('button') || !event.target.closest('.node-card')) return;
   const node = event.target.closest('.tree-node');
   if(settings.topicDoubleClick === 'value'){
@@ -4680,7 +4770,7 @@ function stepEditHistory(redo = false){
   opposite.push(current);
   doc.ideEditGroup = null;
   doc.ideFolds?.clear(); Object.assign(doc, revision);
-  if(doc.savedText !== undefined) doc.dirty = doc.temporary || doc.text !== doc.savedText;
+  if(doc.savedText !== undefined) doc.dirty = doc.temporary || doc.missingFile === true || doc.text !== doc.savedText;
   doc.searchQuery = '';
   persistDesignDraft(doc);
   activateDoc(doc.id, topicSelection);
@@ -4700,14 +4790,14 @@ async function saveCurrentDocument(copy = false){
   const doc = activeDoc(); if(!doc?.dirty || doc.saving || doc.source?.indexed) return;
   if(doc.ideError){ showToast(t('请先修正 JSON 语法，再保存')); return; }
   doc.ideEditGroup = null;
-  if(!copy && desktop && doc.path && doc.kind === 'jsonl' && doc.bad?.length){
+  if(!copy && desktop && doc.path && !doc.missingFile && doc.kind === 'jsonl' && doc.bad?.length){
     showToast(t('文件中有被跳过的行，请使用另存为，避免覆盖原始记录')); return;
   }
   const revision = doc.text;
   const extension = doc.kind === 'jsonl' ? 'jsonl' : 'json';
   // The native copy dialog must suggest a distinct path from the open file.
-  const name = desktop && doc.path && !doc.temporary ? doc.name.replace(/\.[^.]+$/, '') + '-edited.' + extension : doc.name;
-  const savesOriginal = desktop && doc.path && !copy;
+  const name = desktop && doc.path && !doc.temporary && !doc.missingFile ? doc.name.replace(/\.[^.]+$/, '') + '-edited.' + extension : doc.name;
+  const savesOriginal = desktop && doc.path && !doc.missingFile && !copy;
   doc.saving = true; syncEditing();
   try {
     if(savesOriginal){
@@ -4716,10 +4806,11 @@ async function saveCurrentDocument(copy = false){
     }else if(desktop){
       const path = await saveDocumentCopy(name, revision, doc.path || null, docs.filter(d => d !== doc && d.path).map(d => d.path));
       if(!path) return;
-      if(doc.temporary){
+      if(doc.temporary || doc.missingFile){
         doc.path = path; doc.name = path.split(/[\\/]/).pop();
         doc.identity = (navigator.userAgentData?.platform || navigator.platform || '').startsWith('Win') ? path.toLowerCase() : path;
         doc.diskText = revision; doc.temporary = false;
+        delete doc.missingFile;
       }
     }
     else {
@@ -4735,7 +4826,10 @@ async function saveCurrentDocument(copy = false){
     if(doc === activeDoc()){ updateDocHeader(doc); syncEditing(); updateWindowTitle(doc.name); }
     showToast(messages.join('。'));
   } catch(error){
-    if(savesOriginal && doc === activeDoc() && String(error?.cause ?? error).includes('文件已被其他程序修改')){
+    if(savesOriginal && isMissingFileError(error)){
+      markMissingFile(doc);
+      showToast(t('原文件已缺失，请另存内存中的内容。'));
+    }else if(savesOriginal && doc === activeDoc() && String(error?.cause ?? error).includes('文件已被其他程序修改')){
       document.getElementById('saveConflictDialog').showModal();
     }else showToast((copy ? t('另存为失败：') : t('保存失败：')) + error);
   }
@@ -4754,11 +4848,12 @@ document.getElementById('saveConflictCopy').addEventListener('click', () => {
 document.getElementById('saveBtn').addEventListener('click', () => saveCurrentDocument());
 document.getElementById('saveCopyBtn').addEventListener('click', () => saveCurrentDocument(true));
 window.addEventListener('beforeunload', e => { if(docs.some(d => d.dirty)){ e.preventDefault(); e.returnValue = ''; } });
-if(desktop) guardEditedClose(() => docs.some(d => d.dirty), async () => {
+async function confirmDiscardOnExit(){
   if(!await confirmDiscardEdits()) return false;
   for(const doc of docs) persistDesignDraft(doc, true);
   return true;
-}, saveSession).catch(console.error);
+}
+if(desktop) guardEditedClose(() => docs.some(d => d.dirty), confirmDiscardOnExit, saveSession).catch(console.error);
 
 /* ---------- 「更多」菜单 ---------- */
 const moreBtn = document.getElementById('moreBtn');
@@ -4903,7 +4998,7 @@ viewport.addEventListener('blur', () => { vimPrefix = null; });
 document.addEventListener('pointerdown', () => { vimPrefix = null; });
 document.addEventListener('keydown', e => {
   if(['valueEditDialog','designTopicDialog','discardEditDialog','deleteTopicDialog','saveConflictDialog'].some(id => document.getElementById(id).open)) return;
-  if(canvasRulesDialog.open || document.getElementById('aboutDialog').open || document.getElementById('updateDialog').open) return;
+  if(languageRestartDialog.open || canvasRulesDialog.open || document.getElementById('aboutDialog').open || document.getElementById('updateDialog').open) return;
   if(e.isComposing || e.getModifierState?.('AltGraph')) { vimPrefix = null; return; }
   const overlayOpen = ['settingsMask','modalMask'].some(id => document.getElementById(id).classList.contains('open'));
   if(e.key !== 'Escape' && overlayOpen) { vimPrefix = null; return; }
@@ -5419,7 +5514,7 @@ function resetView(){ mainView.reset(); }
 
 function applyTransform(){ mainView.apply(); }
 
-function centerNode(node, anchor = node){
+function centerNode(node, anchor = node, onCentered){
   nodeBudget.touch(node);
   const generation = focusGeneration;
   let expected;
@@ -5433,6 +5528,7 @@ function centerNode(node, anchor = node){
     // A newly visible node replaces an estimated content-visibility size.
     // Settle in the actual virtualized layout, without switching size models.
     if(attempt < 3) requestAnimationFrame(() => align(attempt + 1));
+    else onCentered?.();
   };
   align(0);
 }
@@ -5571,7 +5667,7 @@ installTooltips(document, window);
         await activateDoc(active.id);
       }
     }else{
-      await openPaths(nativeRestore.files.map(file => file.path), nativeRestore.sessions, nativeRestore.activeKey);
+      await queueFiles(nativeRestore.files, nativeRestore.sessions, nativeRestore.activeKey);
     }
     nativeRestore = null;
     const current = activeDoc();

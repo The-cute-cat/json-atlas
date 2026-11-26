@@ -54,6 +54,9 @@ fn write_document(path: &str, text: &str, expected: Option<&str>) -> Result<(), 
                     None,
                 )
             }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(NativeError::file_io(error));
+            }
             Err(error) => {
                 return Err(NativeError::localized(
                     format!("Could not save the file: {error}"),
@@ -341,13 +344,16 @@ pub fn read_document(path: &str, max_bytes: u64) -> Result<Vec<u8>, NativeError>
     let max_bytes = max_bytes.min(MAX_FILE_BYTES);
     validate_local_path(path)?;
     let path = std::fs::canonicalize(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return NativeError::file_io(e);
+        }
         NativeError::localized(
             format!("Could not open the file: {e}"),
             format!("无法打开文件：{e}"),
         )
     })?;
     validate_local_path(&path.to_string_lossy())?;
-    let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    let metadata = std::fs::metadata(&path).map_err(NativeError::file_io)?;
     if !metadata.is_file() {
         return Err(NativeError::localized(
             "Choose a file instead of a directory",
@@ -371,7 +377,7 @@ pub fn read_document(path: &str, max_bytes: u64) -> Result<Vec<u8>, NativeError>
             "文件已超过内存读取阈值，请重新打开以使用磁盘索引",
         ));
     }
-    let file = File::open(&path).map_err(|e| e.to_string())?;
+    let file = File::open(&path).map_err(NativeError::file_io)?;
     // Bound the read even if another process grows the file after metadata().
     let mut bytes = Vec::new();
     file.take(max_bytes + 1)

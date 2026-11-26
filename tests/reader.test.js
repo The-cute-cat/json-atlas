@@ -105,7 +105,7 @@ function reader(storage = new Map(), native = {}) {
     querySelector: () => ({ getBoundingClientRect: () => ({ bottom: toolbarBottom }) })
   };
   const context = {
-    getLanguage, msg, normalizeLanguage, saveLanguage, t, initializeLanguage() {},
+    getLanguage, msg, normalizeLanguage, saveLanguage: value => saveLanguage(value, context.localStorage), t, initializeLanguage() {},
     document, window: { innerWidth: 1440, innerHeight: 900, addEventListener() {} }, navigator: { platform: 'Win32' },
     localStorage: {
       get length() { return storage.size; },
@@ -125,7 +125,7 @@ function reader(storage = new Map(), native = {}) {
   const api = runInNewContext(pagingSource + '\n' + source + `
     ;({ buildDoc, resolveDoc, activateDoc, collectSession, saveSession, expandByPaths, expandLevels, expandOne, positionFindPanel,
       beginNodeEdit, applyNodeEdit, applyIdeChange, toggleIdeFold, handleIdeInput, formatIde, openEditor, relabelArrayIndexes, searchTree, nodeContentText, closeDoc, loadFile, openPaths, showNodeLimit, collapseAll, updateVirtualization, saveCurrentDocument,
-      openPastedText, selectCopyNode, releaseIdleDocuments,
+      openPastedText, selectCopyNode, releaseIdleDocuments, checkOpenFilePaths,
       allDocs: () => docs,
       add: doc => docs.push(doc), configure: value => Object.assign(settings, value),
       setTemplate: value => { template = value; }, template: () => template,
@@ -326,11 +326,13 @@ test('theme preference persists and is shown when settings reopen', () => {
   assert.equal(selector.value,'dark');
 });
 
-test('branch line preference jumps to the owning parent and optionally collapses its subtree', async () => {
-  const {api, elements, storage} = reader();
+test('only double-clicking a branch line jumps to its parent and optionally collapses the subtree', async () => {
+  const {api, elements, storage, window, flush} = reader();
+  window.matchMedia = query => ({matches:query === '(prefers-reduced-motion: reduce)'});
   const doc = api.buildDoc('{"parent":{"child":1},"sibling":2}', 'tree.json', 40);
   api.add(doc);
   api.activateDoc(doc.id);
+  await flush();
   const tree = elements.get('tree');
   const root = tree.firstElementChild;
   const children = node => node.children.find(child => child.classList.contains('children')).children;
@@ -338,17 +340,16 @@ test('branch line preference jumps to the owning parent and optionally collapses
   const [parent] = children(root);
   await api.expandOne(parent);
   const [child] = children(parent);
-  const pulses = [];
-  for(const node of [parent, root, child]){
-    node._card.animate = () => {
-      const pulse = {node, cancelled:false, cancel(){ this.cancelled = true; }};
-      pulses.push(pulse);
-      return pulse;
-    };
+  for(const node of [parent, root]){
+    node.isConnected = true;
+    node.firstElementChild.getBoundingClientRect = () => ({left:0, top:0, width:160, height:36});
   }
-  const line = child.children.find(el => el.classList.contains('branch-line-target-start'));
-  const lineEnd = parent.children.find(el => el.classList.contains('branch-line-target-end'));
-  const clickLine = (target = line) => tree.listeners.get('click')({target});
+  elements.get('viewport').getBoundingClientRect = () => ({left:0, top:0, width:800, height:600});
+  const highlighted = () => tree.querySelectorAll('.branch-parent-arrival');
+  const line = child.children.find(el => el.classList.contains('branch-line-target'));
+  const outerLine = parent.children.find(el => el.classList.contains('branch-line-target'));
+  const clickLine = () => tree.listeners.get('click')({target:line});
+  const doubleClickLine = (target = line) => tree.listeners.get('dblclick')({target});
   const select = elements.get('optBranchLineAction');
   const choose = value => {
     elements.get('settingsBtn').click();
@@ -357,32 +358,97 @@ test('branch line preference jumps to the owning parent and optionally collapses
     elements.get('settingsClose').click();
   };
 
+  elements.get('settingsBtn').click();
+  assert.equal(select.value, 'jump');
+  assert.equal(tree.classList.contains('branch-lines-interactive'), true);
+  elements.get('settingsClose').click();
+
+  choose('off');
   assert.equal(tree.classList.contains('branch-lines-interactive'), false);
-  clickLine();
+  const reopened = reader(storage);
+  assert.equal(reopened.elements.get('tree').classList.contains('branch-lines-interactive'), false);
+  doubleClickLine();
   assert.equal(parent.classList.contains('selected-node'), false);
-  assert.equal(pulses.length, 0);
+  assert.deepEqual(highlighted(), []);
 
   choose('jump');
   clickLine();
+  assert.equal(parent.classList.contains('selected-node'), false);
+  assert.deepEqual(highlighted(), []);
+  doubleClickLine();
   assert.equal(tree.classList.contains('branch-lines-interactive'), true);
   assert.equal(parent.classList.contains('selected-node'), true);
   assert.equal(parent.classList.contains('open'), true);
   assert.match(elements.get('pathText').textContent, /\$\.parent$/);
-  assert.equal(pulses.length, 1);
-  assert.equal(pulses[0].node, parent);
+  assert.deepEqual(highlighted(), []);
+  await flush();
+  assert.deepEqual(highlighted(), [parent._card]);
 
-  clickLine(lineEnd);
+  doubleClickLine(outerLine);
   assert.equal(root.classList.contains('selected-node'), true);
-  assert.equal(pulses[0].cancelled, true);
-  assert.equal(pulses[1].node, root);
+  await flush();
+  assert.deepEqual(highlighted(), [root._card]);
 
   choose('collapse');
   clickLine();
+  assert.equal(parent.classList.contains('open'), true);
+  doubleClickLine();
   assert.equal(parent.classList.contains('open'), false);
   assert.equal(children(parent).length, 0);
   assert.equal(root.classList.contains('open'), true);
-  assert.equal(pulses[2].node, parent);
+  await flush();
+  assert.deepEqual(highlighted(), [parent._card]);
+  tree.listeners.get('animationend')({animationName:'branch-parent-arrival', target:parent._card});
+  assert.deepEqual(highlighted(), []);
   assert.equal(JSON.parse(storage.get('json-atlas_settings_v1')).branchLineAction, 'collapse');
+});
+
+test('language changes prompt for a desktop restart and respect unsaved edits', async () => {
+  let restarts = 0;
+  const {api, elements, storage} = reader(new Map(), {
+    desktop:true, guardEditedClose:async()=>{}, updateDocumentMenu(){},
+    restartApplication:async()=>{ restarts++; }
+  });
+  const change = value => elements.get('optLanguage').listeners.get('change')({target:{value}});
+  const dialog = elements.get('languageRestartDialog');
+  change('en');
+  assert.equal(dialog.open, true);
+  assert.equal(storage.get('json-atlas_language_v1'), 'en');
+  assert.equal(elements.get('languageRestartNow').textContent, '立即重启');
+  elements.get('languageRestartLater').click();
+  assert.equal(dialog.open, false);
+  assert.equal(restarts, 0);
+
+  const doc = api.buildDoc('{"test":1}', 'edited.json', 10);
+  api.add(doc);
+  doc.dirty = true;
+  change('zh-CN');
+  assert.equal(dialog.open, false);
+  change('en');
+  const restart = elements.get('languageRestartNow').listeners.get('click');
+  const cancelled = restart();
+  assert.equal(elements.get('discardEditDialog').open, true);
+  elements.get('discardEditCancel').click();
+  await cancelled;
+  assert.equal(restarts, 0);
+
+  change('en');
+  const confirmed = restart();
+  elements.get('discardEditConfirm').click();
+  await confirmed;
+  assert.equal(restarts, 1);
+});
+
+test('language changes in the browser offer to refresh the page', async () => {
+  let reloads = 0;
+  const {elements, window} = reader();
+  window.location = {reload(){ reloads++; }};
+  elements.get('optLanguage').listeners.get('change')({target:{value:'en'}});
+  assert.equal(elements.get('languageRestartDialog').open, true);
+  assert.equal(elements.get('languageRestartNow').textContent, '立即刷新');
+  assert.equal(reloads, 0);
+  await elements.get('languageRestartNow').listeners.get('click')();
+  assert.equal(reloads, 1);
 });
 
 test('settings category navigation switches panels and supports arrow keys without changing options', () => {
@@ -649,6 +715,52 @@ test('resident limit releases least recently read tabs and allows protected file
   assert.equal(dirty.unloaded,undefined);
   assert.equal(old.unloaded,'idle');
   assert.equal(api.state().doc,recent);
+});
+
+test('deleted native files preserve resident content and reopen as missing on restart', async () => {
+  const memoryPath = 'D:/memory.json';
+  const indexPath = 'D:/indexed.jsonl';
+  const storage = new Map([['json-atlas_settings_v1', JSON.stringify({reopenLast:true})]]);
+  const disposed = [];
+  const saved = [];
+  const native = {
+    desktop:true, updateDocumentMenu(){}, guardEditedClose:async()=>{},
+    statNativeFile:async () => { throw new Error('File missing', {cause:{code:'file_not_found'}}); },
+    saveDocumentCopy:async (name, text, path) => { saved.push({name,text,path}); return 'D:/recovered.json'; }
+  };
+  const {api,elements} = reader(storage, native);
+  const memory = api.buildDoc('{"resident":1}', 'memory.json', 14);
+  memory.path = memoryPath;
+  const indexed = api.buildDoc('{"ignored":0}', 'indexed.jsonl', 70 * 1024 ** 2);
+  indexed.path = indexPath; indexed.text = '';
+  indexed.source = new IndexedDataSource(async op => { disposed.push(op); }, 'deleted-index', {
+    kind:'jsonl', root:{type:'array',path:[],childCount:1}
+  });
+  api.add(memory); api.add(indexed); api.activateDoc(memory.id);
+  const source = memory.source;
+  await api.checkOpenFilePaths();
+  assert.equal(memory.source, source);
+  assert.equal(memory.dirty, true);
+  assert.match(elements.get('fileName').textContent, /未保存/);
+  assert.equal(indexed.source, undefined);
+  assert.equal(indexed.dirty, undefined);
+  assert.ok(disposed.includes('close'));
+  api.activateDoc(indexed.id);
+  assert.match(elements.get('fileSub').textContent, /文件缺失/);
+
+  const restarted = reader(new Map(storage), native);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(Array.from(restarted.api.allDocs(), doc => doc.path), [memoryPath,indexPath]);
+  assert.ok(restarted.api.allDocs().every(doc => doc.error && doc.missingFile && !doc.dirty));
+  assert.equal(restarted.api.state().doc.path, indexPath);
+  assert.match(restarted.elements.get('fileSub').textContent, /文件缺失/);
+
+  api.activateDoc(memory.id);
+  await api.saveCurrentDocument();
+  assert.deepEqual(saved, [{name:'memory.json',text:'{"resident":1}',path:memoryPath}]);
+  assert.equal(memory.path, 'D:/recovered.json');
+  assert.equal(memory.dirty, false);
+  assert.equal(memory.missingFile, undefined);
 });
 
 test('low memory startup only opens the selected native file and restores other tabs on demand', async () => {

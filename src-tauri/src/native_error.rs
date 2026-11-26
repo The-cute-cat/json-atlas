@@ -7,6 +7,8 @@ pub(crate) struct NativeError {
     pub(crate) message: Cow<'static, str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     message_zh_cn: Option<Cow<'static, str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 
 impl NativeError {
@@ -17,11 +19,23 @@ impl NativeError {
         Self {
             message: message.into(),
             message_zh_cn: Some(message_zh_cn.into()),
+            code: None,
         }
     }
 
     pub(crate) fn from_display(error: impl fmt::Display) -> Self {
         error.to_string().into()
+    }
+
+    pub(crate) fn file_io(error: std::io::Error) -> Self {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Self {
+                code: Some("file_not_found"),
+                ..Self::localized("File missing", "文件缺失")
+            }
+        } else {
+            Self::from_display(error)
+        }
     }
 }
 
@@ -30,6 +44,7 @@ impl From<String> for NativeError {
         Self {
             message: Cow::Owned(message),
             message_zh_cn: None,
+            code: None,
         }
     }
 }
@@ -60,6 +75,11 @@ mod tests {
         assert_eq!(
             to_value(NativeError::from_display("Disk failure")).unwrap(),
             json!({"message": "Disk failure"})
+        );
+        let missing = NativeError::file_io(std::io::ErrorKind::NotFound.into());
+        assert_eq!(
+            to_value(missing).unwrap(),
+            json!({"code": "file_not_found", "message": "File missing", "messageZhCn": "文件缺失"})
         );
     }
 }

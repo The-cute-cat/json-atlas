@@ -38,6 +38,7 @@ function invokeDocument(command, args) {
 }
 export const readNativeFile = (path, maxBytes) => invokeDocument('read_document', { path, maxBytes });
 export const selectNativeFiles = () => invokeDocument('select_documents');
+export const restartApplication = () => invoke('restart_application');
 export const openReleasePage = () => invoke('open_release_page');
 export const saveDocumentCopy = (name, text, originalPath, protectedPaths = []) => invokeDocument('save_document_copy', { name, text, originalPath, protectedPaths });
 export const saveNativeDocument = (path, text, expectedText) => invokeDocument('save_document', { path, text, expectedText });

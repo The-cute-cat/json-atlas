@@ -345,9 +345,9 @@ fn err(e: impl std::fmt::Display) -> NativeError {
 
 pub fn stat(path: &str) -> Result<Value> {
     super::documents::validate_local_path(path)?;
-    let path = std::fs::canonicalize(path).map_err(err)?;
+    let path = std::fs::canonicalize(path).map_err(NativeError::file_io)?;
     super::documents::validate_local_path(&path.to_string_lossy())?;
-    let meta = path.metadata().map_err(err)?;
+    let meta = path.metadata().map_err(NativeError::file_io)?;
     if !meta.is_file() {
         return Err(NativeError::localized(
             "Choose a file instead of a directory",

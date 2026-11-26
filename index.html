@@ -172,6 +172,14 @@
   <div class="edit-actions"><button id="valueEditCancel" type="button">取消</button><button type="submit">应用修改</button></div></form>
 </dialog>
 <dialog id="discardEditDialog" class="value-edit-dialog"><h2>有尚未保存的修改</h2><p>关闭后会丢弃工作副本中的修改。可先取消并保存或另存为。</p><div class="edit-actions"><button id="discardEditCancel">取消</button><button id="discardEditConfirm">丢弃修改并关闭</button></div></dialog>
+<dialog id="languageRestartDialog" class="value-edit-dialog" aria-labelledby="languageRestartTitle">
+  <h2 id="languageRestartTitle">应用语言更改</h2>
+  <p id="languageRestartMessage"></p>
+  <div class="edit-actions">
+    <button id="languageRestartLater" type="button" autofocus>稍后</button>
+    <button id="languageRestartNow" type="button"></button>
+  </div>
+</dialog>
 <dialog id="saveConflictDialog" class="value-edit-dialog" aria-labelledby="saveConflictTitle">
   <h2 id="saveConflictTitle">原文件已被其他程序修改</h2>
   <p>当前修改仍保留在工作副本中。可另存到其他位置，避免覆盖外部修改。</p>
@@ -311,12 +319,12 @@
             </div>
             <div class="settings-row">
               <div>
-                <label class="s-label" for="optBranchLineAction">点击分支竖线</label>
-                <div class="s-hint" id="branchLineActionHint">在树形画布上点击连接子节点的竖线，可回到这条分支的父节点。</div>
+                <label class="s-label" for="optBranchLineAction">双击分支竖线</label>
+                <div class="s-hint" id="branchLineActionHint">双击连接子节点的竖线，可回到这条分支的父节点。</div>
               </div>
               <select id="optBranchLineAction" aria-describedby="branchLineActionHint">
                 <option value="off">关闭</option>
-                <option value="jump">跳到父节点</option>
+                <option value="jump" selected>跳到父节点</option>
                 <option value="collapse">跳到父节点并收起分支</option>
               </select>
             </div>

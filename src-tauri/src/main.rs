@@ -399,6 +399,11 @@ fn open_release_page() -> Result<(), NativeError> {
     Ok(())
 }
 
+#[tauri::command]
+fn restart_application(app: tauri::AppHandle) {
+    app.request_restart();
+}
+
 fn main() {
     if let Some(code) = installer_cleanup::run() {
         std::process::exit(code);
@@ -431,6 +436,7 @@ fn main() {
             window::use_english_menu,
             menu_theme::sync_menu_theme,
             set_document_title,
+            restart_application,
             open_release_page
         ])
         .build(tauri::generate_context!())
